@@ -307,6 +307,8 @@ kbd {
 }
 
 .content {
+  display: grid;
+  grid-template-rows: 60px minmax(0, 1fr) 58px;
   overflow: hidden;
   background: #fff;
 }
@@ -356,6 +358,13 @@ kbd {
   table-layout: fixed;
 }
 
+.table-wrap {
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  background: #fff;
+}
+
 .faq-table th,
 .faq-table td {
   height: 56px;
@@ -369,6 +378,9 @@ kbd {
 
 .faq-table th {
   height: 48px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
   font-size: 13px;
   color: #344054;
   background: #fbfcfe;
@@ -381,7 +393,25 @@ kbd {
 
 .faq-table th:nth-child(2),
 .faq-table td:nth-child(2) {
+  width: 64px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.faq-table th:nth-child(3),
+.faq-table td:nth-child(3) {
   width: 34%;
+}
+
+.faq-table th:nth-child(1),
+.faq-table td:nth-child(1),
+.faq-table th:nth-child(2),
+.faq-table td:nth-child(2) {
+  padding: 0 12px;
+}
+
+.row-index {
+  text-align: left;
 }
 
 .faq-table tr.selected,
@@ -434,10 +464,7 @@ kbd {
 }
 
 .pagination {
-  position: absolute;
-  bottom: 0;
-  left: 324px;
-  right: 0;
+  position: static;
   height: 58px;
   display: flex;
   align-items: center;

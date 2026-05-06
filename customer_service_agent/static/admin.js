@@ -77,12 +77,14 @@ function renderFilters(data) {
 
 function renderRows(items) {
   const rows = items
-    .map((item) => {
+    .map((item, index) => {
+      const rowNumber = (state.page - 1) * state.pageSize + index + 1;
       const selected = state.selected.has(item.id) ? "checked" : "";
       const active = state.current?.id === item.id ? "selected" : "";
       return `
         <tr class="${active}" data-id="${item.id}">
           <td><input type="checkbox" class="row-check" data-id="${item.id}" ${selected}></td>
+          <td class="row-index">${rowNumber}</td>
           <td title="${item.question || ""}">${item.question || ""}</td>
           <td>${item.category || "-"}</td>
           <td>${statusPill(item.status)}</td>
@@ -92,7 +94,7 @@ function renderRows(items) {
       `;
     })
     .join("");
-  $("faqRows").innerHTML = rows || `<tr><td colspan="6" class="empty">暂无数据</td></tr>`;
+  $("faqRows").innerHTML = rows || `<tr><td colspan="7" class="empty">暂无数据</td></tr>`;
 }
 
 async function loadFaqs() {

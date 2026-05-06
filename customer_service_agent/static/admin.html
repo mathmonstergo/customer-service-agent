@@ -73,19 +73,22 @@
           <button class="new-button" type="button" id="newFaqButton">＋ 新建 FAQ</button>
         </div>
 
-        <table class="faq-table">
-          <thead>
-            <tr>
-              <th><input type="checkbox" id="selectAll" /></th>
-              <th>问题</th>
-              <th>分类</th>
-              <th>状态</th>
-              <th>Embedding</th>
-              <th>更新时间 ↓</th>
-            </tr>
-          </thead>
-          <tbody id="faqRows"></tbody>
-        </table>
+        <div class="table-wrap">
+          <table class="faq-table">
+            <thead>
+              <tr>
+                <th><input type="checkbox" id="selectAll" /></th>
+                <th class="col-index">序号</th>
+                <th>问题</th>
+                <th>分类</th>
+                <th>状态</th>
+                <th>Embedding</th>
+                <th>更新时间 ↓</th>
+              </tr>
+            </thead>
+            <tbody id="faqRows"></tbody>
+          </table>
+        </div>
 
         <footer class="pagination">
           <span id="pageSummary">共 0 条</span>
