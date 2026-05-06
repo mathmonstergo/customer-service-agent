@@ -292,6 +292,20 @@ class Database:
             raise KeyError(f"FAQ not found: {faq_id}")
         return row
 
+    def update_faq_statuses(self, ids: list[str], status: str) -> list[dict[str, Any]]:
+        """批量更新 FAQ 可用状态，保持正文和 embedding 内容不变。"""
+        sql = """
+        UPDATE faq_documents
+        SET status = %(status)s,
+            updated_at = now()
+        WHERE id = ANY(%(ids)s::text[])
+        RETURNING id, question, answer, category, tags, confidence, status,
+                  embedding_status, embedding_model, embedding_dimensions,
+                  embedding_updated_at, embedding_error, updated_at
+        """
+        with self.connect() as conn:
+            return conn.execute(sql, {"ids": ids, "status": status}).fetchall()
+
     def list_faqs(
         self,
         *,

@@ -1,7 +1,7 @@
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import ClassVar, Mapping
 
 from dotenv import load_dotenv
 
@@ -12,6 +12,8 @@ class SettingsError(ValueError):
 
 @dataclass(frozen=True)
 class Settings:
+    embedding_schema_dimensions: ClassVar[int] = 1024
+
     database_url: str
     chat_base_url: str
     chat_api_key: str
@@ -50,6 +52,11 @@ class Settings:
             values[field_name] = value
 
         values["embedding_dimensions"] = cls._integer_env(env, "EMBEDDING_DIMENSIONS", 1024)
+        # 当前数据库 schema 固定为 vector(1024)，这里提前拦截不匹配配置。
+        if values["embedding_dimensions"] != cls.embedding_schema_dimensions:
+            raise SettingsError(
+                "EMBEDDING_DIMENSIONS must match database schema vector(1024)"
+            )
         values["wechat_token_file"] = Path(
             env.get("WECHAT_TOKEN_FILE", "/home/adam/.wxbot/token.json")
         )

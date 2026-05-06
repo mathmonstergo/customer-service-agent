@@ -114,6 +114,12 @@ http://127.0.0.1:8765
 
 保存 FAQ 只会保存正文和元数据，不会自动生成 embedding。需要点击单条 `生成 embedding`，或使用侧边栏批量生成 embedding。
 
+页面预览：
+
+![FAQ 管理页面预览 1](docs/assets/faq-management-page-1.png)
+
+![FAQ 管理页面预览 2](docs/assets/faq-management-page-2.png)
+
 ## AI 辅助编辑
 
 AI 辅助使用项目已有的 OpenAI-compatible Chat Completions 配置：

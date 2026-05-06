@@ -17,6 +17,25 @@ const embeddingOptions = ["pending", "ready", "stale", "failed"];
 
 const $ = (id) => document.getElementById(id);
 
+function escapeHtml(value) {
+  // 将用户内容写入 HTML 字符串前转义，避免知识库内容触发脚本。
+  return String(value).replace(/[&<>"']/g, (char) => {
+    const entities = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    };
+    return entities[char];
+  });
+}
+
+function safeCssToken(value) {
+  // 状态值会进入 class 名，只保留安全字符。
+  return String(value).replace(/[^a-zA-Z0-9_-]/g, "");
+}
+
 function showToast(message) {
   const toast = $("toast");
   toast.textContent = message;
@@ -43,7 +62,7 @@ function formatDate(value) {
 
 function statusPill(value) {
   const status = value || "pending";
-  return `<span class="status-pill ${status}">${status}</span>`;
+  return `<span class="status-pill ${safeCssToken(status)}">${escapeHtml(status)}</span>`;
 }
 
 function filterItem(group, value, label, count, activeValue) {
@@ -82,11 +101,11 @@ function renderRows(items) {
       const selected = state.selected.has(item.id) ? "checked" : "";
       const active = state.current?.id === item.id ? "selected" : "";
       return `
-        <tr class="${active}" data-id="${item.id}">
-          <td><input type="checkbox" class="row-check" data-id="${item.id}" ${selected}></td>
+        <tr class="${active}" data-id="${escapeHtml(item.id)}">
+          <td><input type="checkbox" class="row-check" data-id="${escapeHtml(item.id)}" ${selected}></td>
           <td class="row-index">${rowNumber}</td>
-          <td title="${item.question || ""}">${item.question || ""}</td>
-          <td>${item.category || "-"}</td>
+          <td title="${escapeHtml(item.question || "")}">${escapeHtml(item.question || "")}</td>
+          <td>${escapeHtml(item.category || "-")}</td>
           <td>${statusPill(item.status)}</td>
           <td>${statusPill(item.embedding_status)}</td>
           <td>${formatDate(item.updated_at)}</td>
@@ -113,7 +132,8 @@ async function loadFaqs() {
     $("totalCount").textContent = `共 ${data.total || 0} 条`;
     $("pageSummary").textContent = `共 ${data.total || 0} 条`;
     $("pageNumber").textContent = String(data.page || 1);
-    $("selectedCount").textContent = `已选择 ${state.selected.size} 项`;
+    $("selectAll").checked = false;
+    updateSelectedCount();
   } catch (error) {
     showToast(error.message);
   }
@@ -165,7 +185,7 @@ function renderEmbeddingState(status, error) {
 }
 
 function chipHtml(value, group) {
-  return `<span class="chip">${value}<button type="button" data-group="${group}" data-value="${value}">×</button></span>`;
+  return `<span class="chip">${escapeHtml(value)}<button type="button" data-group="${group}" data-value="${escapeHtml(value)}">×</button></span>`;
 }
 
 function renderChips() {
@@ -240,9 +260,35 @@ function renderAiSuggestion(suggestion) {
   $("aiQuestion").textContent = suggestion.optimized_question;
   $("aiAnswer").textContent = suggestion.optimized_answer;
   $("aiVariants").innerHTML = suggestion.similar_questions
-    .map((item) => `<li>${item}</li>`)
+    .map((item) => `<li>${escapeHtml(item)}</li>`)
     .join("");
   $("aiPanel").classList.remove("hidden");
+}
+
+function updateSelectedCount() {
+  // 统一刷新批量选择数量，避免多个入口各自维护文案。
+  $("selectedCount").textContent = `已选择 ${state.selected.size} 项`;
+}
+
+async function batchUpdateStatus(status) {
+  // 批量状态更新只提交用户当前勾选的 FAQ。
+  const ids = Array.from(state.selected);
+  if (!ids.length) {
+    showToast("请先选择 FAQ");
+    return;
+  }
+  try {
+    const result = await requestJson("/api/faqs/batch-status", {
+      method: "POST",
+      body: JSON.stringify({ ids, status }),
+    });
+    state.selected.clear();
+    updateSelectedCount();
+    showToast(`已更新 ${result.count} 条`);
+    await loadFaqs();
+  } catch (error) {
+    showToast(error.message);
+  }
 }
 
 async function requestAiSuggestion() {
@@ -289,6 +335,22 @@ function bindEvents() {
   $("optimizeButton").addEventListener("click", requestAiSuggestion);
   $("applyAiButton").addEventListener("click", applyAiSuggestion);
   $("cancelAiButton").addEventListener("click", () => $("aiPanel").classList.add("hidden"));
+  $("selectAll").addEventListener("change", (event) => {
+    document.querySelectorAll(".row-check").forEach((checkbox) => {
+      checkbox.checked = event.target.checked;
+      if (checkbox.checked) state.selected.add(checkbox.dataset.id);
+      else state.selected.delete(checkbox.dataset.id);
+    });
+    updateSelectedCount();
+  });
+  $("showFailedButton").addEventListener("click", () => {
+    state.embeddingStatus = "failed";
+    state.page = 1;
+    loadFaqs();
+  });
+  document.querySelectorAll(".batch-button[data-status]").forEach((button) => {
+    button.addEventListener("click", () => batchUpdateStatus(button.dataset.status));
+  });
 
   $("searchInput").addEventListener("input", (event) => {
     state.query = event.target.value.trim();
@@ -353,7 +415,7 @@ function bindEvents() {
       const id = event.target.dataset.id;
       if (event.target.checked) state.selected.add(id);
       else state.selected.delete(id);
-      $("selectedCount").textContent = `已选择 ${state.selected.size} 项`;
+      updateSelectedCount();
       return;
     }
     if (row) {

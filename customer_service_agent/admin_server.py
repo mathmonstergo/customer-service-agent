@@ -25,6 +25,9 @@ class AdminNotFoundError(KeyError):
     pass
 
 
+VALID_FAQ_STATUSES = {"usable", "needs_review", "disabled"}
+
+
 def split_text_list(value: Any) -> list[str]:
     if value is None:
         return []
@@ -120,6 +123,22 @@ class AdminApp:
         row = normalize_faq_payload(payload)
         return self.database().save_faq_text(row)
 
+    def batch_update_status(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """批量切换 FAQ 状态，只接受明确选择的 id 和受控状态值。"""
+        raw_ids = payload.get("ids", [])
+        if not isinstance(raw_ids, list):
+            raise AdminValidationError("ids must be a list")
+        ids = [str(item).strip() for item in raw_ids if str(item).strip()]
+        if not ids:
+            raise AdminValidationError("ids is required")
+
+        status = str(payload.get("status", "")).strip()
+        if status not in VALID_FAQ_STATUSES:
+            raise AdminValidationError("status must be usable, needs_review, or disabled")
+
+        rows = self.database().update_faq_statuses(ids, status)
+        return {"count": len(rows), "items": rows}
+
     def embed_faq(self, faq_id: str) -> dict[str, Any]:
         row = self.get_faq(faq_id)
         try:
@@ -189,6 +208,10 @@ def make_handler(app: AdminApp):
                 payload = self.read_json()
                 if parsed.path == "/api/faqs":
                     self.send_json(app.save_faq(payload))
+                    return
+                if parsed.path == "/api/faqs/batch-status":
+                    # 批量状态接口只处理用户显式勾选的 FAQ。
+                    self.send_json(app.batch_update_status(payload))
                     return
                 if parsed.path == "/api/faqs/embed-pending":
                     self.send_json(app.embed_pending(payload))

@@ -11,8 +11,7 @@
 jszx_company_faq_cleaning_readme.md
 system_prompt.txt
 
-# Local-only validation and planning artifacts.
-tests/
+# Local-only planning artifacts.
 docs/superpowers/
 
 __pycache__/
