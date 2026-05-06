@@ -1,0 +1,41 @@
+.env
+.env.*
+!.env.example
+.codex
+.superpowers/
+.playwright-cli/
+
+# Local FAQ/customer data must stay out of Git.
+*.jsonl
+*.csv
+jszx_company_faq_cleaning_readme.md
+system_prompt.txt
+
+# Local-only validation and planning artifacts.
+tests/
+docs/superpowers/
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+.coverage
+htmlcov/
+
+.venv/
+venv/
+env/
+
+*.log
+temp/
+
+# Local WeChat login token/cache must stay outside git.
+.wxbot/
+wx_qr.png
+
+# Local editor and OS files.
+.idea/
+.vscode/
+.DS_Store

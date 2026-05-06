@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>客服知识库管理系统</title>
+    <link rel="stylesheet" href="/admin.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="window-dots" aria-hidden="true">
+        <span class="dot red"></span>
+        <span class="dot yellow"></span>
+        <span class="dot green"></span>
+      </div>
+      <div class="brand">客服知识库管理系统</div>
+      <span class="badge">内部</span>
+      <div class="topbar-spacer"></div>
+      <div class="env-status"><span></span> 本地环境</div>
+      <button class="icon-button" type="button" aria-label="通知" title="通知">⌂</button>
+      <div class="user-pill">A</div>
+      <div class="user-name">admin</div>
+    </header>
+
+    <nav class="breadcrumb">
+      <span>知识库</span>
+      <span class="chevron">›</span>
+      <strong>FAQ 管理</strong>
+    </nav>
+
+    <div class="app-shell">
+      <aside class="sidebar">
+        <h1>FAQ 管理</h1>
+        <label class="search-box">
+          <span>⌕</span>
+          <input id="searchInput" type="search" placeholder="搜索 FAQ" />
+          <kbd>⌘K</kbd>
+        </label>
+
+        <section class="filter-section">
+          <button class="filter-title" type="button">状态 <span>⌃</span></button>
+          <div class="filter-list" id="statusFilters"></div>
+        </section>
+
+        <section class="filter-section">
+          <button class="filter-title" type="button">Embedding <span>⌃</span></button>
+          <div class="filter-list" id="embeddingFilters"></div>
+        </section>
+
+        <section class="filter-section">
+          <div class="section-label">批量操作 <span id="selectedCount">已选择 0 项</span></div>
+          <button class="batch-button" type="button" data-status="usable">◎ 批量设为 usable</button>
+          <button class="batch-button" type="button" data-status="disabled">⊘ 批量禁用</button>
+          <button class="batch-button" type="button" id="batchEmbedButton">◌ 批量生成 embedding</button>
+        </section>
+
+        <section class="error-summary">
+          <div class="summary-title">
+            <strong>Embedding 失败汇总</strong>
+            <button type="button" id="showFailedButton">查看全部</button>
+          </div>
+          <div class="error-line">failed: 请求超时，可重试 <span id="failedCount">0</span></div>
+          <p>最近发生：<span id="latestFailure">暂无</span></p>
+        </section>
+      </aside>
+
+      <main class="content">
+        <div class="content-header">
+          <div>
+            <h2>FAQ 列表 <span id="totalCount">共 0 条</span></h2>
+          </div>
+          <button class="secondary-icon" type="button" id="refreshButton" title="刷新">↻</button>
+          <button class="new-button" type="button" id="newFaqButton">＋ 新建 FAQ</button>
+        </div>
+
+        <table class="faq-table">
+          <thead>
+            <tr>
+              <th><input type="checkbox" id="selectAll" /></th>
+              <th>问题</th>
+              <th>分类</th>
+              <th>状态</th>
+              <th>Embedding</th>
+              <th>更新时间 ↓</th>
+            </tr>
+          </thead>
+          <tbody id="faqRows"></tbody>
+        </table>
+
+        <footer class="pagination">
+          <span id="pageSummary">共 0 条</span>
+          <button type="button" id="prevPage">‹</button>
+          <span id="pageNumber">1</span>
+          <button type="button" id="nextPage">›</button>
+          <select id="pageSize">
+            <option value="10">10 条/页</option>
+            <option value="20">20 条/页</option>
+            <option value="50">50 条/页</option>
+          </select>
+        </footer>
+      </main>
+
+      <aside class="drawer" id="drawer" aria-hidden="true">
+        <div class="drawer-header">
+          <h2 id="drawerTitle">编辑问答</h2>
+          <div class="drawer-actions">
+            <button class="icon-button" type="button" title="最小化">−</button>
+            <button class="icon-button" type="button" id="closeDrawer" title="关闭">×</button>
+          </div>
+        </div>
+
+        <form class="drawer-body" id="faqForm">
+          <input type="hidden" id="faqId" />
+
+          <label class="field">
+            <span>标准问题 <strong>*</strong></span>
+            <div class="input-with-action">
+              <input id="questionInput" required />
+              <button class="ai-icon" type="button" id="variantsButton" title="生成相似问法">✧</button>
+            </div>
+          </label>
+
+          <label class="field">
+            <span>答案 / 答复 <strong>*</strong></span>
+            <div class="textarea-wrap">
+              <textarea id="answerInput" required></textarea>
+              <button class="ai-icon textarea-ai" type="button" id="optimizeButton" title="优化描述">✧</button>
+            </div>
+          </label>
+
+          <section class="ai-panel hidden" id="aiPanel">
+            <div class="ai-panel-header">
+              <strong>AI 建议 <span>保守改写</span></strong>
+              <em id="aiStatus">已完成</em>
+            </div>
+            <dl>
+              <dt>优化后的问题</dt>
+              <dd id="aiQuestion"></dd>
+              <dt>优化后的答案</dt>
+              <dd id="aiAnswer"></dd>
+              <dt>相似问法列表</dt>
+              <dd><ol id="aiVariants"></ol></dd>
+            </dl>
+            <div class="ai-panel-footer">
+              <button class="apply-button" type="button" id="applyAiButton">应用建议</button>
+              <button class="cancel-button" type="button" id="cancelAiButton">取消</button>
+              <span>建议不会自动覆盖当前内容</span>
+            </div>
+          </section>
+
+          <label class="field">
+            <span>相似问法列表</span>
+            <div class="chips-input" id="variantChips"></div>
+            <input id="variantInput" placeholder="输入后按 Enter 添加" />
+          </label>
+
+          <div class="field-row">
+            <label class="field">
+              <span>分类 <strong>*</strong></span>
+              <input id="categoryInput" />
+            </label>
+            <label class="field">
+              <span>标签</span>
+              <div class="chips-input" id="tagChips"></div>
+              <input id="tagInput" placeholder="输入后按 Enter 添加" />
+            </label>
+          </div>
+
+          <div class="field-row">
+            <label class="field">
+              <span>状态 <strong>*</strong></span>
+              <select id="statusInput">
+                <option value="usable">usable</option>
+                <option value="needs_review">needs_review</option>
+                <option value="disabled">disabled</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Embedding 状态</span>
+              <div class="embedding-state">
+                <span id="embeddingStatusDot"></span>
+                <b id="embeddingStatusText">pending</b>
+                <em id="embeddingStatusHint">未生成 embedding</em>
+              </div>
+            </label>
+          </div>
+        </form>
+
+        <div class="drawer-footer">
+          <div class="save-note">保存仅保存正文与元数据，不会自动生成 embedding</div>
+          <button class="embed-button" type="button" id="embedButton">◌ 生成 embedding</button>
+          <button class="save-button" type="submit" form="faqForm">保存问答</button>
+        </div>
+      </aside>
+    </div>
+
+    <div class="toast" id="toast"></div>
+    <script src="/admin.js"></script>
+  </body>
+</html>

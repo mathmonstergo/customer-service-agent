@@ -1,0 +1,17 @@
+name: customer-service-agent
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - openai>=1.30.0
+      - psycopg[binary]>=3.2.0
+      - pgvector>=0.3.0
+      - python-dotenv>=1.0.1
+      - requests>=2.32.0
+      - qrcode>=7.4.2
+      - pillow>=10.4.0
+      - pycryptodome>=3.20.0
+      - pytest>=8.2.0
+      - ruff>=0.5.0

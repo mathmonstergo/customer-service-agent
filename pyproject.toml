@@ -1,0 +1,26 @@
+[project]
+name = "customer-service-agent"
+version = "0.1.0"
+description = "Personal WeChat RAG customer support agent for FAQ operations"
+requires-python = ">=3.11"
+dependencies = [
+    "openai>=1.30.0",
+    "psycopg[binary]>=3.2.0",
+    "pgvector>=0.3.0",
+    "python-dotenv>=1.0.1",
+    "requests>=2.32.0",
+    "qrcode>=7.4.2",
+    "pillow>=10.4.0",
+    "pycryptodome>=3.20.0",
+]
+
+[project.scripts]
+customer-service-agent = "customer_service_agent.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

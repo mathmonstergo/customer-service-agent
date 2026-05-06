@@ -1,0 +1,15 @@
+[Unit]
+Description=Customer Service Agent
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__WORKDIR__
+EnvironmentFile=__ENVFILE__
+ExecStart=__PYTHON__ -m customer_service_agent.cli wechat-service
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
