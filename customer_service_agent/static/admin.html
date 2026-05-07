@@ -17,7 +17,7 @@
       <span class="badge">内部</span>
       <div class="topbar-spacer"></div>
       <div class="env-status"><span></span> 本地环境</div>
-      <button class="icon-button" type="button" aria-label="通知" title="通知">⌂</button>
+      <button class="icon-button" type="button" id="notificationButton" aria-label="通知" title="通知">⌂</button>
       <div class="user-pill">A</div>
       <div class="user-name">admin</div>
     </header>
@@ -112,7 +112,6 @@
         <div class="drawer-header">
           <h2 id="drawerTitle">编辑问答</h2>
           <div class="drawer-actions">
-            <button class="icon-button" type="button" title="最小化">−</button>
             <button class="icon-button" type="button" id="closeDrawer" title="关闭">×</button>
           </div>
         </div>
@@ -270,7 +269,7 @@
           </div>
           <div class="chunk-actions">
             <span id="selectedChunkCount">已选择 0 块</span>
-            <button class="batch-button inline" type="button" id="generateChunkCandidatesButton">✧ 批量生成候选 FAQ</button>
+            <button class="batch-button inline" type="button" id="generateChunkCandidatesButton">✧ 自动识别 FAQ</button>
             <label class="checkbox-label"><input type="checkbox" id="onlyReviewChunks"> 仅查看待审核</label>
           </div>
         </div>
@@ -279,6 +278,11 @@
             <strong>候选 FAQ 生成进度</strong>
             <span id="generationProgressText">等待任务开始</span>
           </div>
+          <div class="generation-progress-main">
+            <span class="generation-progress-bar"><i id="generationProgressBar"></i></span>
+            <span id="generationProgressRatio">0 / 0 块</span>
+            <span id="generationCurrentChunk">当前：-</span>
+          </div>
           <div class="generation-progress-items" id="generationProgressItems"></div>
         </section>
         <div class="table-wrap">
@@ -286,6 +290,7 @@
             <thead>
               <tr>
                 <th><input type="checkbox" id="selectAllChunks" /></th>
+                <th>编号</th>
                 <th>时间范围</th>
                 <th>消息数</th>
                 <th title="关键词由内置业务词表命中生成，只用于列表扫描">关键词</th>

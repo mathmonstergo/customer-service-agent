@@ -23,6 +23,12 @@ const state = {
   candidateVariants: [],
   candidateTags: [],
   generationEvents: [],
+  generationJob: null,
+  generationItems: {},
+  generationFocusText: "当前：-",
+  chunkPage: 1,
+  chunkPageSize: 10,
+  aiRequestInFlight: false,
 };
 
 const statusOptions = ["usable", "needs_review", "disabled"];
@@ -80,6 +86,18 @@ function statusPill(value) {
   return `<span class="status-pill ${safeCssToken(status)}">${escapeHtml(status)}</span>`;
 }
 
+function statusPillClass(value) {
+  // 将状态值统一转成可复用的 CSS class 名。
+  return safeCssToken(value || "pending");
+}
+
+function chunkDisplayName(chunkId) {
+  // 优先使用解析阶段生成的切块编号，找不到时再退回短 id 便于定位。
+  const chunk = state.importChunks.find((item) => item.id === chunkId);
+  if (chunk?.chunk_index) return `#${chunk.chunk_index}`;
+  return chunkId ? `#${String(chunkId).slice(-6)}` : "#-";
+}
+
 function switchWorkspace(workspace) {
   // 切换知识库下的标准问答和导入审核工作区。
   state.workspace = workspace;
@@ -109,13 +127,31 @@ function renderImportPlaceholder() {
   $("importFiles").innerHTML =
     '<div class="import-empty">暂无导入文件，点击“上传文件”开始。</div>';
   $("importChunks").innerHTML =
-    '<tr><td colspan="6" class="empty">请选择左侧文件查看时间切块</td></tr>';
+    '<tr><td colspan="7" class="empty">请选择左侧文件查看时间切块</td></tr>';
   $("candidateList").innerHTML =
     '<tr><td colspan="5" class="empty">请选择切块后查看候选 FAQ</td></tr>';
   $("candidateListSummary").textContent = "请选择切块后生成候选 FAQ";
   $("openCurrentCandidateButton").disabled = true;
   updateSelectedChunkCount();
   closeCandidateDrawer();
+  resetGenerationProgress();
+}
+
+function resetGenerationProgress() {
+  // 切换文件或空状态时清理上一轮生成进度，避免旧任务状态误导当前文件。
+  state.generationEvents = [];
+  state.generationJob = null;
+  state.generationItems = {};
+  state.generationFocusText = "当前：-";
+  if (!$("generationProgress")) return;
+  $("generationProgress").classList.add("hidden");
+  $("generationProgress").classList.remove("running");
+  $("generationProgressText").textContent = "等待任务开始";
+  $("generationProgressBar").style.width = "0%";
+  $("generationProgressBar").parentElement.style.setProperty("--progress-percent", "0%");
+  $("generationProgressRatio").textContent = "0 / 0 块";
+  $("generationCurrentChunk").textContent = "当前：-";
+  $("generationProgressItems").innerHTML = "";
 }
 
 async function loadImportFiles() {
@@ -128,6 +164,21 @@ async function loadImportFiles() {
     state.importFiles = data.items || [];
     renderImportFileCounts(data);
     renderImportFiles(state.importFiles);
+    const currentStillVisible = state.importFiles.some(
+      (item) => item.id === state.currentImportFile?.id,
+    );
+    if (!currentStillVisible) {
+      state.currentImportFile = null;
+      state.currentImportChunk = null;
+      state.importCandidates = [];
+      state.importChunks = [];
+      state.selectedImportChunks.clear();
+      state.chunkPage = 1;
+      renderImportChunks([]);
+    }
+    if (!state.currentImportFile && state.importFiles.length) {
+      await selectImportFile(state.importFiles[0].id);
+    }
   } catch (error) {
     showToast(error.message);
   }
@@ -196,14 +247,16 @@ async function selectImportFile(fileId) {
   state.importCandidates = [];
   state.selectedImportChunks.clear();
   state.currentCandidateIndex = 0;
+  state.chunkPage = 1;
   renderImportFiles(state.importFiles);
   renderImportCandidateList();
   closeCandidateDrawer();
+  resetGenerationProgress();
   $("currentImportFileName").textContent = file.original_name || "导入文件";
   $("currentImportMeta").textContent = `${file.file_type || "-"} / ${file.parser || "-"} / ${file.status || "-"}`;
   if (file.status === "unsupported") {
     $("importChunks").innerHTML =
-      '<tr><td colspan="6" class="empty">当前文件类型已识别，但第一期暂不支持解析</td></tr>';
+      '<tr><td colspan="7" class="empty">当前文件类型已识别，但第一期暂不支持解析</td></tr>';
     renderImportCandidateList("当前文件类型暂不支持解析");
     return;
   }
@@ -223,11 +276,17 @@ async function loadImportChunks(fileId) {
 
 function renderImportChunks(items) {
   // 渲染切块表格，保留时间范围、消息数、关键词和候选数。
+  const filteredItems = filteredImportChunks(items);
   const visibleItems = visibleImportChunks(items);
-  $("chunkSummary").textContent = `共 ${items.length} 块`;
+  const totalPages = Math.max(Math.ceil(filteredItems.length / state.chunkPageSize), 1);
+  state.chunkPage = Math.min(Math.max(state.chunkPage, 1), totalPages);
+  $("chunkSummary").textContent = `共 ${filteredItems.length} 块`;
+  $("chunkPageNumber").textContent = String(state.chunkPage);
+  $("prevChunkPage").disabled = state.chunkPage <= 1;
+  $("nextChunkPage").disabled = state.chunkPage >= totalPages;
   updateSelectedChunkCount();
   if (!visibleItems.length) {
-    $("importChunks").innerHTML = '<tr><td colspan="6" class="empty">暂无切块</td></tr>';
+    $("importChunks").innerHTML = '<tr><td colspan="7" class="empty">暂无切块</td></tr>';
     renderImportCandidateList("当前文件暂无可审核切块");
     return;
   }
@@ -239,6 +298,7 @@ function renderImportChunks(items) {
       return `
         <tr class="${active}" data-import-chunk-id="${escapeHtml(item.id)}">
           <td><input type="checkbox" class="chunk-check" data-id="${escapeHtml(item.id)}" ${checked}></td>
+          <td class="chunk-index-cell">#${escapeHtml(item.chunk_index || "-")}</td>
           <td>${formatDate(item.start_at)} - ${formatDate(item.end_at).slice(11) || "-"}</td>
           <td>${item.message_count || 0} 条消息</td>
           <td>${escapeHtml(keywords || "-")}</td>
@@ -251,10 +311,19 @@ function renderImportChunks(items) {
   updateSelectedChunkCount();
 }
 
-function visibleImportChunks(items = state.importChunks) {
-  // 根据当前筛选返回可见切块，供渲染和全选共用。
+function filteredImportChunks(items = state.importChunks) {
+  // 根据“仅查看待审核”筛选切块，分页前保留完整集合。
   if (!$("onlyReviewChunks")?.checked) return items;
   return items.filter((item) => item.status !== "generated");
+}
+
+function visibleImportChunks(items = state.importChunks) {
+  // 返回当前页实际展示的切块，表头全选只作用于当前页。
+  const filteredItems = filteredImportChunks(items);
+  const totalPages = Math.max(Math.ceil(filteredItems.length / state.chunkPageSize), 1);
+  state.chunkPage = Math.min(Math.max(state.chunkPage, 1), totalPages);
+  const start = (state.chunkPage - 1) * state.chunkPageSize;
+  return filteredItems.slice(start, start + state.chunkPageSize);
 }
 
 function updateSelectedChunkCount() {
@@ -319,6 +388,14 @@ function renderCandidateCounts() {
   $("candidateSavedCount").textContent = candidates.filter((item) => item.status === "saved").length;
   $("candidateIgnoredCount").textContent = candidates.filter((item) => item.status === "ignored").length;
   $("openCurrentCandidateButton").disabled = !candidates.length;
+  const hasCandidate = candidates.length > 0;
+  $("prevCandidate").disabled = state.currentCandidateIndex <= 0 || !hasCandidate;
+  $("nextCandidate").disabled =
+    !hasCandidate || state.currentCandidateIndex >= candidates.length - 1;
+  $("saveCandidateButton").disabled = !hasCandidate;
+  $("ignoreCandidateButton").disabled = !hasCandidate;
+  $("rewriteCandidateButton").disabled = !hasCandidate;
+  $("viewCandidateSourceButton").disabled = !hasCandidate;
 }
 
 function renderImportCandidateList(message = "") {
@@ -493,9 +570,22 @@ async function generateCandidatesForSelectedChunks() {
 
 function startGenerationJob(job) {
   // 创建任务后通过 SSE 持续接收每个切块的生成状态。
-  state.generationEvents = job.items || [];
+  state.generationEvents = [];
+  state.generationItems = {};
+  state.generationJob = { id: job.id, total: (job.items || []).length, status: "running" };
+  state.generationFocusText = "当前：等待开始";
+  (job.items || []).forEach((item) => {
+    state.generationItems[item.chunk_id] = {
+      chunk_id: item.chunk_id,
+      status: item.status || "queued",
+      reason: item.reason || "",
+      candidate_count: item.candidate_count || 0,
+    };
+  });
   $("generationProgress").classList.remove("hidden");
-  $("generationProgressText").textContent = `任务 ${job.id} 已创建，等待生成`;
+  $("generationProgress").classList.add("running");
+  $("generationProgressText").textContent =
+    `任务 ${job.id} 已创建，共 ${state.generationJob.total} 块，按顺序生成`;
   renderGenerationProgress();
   const source = new EventSource(`/api/import/generation-jobs/${encodeURIComponent(job.id)}/events`);
   source.addEventListener("processing", (event) => handleGenerationEvent(JSON.parse(event.data)));
@@ -520,37 +610,64 @@ function startGenerationJob(job) {
 }
 
 function handleGenerationEvent(event) {
-  // 合并服务端进度事件并刷新任务可视状态。
-  state.generationEvents.push(event);
-  const labels = {
-    processing: "处理中",
-    generated: `已生成 ${event.candidate_count || 0} 条候选`,
-    skipped: `已跳过：${event.reason || "-"}`,
-    failed: "生成失败",
-    done: "任务完成",
-  };
-  $("generationProgressText").textContent = labels[event.type] || event.type;
+  // 合并服务端进度事件并刷新任务级进度，不把 done 当成切块事件重复展示。
+  if (event.chunk_id) {
+    const current = state.generationItems[event.chunk_id] || { chunk_id: event.chunk_id };
+    state.generationItems[event.chunk_id] = {
+      ...current,
+      status: event.type,
+      reason: event.reason || current.reason || "",
+      candidate_count: event.candidate_count ?? current.candidate_count ?? 0,
+      error: event.error || "",
+    };
+  }
+  if (event.type === "processing") {
+    state.generationFocusText = `当前：${chunkDisplayName(event.chunk_id)}`;
+    $("generationProgressText").textContent = `正在生成 ${chunkDisplayName(event.chunk_id)}`;
+  } else if (event.type === "generated") {
+    state.generationFocusText = `刚完成：${chunkDisplayName(event.chunk_id)}`;
+    $("generationProgressText").textContent =
+      `${chunkDisplayName(event.chunk_id)} 已生成 ${event.candidate_count || 0} 条候选`;
+  } else if (event.type === "skipped") {
+    state.generationFocusText = `已跳过：${chunkDisplayName(event.chunk_id)}`;
+    $("generationProgressText").textContent =
+      `${chunkDisplayName(event.chunk_id)} 已跳过：${event.reason || "-"}`;
+  } else if (event.type === "failed") {
+    state.generationFocusText = `失败：${chunkDisplayName(event.chunk_id)}`;
+    $("generationProgressText").textContent = `${chunkDisplayName(event.chunk_id)} 生成失败`;
+  } else if (event.type === "done") {
+    state.generationJob = { ...(state.generationJob || {}), status: "completed" };
+    state.generationFocusText = "任务完成";
+    $("generationProgressText").textContent = "任务完成";
+    $("generationProgress").classList.remove("running");
+  }
   renderGenerationProgress();
 }
 
 function renderGenerationProgress() {
-  // 渲染任务事件摘要，保持过程可见但不占用过多空间。
-  $("generationProgressItems").innerHTML = state.generationEvents
-    .slice(-12)
-    .map((event) => {
-      const chunkLabel = event.chunk_id ? event.chunk_id.slice(-6) : "任务";
-      const text =
-        event.type === "generated"
-          ? `${chunkLabel}: 生成 ${event.candidate_count || 0}`
-          : event.type === "skipped"
-            ? `${chunkLabel}: 跳过`
-            : event.type === "failed"
-              ? `${chunkLabel}: 失败`
-              : event.type === "processing"
-                ? `${chunkLabel}: 处理中`
-                : "完成";
-      return `<span class="generation-progress-item">${escapeHtml(text)}</span>`;
-    })
+  // 用进度条和聚合统计展示批量任务，避免一次选择多块时刷满事件标签。
+  const items = Object.values(state.generationItems);
+  const total = state.generationJob?.total || items.length;
+  const generated = items.filter((item) => item.status === "generated").length;
+  const skipped = items.filter((item) => item.status === "skipped").length;
+  const failed = items.filter((item) => item.status === "failed").length;
+  const processing = items.filter((item) => item.status === "processing").length;
+  const completed = generated + skipped + failed;
+  const percent = total ? Math.round((completed / total) * 100) : 0;
+  $("generationProgressBar").style.width = `${percent}%`;
+  $("generationProgressBar").parentElement.style.setProperty("--progress-percent", `${percent}%`);
+  $("generationProgressRatio").textContent = `${completed} / ${total} 块`;
+  $("generationCurrentChunk").textContent = state.generationFocusText || "当前：-";
+  $("generationProgressItems").innerHTML = [
+    ["generated", `已生成 ${generated}`],
+    ["processing", `处理中 ${processing}`],
+    ["skipped", `已跳过 ${skipped}`],
+    ["failed", `失败 ${failed}`],
+  ]
+    .map(
+      ([status, text]) =>
+        `<span class="generation-progress-item ${statusPillClass(status)}">${escapeHtml(text)}</span>`,
+    )
     .join("");
 }
 
@@ -574,6 +691,7 @@ async function reparseCurrentImportFile() {
     });
     showToast("已重新解析文件");
     state.selectedImportChunks.clear();
+    state.chunkPage = 1;
     await loadImportFiles();
     await selectImportFile(file.id);
   } catch (error) {
@@ -621,6 +739,48 @@ async function ignoreCurrentCandidate() {
   } catch (error) {
     showToast(error.message);
   }
+}
+
+async function rewriteCurrentCandidate() {
+  // 用 AI 对当前候选 FAQ 做保守改写，只回填表单，不自动保存。
+  const current = state.importCandidates[state.currentCandidateIndex];
+  if (!current) return;
+  const question = $("candidateQuestion").value.trim();
+  const answer = $("candidateAnswer").value.trim();
+  if (!question || !answer) {
+    showToast("请先补全候选问题和答案");
+    return;
+  }
+  try {
+    $("rewriteCandidateButton").disabled = true;
+    $("rewriteCandidateButton").textContent = "改写中";
+    const suggestion = await requestJson("/api/ai/optimize", {
+      method: "POST",
+      body: JSON.stringify({ question, answer }),
+    });
+    $("candidateQuestion").value = suggestion.optimized_question || question;
+    $("candidateAnswer").value = suggestion.optimized_answer || answer;
+    state.candidateVariants = suggestion.similar_questions || state.candidateVariants;
+    renderCandidateChips();
+    showToast("AI 改写已回填，保存前可继续编辑");
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    $("rewriteCandidateButton").textContent = "✧ 应用 AI 改写";
+    renderCandidateCounts();
+  }
+}
+
+function focusCurrentCandidateSource() {
+  // 将审核抽屉滚动到来源片段，并短暂高亮证据区域。
+  if (!state.importCandidates.length) {
+    showToast("请选择候选 FAQ");
+    return;
+  }
+  const source = $("candidateSource");
+  source.scrollIntoView({ block: "center", behavior: "smooth" });
+  source.classList.add("source-box-highlight");
+  window.setTimeout(() => source.classList.remove("source-box-highlight"), 1200);
 }
 
 function renderFilters(data) {
@@ -772,7 +932,12 @@ function collectForm() {
 }
 
 async function saveFaq(event) {
+  // 保存 FAQ 前先判断是否真的有内容变更，避免无修改保存造成更新时间噪音。
   event.preventDefault();
+  if ($("faqId").value && !state.dirty) {
+    showToast("没有需要保存的改动");
+    return;
+  }
   try {
     const saved = await requestJson("/api/faqs", {
       method: "POST",
@@ -858,13 +1023,21 @@ async function batchUpdateStatus(status) {
 }
 
 async function requestAiSuggestion() {
+  // 标准问答 AI 建议一次只允许一个请求，避免重复点击造成结果错位。
   const question = $("questionInput").value.trim();
   const answer = $("answerInput").value.trim();
   if (!question || !answer) {
     showToast("请先填写问题和答案");
     return;
   }
+  if (state.aiRequestInFlight) {
+    showToast("AI 建议正在生成中");
+    return;
+  }
   try {
+    state.aiRequestInFlight = true;
+    $("variantsButton").disabled = true;
+    $("optimizeButton").disabled = true;
     resetAiSuggestionPanel("生成中");
     const suggestion = await requestJson("/api/ai/optimize", {
       method: "POST",
@@ -876,6 +1049,10 @@ async function requestAiSuggestion() {
   } catch (error) {
     $("aiStatus").textContent = "失败";
     showToast(error.message);
+  } finally {
+    state.aiRequestInFlight = false;
+    $("variantsButton").disabled = false;
+    $("optimizeButton").disabled = false;
   }
 }
 
@@ -891,8 +1068,18 @@ function applyAiSuggestion() {
 }
 
 function bindEvents() {
+  // 绑定管理后台全部可见控件，避免页面出现无反馈按钮。
+  $("notificationButton").addEventListener("click", () => showToast("当前没有新的内部通知"));
   document.querySelectorAll(".workspace-tab").forEach((button) => {
     button.addEventListener("click", () => switchWorkspace(button.dataset.workspace));
+  });
+  document.querySelectorAll(".filter-title").forEach((button) => {
+    button.addEventListener("click", () => {
+      const list = button.parentElement?.querySelector(".filter-list");
+      if (!list) return;
+      list.classList.toggle("collapsed");
+      button.classList.toggle("collapsed", list.classList.contains("collapsed"));
+    });
   });
   $("newFaqButton").addEventListener("click", () => openDrawer());
   $("closeDrawer").addEventListener("click", closeDrawer);
@@ -914,7 +1101,14 @@ function bindEvents() {
     state.importSearchTimer = window.setTimeout(loadImportFiles, 220);
   });
   $("showImportFailedButton").addEventListener("click", () => {
+    const failedCount = Number($("importFailedCount").textContent || 0);
+    if (!failedCount) {
+      showToast("当前没有解析失败文件");
+      return;
+    }
     state.importStatus = "failed";
+    const failedRadio = document.querySelector('input[name="importStatus"][value="failed"]');
+    if (failedRadio) failedRadio.checked = true;
     loadImportFiles();
   });
   $("generateChunkCandidatesButton").addEventListener("click", generateCandidatesForSelectedChunks);
@@ -926,11 +1120,29 @@ function bindEvents() {
     });
     renderImportChunks(state.importChunks);
   });
-  $("onlyReviewChunks").addEventListener("change", () => renderImportChunks(state.importChunks));
+  $("onlyReviewChunks").addEventListener("change", () => {
+    state.chunkPage = 1;
+    renderImportChunks(state.importChunks);
+  });
+  $("prevChunkPage").addEventListener("click", () => {
+    state.chunkPage = Math.max(state.chunkPage - 1, 1);
+    renderImportChunks(state.importChunks);
+  });
+  $("nextChunkPage").addEventListener("click", () => {
+    state.chunkPage += 1;
+    renderImportChunks(state.importChunks);
+  });
+  $("chunkPageSize").addEventListener("change", (event) => {
+    state.chunkPageSize = Number(event.target.value);
+    state.chunkPage = 1;
+    renderImportChunks(state.importChunks);
+  });
   $("openCurrentCandidateButton").addEventListener("click", () => openCandidateDrawer());
   $("closeCandidateDrawer").addEventListener("click", closeCandidateDrawer);
   $("saveCandidateButton").addEventListener("click", saveCurrentCandidate);
   $("ignoreCandidateButton").addEventListener("click", ignoreCurrentCandidate);
+  $("rewriteCandidateButton").addEventListener("click", rewriteCurrentCandidate);
+  $("viewCandidateSourceButton").addEventListener("click", focusCurrentCandidateSource);
   $("prevCandidate").addEventListener("click", () => {
     state.currentCandidateIndex = Math.max(state.currentCandidateIndex - 1, 0);
     renderCurrentCandidate();
