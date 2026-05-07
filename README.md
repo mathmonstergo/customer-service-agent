@@ -7,6 +7,7 @@
 ## 主要能力
 
 - 本地 FAQ 管理页面：新增、编辑、筛选、批量操作 FAQ。
+- 文件导入审核中心：上传文件后自动识别格式，第一期支持 Markdown 微信聊天记录解析、时间切块、AI 候选 FAQ 和人工审核保存。
 - 保存问答和生成 embedding 分离：保存只写入正文与元数据，不会自动向量化。
 - AI 辅助编辑：可保守优化问题/答案措辞，并生成相似问法。
 - PostgreSQL + pgvector 检索：支持向量搜索和 RAG 答案生成。
@@ -21,6 +22,9 @@
 - `customer_service_agent/rag_tool.py`：面向上游客服智能体的结构化 RAG 工具接口。
 - `customer_service_agent/admin_server.py`：本地 FAQ 管理页面和 API。
 - `customer_service_agent/ai_assist.py`：AI 辅助优化与相似问法生成。
+- `customer_service_agent/import_models.py`：导入文件类型识别。
+- `customer_service_agent/markdown_import.py`：Markdown 微信聊天记录解析和切块。
+- `customer_service_agent/import_ai.py`：导入切块生成候选 FAQ 的 AI 调用封装。
 - `customer_service_agent/llm.py`：OpenAI-compatible chat / embedding 客户端封装。
 - `customer_service_agent/wechat_client.py`：个人微信客户端封装。
 - `customer_service_agent/wechat_service.py`：微信消息长运行服务。
@@ -71,6 +75,7 @@ cp system_prompt.example.txt system_prompt.txt
 
 可选配置：
 
+- `UPLOAD_DIR`：上传原件本地保存目录，默认 `data/uploads`。
 - `EMBEDDING_DIMENSIONS`：embedding 维度，默认 `1024`。
 - `WECHAT_TOKEN_FILE`：微信 token 路径，默认 `/home/adam/.wxbot/token.json`。
 - `WECHAT_MESSAGE_CHUNK_SIZE`：微信回复分段长度，默认 `1800`。
@@ -111,8 +116,11 @@ http://127.0.0.1:8765
 - 新建和保存 FAQ。
 - 单条或批量生成 embedding。
 - AI 优化描述和生成相似问法。
+- 导入审核工作区：通用上传文件、自动识别格式、Markdown 聊天记录时间切块、候选 FAQ 列表和右侧抽屉审核。
 
 保存 FAQ 只会保存正文和元数据，不会自动生成 embedding。需要点击单条 `生成 embedding`，或使用侧边栏批量生成 embedding。
+
+导入审核第一期只解析 Markdown 微信聊天记录。默认按 1 天一个时间范围切块，页面可调整为 1-7 天，也可切换为按连续对话间隔切块。列表中的关键词来自内置业务词表命中，只用于帮助扫描切块，不参与事实判断。PDF、Word、Excel 会保留原件并显示暂不支持解析；AI 生成的候选 FAQ 需要人工在右侧抽屉编辑确认后，才会保存到标准问答，且不会自动生成 embedding。
 
 页面预览：
 

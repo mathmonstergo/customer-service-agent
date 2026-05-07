@@ -38,6 +38,22 @@ def test_compute_content_hash_changes_when_answer_changes():
     assert compute_content_hash(original) != compute_content_hash(changed)
 
 
+def test_compute_content_hash_ignores_non_embedding_metadata():
+    """状态和置信度不进入 embedding 文本，不能让向量状态变 stale。"""
+    original = {
+        "question": "商品可以退货吗？",
+        "answer": "未发货订单可直接申请退款。",
+        "question_variants": ["退货条件是什么？"],
+        "category": "售后服务",
+        "tags": ["退货"],
+        "status": "usable",
+        "confidence": "high",
+    }
+    changed = {**original, "status": "needs_review", "confidence": "low"}
+
+    assert compute_content_hash(original) == compute_content_hash(changed)
+
+
 def test_next_embedding_status_keeps_ready_when_content_is_unchanged():
     content_hash = "abc123"
 

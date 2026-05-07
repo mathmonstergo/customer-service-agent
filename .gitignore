@@ -8,6 +8,7 @@
 # Local FAQ/customer data must stay out of Git.
 *.jsonl
 *.csv
+data/uploads/
 jszx_company_faq_cleaning_readme.md
 system_prompt.txt
 

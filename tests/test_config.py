@@ -24,6 +24,7 @@ def test_settings_from_env_parses_required_values():
     assert settings.embedding_dimensions == 1024
     assert settings.rag_top_k == 5
     assert settings.wechat_message_chunk_size == 1800
+    assert str(settings.upload_dir) == "data/uploads"
 
 
 def test_settings_rejects_missing_required_value():

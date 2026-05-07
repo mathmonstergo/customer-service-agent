@@ -25,12 +25,17 @@
     <nav class="breadcrumb">
       <span>知识库</span>
       <span class="chevron">›</span>
-      <strong>FAQ 管理</strong>
+      <strong id="workspaceTitle">标准问答</strong>
     </nav>
 
-    <div class="app-shell">
+    <nav class="workspace-tabs">
+      <button class="workspace-tab active" type="button" data-workspace="faq">标准问答</button>
+      <button class="workspace-tab" type="button" data-workspace="import">导入审核</button>
+    </nav>
+
+    <div class="app-shell" id="faqWorkspace">
       <aside class="sidebar">
-        <h1>FAQ 管理</h1>
+        <h1>标准问答</h1>
         <label class="search-box">
           <span>⌕</span>
           <input id="searchInput" type="search" placeholder="搜索 FAQ" />
@@ -193,6 +198,206 @@
           <div class="save-note">保存仅保存正文与元数据，不会自动生成 embedding</div>
           <button class="embed-button" type="button" id="embedButton">◌ 生成 embedding</button>
           <button class="save-button" type="submit" form="faqForm">保存问答</button>
+        </div>
+      </aside>
+    </div>
+
+    <div class="import-shell hidden" id="importWorkspace">
+      <aside class="import-files-panel">
+        <div class="import-panel-header">
+          <h1>导入文件</h1>
+          <label class="upload-button">
+            <input id="importFileInput" type="file" accept=".md,.markdown,.pdf,.docx,.xlsx,.xls" />
+            上传文件
+          </label>
+        </div>
+        <label class="search-box">
+          <span>⌕</span>
+          <input id="importSearchInput" type="search" placeholder="搜索文件名" />
+          <kbd>⌘K</kbd>
+        </label>
+
+        <section class="filter-section">
+          <button class="filter-title" type="button">文件状态 <span>⌃</span></button>
+          <div class="filter-list import-status-list">
+            <label class="filter-item"><input type="radio" name="importStatus" value="" checked><span>全部</span><span class="count" id="importCountAll">0</span></label>
+            <label class="filter-item"><input type="radio" name="importStatus" value="pending"><span>待解析</span><span class="count" id="importCountPending">0</span></label>
+            <label class="filter-item"><input type="radio" name="importStatus" value="processing"><span>解析中</span><span class="count" id="importCountProcessing">0</span></label>
+            <label class="filter-item"><input type="radio" name="importStatus" value="needs_review"><span>待审核</span><span class="count" id="importCountReview">0</span></label>
+            <label class="filter-item"><input type="radio" name="importStatus" value="completed"><span>已完成</span><span class="count" id="importCountCompleted">0</span></label>
+            <label class="filter-item"><input type="radio" name="importStatus" value="unsupported"><span>暂不支持</span><span class="count" id="importCountUnsupported">0</span></label>
+            <label class="filter-item"><input type="radio" name="importStatus" value="failed"><span>失败</span><span class="count" id="importCountFailed">0</span></label>
+          </div>
+        </section>
+
+        <section class="filter-section">
+          <div class="section-label">文件列表 <span id="importFileSummary">共 0 个</span></div>
+          <div class="import-file-list" id="importFiles"></div>
+        </section>
+
+        <section class="error-summary">
+          <div class="summary-title">
+            <strong>失败文件汇总</strong>
+            <button type="button" id="showImportFailedButton">查看详情</button>
+          </div>
+          <div class="error-line">解析失败 <span id="importFailedCount">0</span></div>
+          <p>暂不支持的格式会保留原件，后续接入解析器。</p>
+        </section>
+      </aside>
+
+      <main class="import-chunks-panel">
+        <div class="content-header import-content-header">
+          <div>
+            <h2><span id="currentImportFileName">请选择文件</span></h2>
+            <p id="currentImportMeta">上传文件后自动识别格式，第一期支持 Markdown 微信聊天记录。</p>
+          </div>
+        </div>
+        <div class="chunk-toolbar">
+          <div class="parse-controls">
+            <label>
+              解析模式
+              <select id="parseModeSelect">
+                <option value="by_days">按时间范围</option>
+                <option value="by_gap">按连续对话</option>
+              </select>
+            </label>
+            <label>
+              每块
+              <input id="chunkDaysInput" type="number" min="1" max="7" value="1" />
+              天
+            </label>
+            <button class="secondary-icon inline-action" type="button" id="reparseImportButton" title="重新解析">↻</button>
+          </div>
+          <div class="chunk-actions">
+            <span id="selectedChunkCount">已选择 0 块</span>
+            <button class="batch-button inline" type="button" id="generateChunkCandidatesButton">✧ 批量生成候选 FAQ</button>
+            <label class="checkbox-label"><input type="checkbox" id="onlyReviewChunks"> 仅查看待审核</label>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="faq-table import-table">
+            <thead>
+              <tr>
+                <th><input type="checkbox" id="selectAllChunks" /></th>
+                <th>时间范围</th>
+                <th>消息数</th>
+                <th title="关键词由内置业务词表命中生成，只用于列表扫描">关键词</th>
+                <th>AI 处理状态</th>
+                <th>候选数</th>
+              </tr>
+            </thead>
+            <tbody id="importChunks"></tbody>
+          </table>
+        </div>
+        <section class="candidate-list-section">
+          <div class="candidate-list-header">
+            <div>
+              <h3>候选 FAQ</h3>
+              <p id="candidateListSummary">请选择切块后生成候选 FAQ</p>
+            </div>
+            <button class="cancel-button" type="button" id="openCurrentCandidateButton">审核选中</button>
+          </div>
+          <div class="candidate-list-wrap">
+            <table class="candidate-list-table">
+              <thead>
+                <tr>
+                  <th>状态</th>
+                  <th>标准问题</th>
+                  <th>分类</th>
+                  <th>置信度</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="candidateList"></tbody>
+            </table>
+          </div>
+        </section>
+        <footer class="pagination">
+          <span id="chunkSummary">共 0 块</span>
+          <button type="button" id="prevChunkPage">‹</button>
+          <span id="chunkPageNumber">1</span>
+          <button type="button" id="nextChunkPage">›</button>
+          <select id="chunkPageSize">
+            <option value="10">10 条/页</option>
+            <option value="20">20 条/页</option>
+          </select>
+        </footer>
+      </main>
+
+      <aside class="drawer candidate-drawer" id="candidateDrawer" aria-hidden="true">
+        <div class="drawer-header candidate-header">
+          <div>
+            <h2>候选 FAQ 审核</h2>
+            <p>AI 生成候选，需人工审核后保存</p>
+          </div>
+          <div class="drawer-actions">
+            <div class="candidate-pager">
+              <button type="button" id="prevCandidate">‹</button>
+              <span id="candidateIndex">0 / 0</span>
+              <button type="button" id="nextCandidate">›</button>
+            </div>
+            <button class="icon-button" type="button" id="closeCandidateDrawer" title="关闭">×</button>
+          </div>
+        </div>
+
+        <div class="drawer-body candidate-review-body">
+          <div class="candidate-status-row">
+            <span class="status-pill pending">待审核 <b id="candidatePendingCount">0</b></span>
+            <span class="status-pill ready">已保存 <b id="candidateSavedCount">0</b></span>
+            <span class="status-pill disabled">已忽略 <b id="candidateIgnoredCount">0</b></span>
+          </div>
+
+          <form class="candidate-form" id="candidateForm">
+            <label class="field">
+              <span>标准问题 <strong>*</strong></span>
+              <input id="candidateQuestion" maxlength="100" />
+            </label>
+            <label class="field">
+              <span>标准答案 <strong>*</strong></span>
+              <textarea id="candidateAnswer" maxlength="1000"></textarea>
+            </label>
+            <label class="field">
+              <span>相似问法</span>
+              <div class="chips-input" id="candidateVariantChips"></div>
+              <input id="candidateVariantInput" placeholder="输入后按 Enter 添加" />
+            </label>
+            <div class="field-row">
+              <label class="field">
+                <span>分类</span>
+                <input id="candidateCategory" />
+              </label>
+              <label class="field">
+                <span>标签</span>
+                <div class="chips-input" id="candidateTagChips"></div>
+                <input id="candidateTagInput" placeholder="输入后按 Enter 添加" />
+              </label>
+            </div>
+            <label class="field">
+              <span>置信度</span>
+              <div class="confidence-line">
+                <b id="candidateConfidenceValue">-</b>
+                <span class="confidence-bar"><i id="candidateConfidenceBar"></i></span>
+                <em id="candidateConfidencePercent">0%</em>
+              </div>
+            </label>
+            <label class="field">
+              <span>内部备注</span>
+              <input id="candidateInternalNote" placeholder="可填写补充说明，仅内部可见（选填）" />
+            </label>
+            <label class="field">
+              <span>来源片段</span>
+              <div class="source-box" id="candidateSource">请选择候选 FAQ 后查看来源片段</div>
+            </label>
+          </form>
+
+          <div class="save-note import-save-note">保存仅写入标准问答，不会自动生成 embedding</div>
+        </div>
+
+        <div class="drawer-footer candidate-drawer-footer">
+          <button class="save-button" type="button" id="saveCandidateButton">保存到标准问答</button>
+          <button class="cancel-button" type="button" id="ignoreCandidateButton">忽略</button>
+          <button class="cancel-button" type="button" id="rewriteCandidateButton">✧ 应用 AI 改写</button>
+          <button class="cancel-button" type="button" id="viewCandidateSourceButton">查看来源</button>
         </div>
       </aside>
     </div>

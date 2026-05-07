@@ -26,6 +26,7 @@ class Settings:
     wechat_message_chunk_size: int = 1800
     rag_top_k: int = 5
     rag_min_score: float = 0.35
+    upload_dir: Path = Path("data/uploads")
 
     @classmethod
     def load(cls, env_file: str | Path = ".env") -> "Settings":
@@ -65,6 +66,7 @@ class Settings:
         )
         values["rag_top_k"] = cls._integer_env(env, "RAG_TOP_K", 5)
         values["rag_min_score"] = cls._float_env(env, "RAG_MIN_SCORE", 0.35)
+        values["upload_dir"] = Path(env.get("UPLOAD_DIR", "data/uploads"))
 
         return cls(**values)
 

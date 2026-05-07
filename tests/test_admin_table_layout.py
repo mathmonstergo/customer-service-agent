@@ -56,3 +56,45 @@ def test_admin_static_wires_visible_batch_controls_to_actions() -> None:
     assert '"/api/faqs/batch-status"' in js
     assert '$("selectAll").addEventListener("change"' in js
     assert '$("showFailedButton").addEventListener("click"' in js
+
+
+def test_import_review_workspace_uses_generic_upload_file_copy() -> None:
+    """导入审核入口面向多格式扩展，不能把按钮写死为 Markdown。"""
+    html = read_static_file("admin.html")
+    css = read_static_file("admin.css")
+    js = read_static_file("admin.js")
+
+    assert "标准问答" in html
+    assert "导入审核" in html
+    assert "上传文件" in html
+    assert "上传 Markdown" not in html
+    assert "importFiles" in html
+    assert "importChunks" in html
+    assert "candidateList" in html
+    assert "candidateDrawer" in html
+    assert "candidatePanel" not in html
+    assert ".candidate-drawer" in css
+    assert "function openCandidateDrawer" in js
+    assert "function switchWorkspace" in js
+
+
+def test_import_review_workspace_exposes_parse_options_and_chunk_selection() -> None:
+    """导入审核需要支持解析参数、单选切块和全选切块。"""
+    html = read_static_file("admin.html")
+    js = read_static_file("admin.js")
+
+    assert 'id="parseModeSelect"' in html
+    assert 'id="chunkDaysInput"' in html
+    assert 'id="selectAllChunks"' in html
+    assert "selectedImportChunks" in js
+    assert "function updateSelectedChunkCount" in js
+    assert "function reparseCurrentImportFile" in js
+    assert "function generateCandidatesForSelectedChunks" in js
+
+
+def test_ai_suggestion_request_clears_previous_visible_result() -> None:
+    """第二次请求 AI 建议时不能继续展示上一次结果。"""
+    js = read_static_file("admin.js")
+
+    assert "function resetAiSuggestionPanel" in js
+    assert 'resetAiSuggestionPanel("生成中")' in js
