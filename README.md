@@ -1,39 +1,73 @@
 # Customer Service Agent
 
-本项目是一个本地客服知识库与 RAG 服务，使用 PostgreSQL + pgvector 做 FAQ 检索，并通过 OpenAI-compatible 接口调用聊天模型和 embedding 模型。
+本项目是本地客服知识库与 RAG 服务，用于管理标准 FAQ、导入业务材料、生成候选问答，并通过 PostgreSQL + pgvector 做知识检索。
 
-仓库不会包含真实 FAQ 问答数据、客户资料、生产提示词或本地密钥。真实数据请放在本地 ignored 文件中，例如 `data/faqs.jsonl`、`*.csv`、`.env`、`system_prompt.txt`。
+当前重点是“文件导入审核中心”：上传资料后先解析和切块，再由 AI 自动识别 FAQ，用户审核编辑后才保存到标准问答。保存 FAQ 和生成 embedding 是两个独立步骤，未审核内容不会直接进入检索。
 
-## 主要能力
+## 核心能力
 
-- 本地 FAQ 管理页面：新增、编辑、筛选、批量操作 FAQ。
-- 文件导入审核中心：上传文件后自动识别格式，第一期支持 Markdown 微信聊天记录解析、时间切块、AI 候选 FAQ 和人工审核保存。
-- 保存问答和生成 embedding 分离：保存只写入正文与元数据，不会自动向量化。
-- AI 辅助编辑：可保守优化问题/答案措辞，并生成相似问法。
-- PostgreSQL + pgvector 检索：支持向量搜索和 RAG 答案生成。
-- RAG 工具模式：可作为上游客服智能体的只读知识检索工具。
-- 微信服务模式：保留个人微信登录和长运行消息处理能力。
+- FAQ 管理：新增、编辑、筛选、批量状态调整、单条或批量生成 embedding。
+- 导入审核：上传文件自动识别格式；第一期支持 Markdown 微信聊天记录；支持时间范围切块、候选 FAQ 生成、人工审核保存。
+- AI 辅助：优化问题/答案措辞，生成相似问法，导入切块自动识别 FAQ。
+- RAG 检索：向量搜索、答案草稿、上游客服智能体可调用的只读工具模式。
+- 微信服务：保留个人微信登录与长运行消息处理能力。
 
-## 项目结构
+## 快速开始
 
-- `customer_service_agent/cli.py`：命令行入口，包含配置检查、数据库初始化、FAQ 导入、搜索、问答、微信登录、后台管理页启动。
-- `customer_service_agent/db.py`：数据库 schema 初始化、FAQ 写入、embedding 状态维护、pgvector 搜索。
-- `customer_service_agent/rag.py`：检索增强生成逻辑。
-- `customer_service_agent/rag_tool.py`：面向上游客服智能体的结构化 RAG 工具接口。
-- `customer_service_agent/admin_server.py`：本地 FAQ 管理页面和 API。
-- `customer_service_agent/ai_assist.py`：AI 辅助优化与相似问法生成。
-- `customer_service_agent/import_models.py`：导入文件类型识别。
-- `customer_service_agent/markdown_import.py`：Markdown 微信聊天记录解析和切块。
-- `customer_service_agent/import_ai.py`：导入切块生成候选 FAQ 的 AI 调用封装。
-- `customer_service_agent/llm.py`：OpenAI-compatible chat / embedding 客户端封装。
-- `customer_service_agent/wechat_client.py`：个人微信客户端封装。
-- `customer_service_agent/wechat_service.py`：微信消息长运行服务。
-- `scripts/install_user_service.sh`：根据模板安装 user-level systemd 服务。
-- `systemd/customer-service-agent.service.template`：systemd 用户服务模板。
+创建 conda 环境：
 
-## 系统依赖
+```bash
+conda env create -f environment.yml
+conda run -n customer-service-agent python --version
+```
 
-Ubuntu / Debian:
+复制本地配置模板：
+
+```bash
+cp .env.example .env
+cp system_prompt.example.txt system_prompt.txt
+```
+
+至少填写这些环境变量：
+
+```text
+DATABASE_URL
+CHAT_BASE_URL
+CHAT_API_KEY
+CHAT_MODEL
+EMBEDDING_BASE_URL
+EMBEDDING_API_KEY
+EMBEDDING_MODEL
+EMBEDDING_DIMENSIONS
+```
+
+检查配置：
+
+```bash
+conda run -n customer-service-agent python -m customer_service_agent.cli check-config
+```
+
+初始化数据库：
+
+```bash
+conda run -n customer-service-agent python -m customer_service_agent.cli init-db
+```
+
+启动本地管理后台：
+
+```bash
+conda run -n customer-service-agent python -m customer_service_agent.cli admin --host 127.0.0.1 --port 8765
+```
+
+浏览器打开：
+
+```text
+http://127.0.0.1:8765/admin.html
+```
+
+## 数据库依赖
+
+需要 PostgreSQL 和 pgvector。Ubuntu / Debian 示例：
 
 ```bash
 sudo apt-get update
@@ -47,80 +81,27 @@ sudo systemctl enable --now postgresql
 sudo -u postgres psql -tAc "SELECT name FROM pg_available_extensions WHERE name = 'vector';"
 ```
 
-## Conda 环境
+如果数据库和用户还不存在：
 
-```bash
-conda env create -f environment.yml
-conda run -n customer-service-agent python --version
+```sql
+CREATE USER customer_service_agent WITH PASSWORD '<choose-a-strong-password>';
+CREATE DATABASE customer_service_agent OWNER customer_service_agent;
 ```
 
-## 本地配置
+## 管理后台
 
-复制模板并填写真实配置：
+后台包含两个工作区：
 
-```bash
-cp .env.example .env
-cp system_prompt.example.txt system_prompt.txt
-```
+- 标准问答：维护正式 FAQ，保存后仍需手动生成 embedding。
+- 导入审核：上传文件、自动识别格式、解析切块、自动识别 FAQ、人工审核保存。
 
-必填环境变量：
-
-- `DATABASE_URL`
-- `CHAT_BASE_URL`
-- `CHAT_API_KEY`
-- `CHAT_MODEL`
-- `EMBEDDING_BASE_URL`
-- `EMBEDDING_API_KEY`
-- `EMBEDDING_MODEL`
-
-可选配置：
-
-- `UPLOAD_DIR`：上传原件本地保存目录，默认 `data/uploads`。
-- `EMBEDDING_DIMENSIONS`：embedding 维度，默认 `1024`。
-- `WECHAT_TOKEN_FILE`：微信 token 路径，默认 `/home/adam/.wxbot/token.json`。
-- `WECHAT_MESSAGE_CHUNK_SIZE`：微信回复分段长度，默认 `1800`。
-- `RAG_TOP_K`：检索返回数量，默认 `5`。
-- `RAG_MIN_SCORE`：检索最低分数，默认 `0.35`。
+导入审核第一期只解析 Markdown 微信聊天记录。PDF、Word、Excel 会保留原件并显示暂不支持解析，后续可复用同一套上传、解析、审核流程扩展。
 
 注意：
 
-- `.env` 不要提交。
-- `system_prompt.txt` 不要提交。
-- `*.jsonl`、`*.csv` 等 FAQ 数据文件不要提交。
-- 本仓库默认只提交代码、模板和说明，不提交真实业务数据。
-
-检查配置：
-
-```bash
-conda run -n customer-service-agent python -m customer_service_agent.cli check-config
-```
-
-## 本地 FAQ 管理页面
-
-启动管理页面：
-
-```bash
-conda run -n customer-service-agent python -m customer_service_agent.cli admin --host 127.0.0.1 --port 8765
-```
-
-浏览器打开：
-
-```text
-http://127.0.0.1:8765
-```
-
-管理页面仅供本地使用，不包含登录系统。页面支持：
-
-- FAQ 列表、搜索、状态筛选、embedding 状态筛选。
-- 右侧抽屉式编辑问答。
-- 新建和保存 FAQ。
-- 单条或批量生成 embedding。
-- AI 优化描述和生成相似问法。
-- 导入审核工作区：通用上传文件、自动识别格式、Markdown 聊天记录时间切块、候选 FAQ 列表和右侧抽屉审核。
-
-保存 FAQ 只会保存正文和元数据，不会自动生成 embedding。需要点击单条 `生成 embedding`，或使用侧边栏批量生成 embedding。
-
-导入审核第一期只解析 Markdown 微信聊天记录。默认按 1 天一个时间范围切块，页面可调整为 1-7 天，也可切换为按连续对话间隔切块。列表中的关键词来自内置业务词表命中，只用于帮助扫描切块，不参与事实判断。PDF、Word、Excel 会保留原件并显示暂不支持解析；AI 生成的候选 FAQ 需要人工在右侧抽屉编辑确认后，才会保存到标准问答，且不会自动生成 embedding。
+- “重新解析”会替换当前文件的切块和未保存候选 FAQ。
+- 已保存到标准问答的 FAQ 不会因重新解析被删除。
+- AI 生成内容只作为候选，必须人工审核后保存。
 
 页面预览：
 
@@ -128,48 +109,37 @@ http://127.0.0.1:8765
 
 ![FAQ 管理页面预览 2](docs/assets/faq-management-page-2.png)
 
-## AI 辅助编辑
+## 微信聊天记录 Markdown
 
-AI 辅助使用项目已有的 OpenAI-compatible Chat Completions 配置：
+微信聊天记录 Markdown 建议使用 [huohuoer/wechat-cli](https://github.com/huohuoer/wechat-cli) 导出。该工具用于查询本地微信数据，支持聊天记录、联系人、会话等，并支持导出 Markdown / txt。
 
-- `CHAT_BASE_URL`
-- `CHAT_API_KEY`
-- `CHAT_MODEL`
-
-前端点击“优化描述”或“生成相似问法”后，会调用：
-
-```text
-POST /api/ai/optimize
-```
-
-后端会让模型返回 JSON：
-
-```json
-{
-  "optimized_question": "优化后的标准问题",
-  "optimized_answer": "优化后的答复",
-  "similar_questions": ["相似问法 1", "相似问法 2"]
-}
-```
-
-提示词约束是保守改写：只优化表达、结构、清晰度和客服口吻，不新增业务事实，不改变原始答复含义。AI 建议不会自动覆盖当前内容，需要人工点击应用并保存。
-
-## 数据库初始化和 FAQ 导入
-
-如果数据库和用户还不存在，先创建：
+安装方式以 `wechat-cli` 官方 README 为准。当前常用方式：
 
 ```bash
-sudo -u postgres psql
-CREATE USER customer_service_agent WITH PASSWORD '<choose-a-strong-password>';
-CREATE DATABASE customer_service_agent OWNER customer_service_agent;
-\q
+npm install -g @canghe_ai/wechat-cli
+# 或
+pip install wechat-cli
 ```
 
-初始化 schema：
+首次使用需要初始化本地微信数据读取配置：
 
 ```bash
-conda run -n customer-service-agent python -m customer_service_agent.cli init-db
+wechat-cli init
 ```
+
+导出群聊或联系人聊天记录为 Markdown：
+
+```bash
+wechat-cli export "群聊或联系人名称" --format markdown --output data/uploads/chat.md
+```
+
+然后在管理后台“导入审核”上传该 `.md` 文件。当前解析器识别类似下面的消息格式：
+
+```markdown
+- [2025-08-25 10:13] 用户名: 消息内容
+```
+
+## 常用命令
 
 导入本地 FAQ JSONL：
 
@@ -177,95 +147,61 @@ conda run -n customer-service-agent python -m customer_service_agent.cli init-db
 conda run -n customer-service-agent python -m customer_service_agent.cli import-faq --path data/faqs.jsonl
 ```
 
-## 本地检索和问答测试
-
 向量搜索：
 
 ```bash
-conda run -n customer-service-agent python -m customer_service_agent.cli search "如何处理用户反馈的问题？"
+conda run -n customer-service-agent python -m customer_service_agent.cli search "用户问题"
 ```
 
-RAG 问答：
+RAG 答案草稿：
 
 ```bash
-conda run -n customer-service-agent python -m customer_service_agent.cli ask "如何处理用户反馈的问题？"
+conda run -n customer-service-agent python -m customer_service_agent.cli ask "用户问题"
 ```
 
-## RAG 工具模式
-
-推荐把本项目作为上游客服智能体的只读 FAQ / SOP RAG 工具。上游智能体负责判断是否直接回复、是否追问、是否调用其他后端工具、是否转人工。本项目只返回知识命中和可选答案草稿，不负责开户、重置密码、刷新缓存、派发任务、修改业务数据或直接给终端用户发消息。
-
-结构化 FAQ 搜索：
+工具模式：
 
 ```bash
-conda run -n customer-service-agent python -m customer_service_agent.cli tool-search "如何处理用户反馈的问题？"
+conda run -n customer-service-agent python -m customer_service_agent.cli tool-search "用户问题"
+conda run -n customer-service-agent python -m customer_service_agent.cli tool-answer "用户问题"
 ```
 
-结构化答案草稿：
-
-```bash
-conda run -n customer-service-agent python -m customer_service_agent.cli tool-answer "如何处理用户反馈的问题？"
-```
-
-两个命令都会输出单个 JSON 对象：
-
-- `tool-search` 返回检索到的 FAQ 文档。
-- `tool-answer` 返回 `answer_draft` 和同一批来源文档，方便上游智能体做最终决策。
-
-## 微信登录和服务
-
-微信登录是独立手动步骤，成功后会写入 `WECHAT_TOKEN_FILE`：
+微信登录和服务：
 
 ```bash
 conda run -n customer-service-agent python -m customer_service_agent.cli wechat-login
-```
-
-登录成功后，可以启动长运行服务：
-
-```bash
 conda run -n customer-service-agent python -m customer_service_agent.cli wechat-service
 ```
 
-## systemd 用户服务
+## 主要目录
 
-安装渲染后的用户服务：
-
-```bash
-./scripts/install_user_service.sh
-```
-
-允许用户服务在登出后继续运行：
-
-```bash
-sudo loginctl enable-linger "$USER"
-```
-
-启动和查看服务：
-
-```bash
-systemctl --user start customer-service-agent.service
-systemctl --user status customer-service-agent.service
-journalctl --user -u customer-service-agent.service -f
-```
-
-常用操作：
-
-```bash
-systemctl --user restart customer-service-agent.service
-systemctl --user stop customer-service-agent.service
-```
-
-安装脚本会把当前仓库路径、`.env` 路径和 `customer-service-agent` conda 环境中的 Python 路径写入 `~/.config/systemd/user/customer-service-agent.service`。
+- `customer_service_agent/admin_server.py`：本地管理后台 API。
+- `customer_service_agent/static/`：管理后台 HTML / CSS / JS。
+- `customer_service_agent/markdown_import.py`：微信聊天记录 Markdown 解析和切块。
+- `customer_service_agent/import_ai.py`：导入切块生成候选 FAQ。
+- `customer_service_agent/db.py`：数据库读写和 pgvector 检索。
+- `customer_service_agent/rag.py`：RAG 答案生成。
+- `customer_service_agent/rag_tool.py`：上游智能体调用的只读工具接口。
+- `customer_service_agent/wechat_service.py`：微信消息长运行服务。
+- `sql/001_init.sql`：数据库 schema。
 
 ## 验证
 
 ```bash
-conda run -n customer-service-agent ruff check .
-conda run -n customer-service-agent python -m customer_service_agent.cli --help
+conda run -n customer-service-agent python -m pytest
+conda run -n customer-service-agent python -m ruff check .
+conda run -n customer-service-agent python -m customer_service_agent.cli check-config
 ```
 
-开发时也可以运行测试：
+## 数据安全
 
-```bash
-conda run -n customer-service-agent pytest -q
-```
+不要提交真实业务数据、客户聊天记录、生产提示词、密钥、token 或上传原件。
+
+常见本地文件包括：
+
+- `.env`
+- `system_prompt.txt`
+- `data/uploads/`
+- `*.jsonl`
+- `*.csv`
+- 微信 token 文件
