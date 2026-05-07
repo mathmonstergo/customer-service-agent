@@ -274,6 +274,13 @@
             <label class="checkbox-label"><input type="checkbox" id="onlyReviewChunks"> 仅查看待审核</label>
           </div>
         </div>
+        <section class="generation-progress hidden" id="generationProgress">
+          <div class="generation-progress-header">
+            <strong>候选 FAQ 生成进度</strong>
+            <span id="generationProgressText">等待任务开始</span>
+          </div>
+          <div class="generation-progress-items" id="generationProgressItems"></div>
+        </section>
         <div class="table-wrap">
           <table class="faq-table import-table">
             <thead>
@@ -304,6 +311,7 @@
                   <th>状态</th>
                   <th>标准问题</th>
                   <th>分类</th>
+                  <th>重复程度</th>
                   <th>置信度</th>
                   <th>操作</th>
                 </tr>
@@ -379,6 +387,10 @@
                 <span class="confidence-bar"><i id="candidateConfidenceBar"></i></span>
                 <em id="candidateConfidencePercent">0%</em>
               </div>
+            </label>
+            <label class="field">
+              <span>重复程度</span>
+              <div class="duplicate-line" id="candidateDuplicateLevel">未检测</div>
             </label>
             <label class="field">
               <span>内部备注</span>

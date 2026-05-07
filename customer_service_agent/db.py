@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -16,6 +17,17 @@ def format_vector(values: Iterable[float]) -> str:
 
 def score_to_distance(score: float) -> float:
     return 1.0 - score
+
+
+def _count_job_item_statuses(items: list[dict[str, Any]]) -> dict[str, int]:
+    """统计生成任务子项状态，写入任务摘要字段。"""
+    return {
+        "queued_count": sum(1 for item in items if item["status"] == "queued"),
+        "processing_count": sum(1 for item in items if item["status"] == "processing"),
+        "generated_count": sum(1 for item in items if item["status"] == "generated"),
+        "skipped_count": sum(1 for item in items if item["status"] == "skipped"),
+        "failed_count": sum(1 for item in items if item["status"] == "failed"),
+    }
 
 
 def _clean_list(value: Any) -> list[str]:
@@ -453,7 +465,14 @@ class Database:
         with self.connect() as conn:
             rows = []
             for candidate in candidates:
-                rows.append(conn.execute(self._insert_import_candidate_sql(), candidate).fetchone())
+                payload = {
+                    "duplicate_level": "none",
+                    "duplicate_score": 0,
+                    "duplicate_target_id": None,
+                    "duplicate_reason": None,
+                    **candidate,
+                }
+                rows.append(conn.execute(self._insert_import_candidate_sql(), payload).fetchone())
             conn.execute(
                 """
                 UPDATE import_chunks
@@ -475,6 +494,159 @@ class Database:
             )
         return rows
 
+    def create_import_generation_job(self, chunk_ids: list[str]) -> dict[str, Any]:
+        """创建候选生成任务，已处理或活跃中的切块会被标记为跳过。"""
+        unique_chunk_ids = list(dict.fromkeys(chunk_ids))
+        if not unique_chunk_ids:
+            raise ValueError("chunk_ids is required")
+        job_id = f"job_{uuid.uuid4().hex[:12]}"
+        with self.connect() as conn:
+            chunks = conn.execute(
+                """
+                SELECT id, candidate_count, status
+                FROM import_chunks
+                WHERE id = ANY(%(ids)s::text[])
+                """,
+                {"ids": unique_chunk_ids},
+            ).fetchall()
+            chunks_by_id = {row["id"]: row for row in chunks}
+            active_rows = conn.execute(
+                """
+                SELECT DISTINCT chunk_id
+                FROM import_generation_job_items
+                WHERE chunk_id = ANY(%(ids)s::text[])
+                  AND status IN ('queued', 'processing')
+                """,
+                {"ids": unique_chunk_ids},
+            ).fetchall()
+            active_ids = {row["chunk_id"] for row in active_rows}
+            items = []
+            for chunk_id in unique_chunk_ids:
+                chunk = chunks_by_id.get(chunk_id)
+                status = "queued"
+                reason = None
+                if chunk is None:
+                    status = "skipped"
+                    reason = "missing_chunk"
+                elif chunk["candidate_count"] > 0 or chunk["status"] == "generated":
+                    status = "skipped"
+                    reason = "already_generated"
+                elif chunk_id in active_ids:
+                    status = "skipped"
+                    reason = "already_queued"
+                items.append(
+                    {
+                        "id": f"job_item_{uuid.uuid4().hex[:12]}",
+                        "job_id": job_id,
+                        "chunk_id": chunk_id,
+                        "status": status,
+                        "reason": reason,
+                        "candidate_count": 0,
+                        "error": None,
+                    }
+                )
+            counts = _count_job_item_statuses(items)
+            job = conn.execute(
+                """
+                INSERT INTO import_generation_jobs (
+                    id, status, total_count, queued_count, processing_count,
+                    generated_count, skipped_count, failed_count
+                )
+                VALUES (
+                    %(id)s, %(status)s, %(total_count)s, %(queued_count)s, %(processing_count)s,
+                    %(generated_count)s, %(skipped_count)s, %(failed_count)s
+                )
+                RETURNING *
+                """,
+                {
+                    "id": job_id,
+                    "status": "queued" if counts["queued_count"] else "completed",
+                    "total_count": len(items),
+                    **counts,
+                },
+            ).fetchone()
+            inserted_items = [
+                conn.execute(self._insert_import_generation_job_item_sql(), item).fetchone()
+                for item in items
+            ]
+        return {**job, "items": inserted_items}
+
+    def get_import_generation_job(self, job_id: str) -> dict[str, Any] | None:
+        """按 id 获取候选生成任务。"""
+        sql = "SELECT * FROM import_generation_jobs WHERE id = %(id)s"
+        with self.connect() as conn:
+            return conn.execute(sql, {"id": job_id}).fetchone()
+
+    def list_import_generation_job_items(self, job_id: str) -> list[dict[str, Any]]:
+        """列出候选生成任务的切块子项。"""
+        sql = """
+        SELECT *
+        FROM import_generation_job_items
+        WHERE job_id = %(job_id)s
+        ORDER BY created_at ASC, id ASC
+        """
+        with self.connect() as conn:
+            return conn.execute(sql, {"job_id": job_id}).fetchall()
+
+    def update_import_generation_job_item(self, item_id: str, **fields: Any) -> dict[str, Any]:
+        """更新候选生成任务子项状态和结果。"""
+        allowed = {"status", "reason", "candidate_count", "error"}
+        updates = {key: value for key, value in fields.items() if key in allowed}
+        if not updates:
+            raise ValueError("generation job item updates are required")
+        assignments = ", ".join(f"{key} = %({key})s" for key in updates)
+        sql = f"""
+        UPDATE import_generation_job_items
+        SET {assignments}, updated_at = now()
+        WHERE id = %(id)s
+        RETURNING *
+        """
+        with self.connect() as conn:
+            row = conn.execute(sql, {"id": item_id, **updates}).fetchone()
+        if row is None:
+            raise KeyError(f"Import generation job item not found: {item_id}")
+        return row
+
+    def update_import_generation_job_summary(self, job_id: str, status: str) -> dict[str, Any]:
+        """重新统计候选生成任务摘要并写入最终状态。"""
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT status, count(*) AS count
+                FROM import_generation_job_items
+                WHERE job_id = %(job_id)s
+                GROUP BY status
+                """,
+                {"job_id": job_id},
+            ).fetchall()
+            counts = {row["status"]: row["count"] for row in rows}
+            job = conn.execute(
+                """
+                UPDATE import_generation_jobs
+                SET status = %(status)s,
+                    queued_count = %(queued_count)s,
+                    processing_count = %(processing_count)s,
+                    generated_count = %(generated_count)s,
+                    skipped_count = %(skipped_count)s,
+                    failed_count = %(failed_count)s,
+                    updated_at = now()
+                WHERE id = %(id)s
+                RETURNING *
+                """,
+                {
+                    "id": job_id,
+                    "status": status,
+                    "queued_count": counts.get("queued", 0),
+                    "processing_count": counts.get("processing", 0),
+                    "generated_count": counts.get("generated", 0),
+                    "skipped_count": counts.get("skipped", 0),
+                    "failed_count": counts.get("failed", 0),
+                },
+            ).fetchone()
+        if job is None:
+            raise KeyError(f"Import generation job not found: {job_id}")
+        return job
+
     def list_import_candidates(self, chunk_id: str) -> list[dict[str, Any]]:
         """按切块列出候选 FAQ。"""
         sql = """
@@ -482,6 +654,20 @@ class Database:
         FROM import_candidates
         WHERE chunk_id = %(chunk_id)s
         ORDER BY created_at ASC, id ASC
+        """
+        with self.connect() as conn:
+            return conn.execute(sql, {"chunk_id": chunk_id}).fetchall()
+
+    def list_import_dedupe_references(self, chunk_id: str) -> list[dict[str, Any]]:
+        """列出候选查重参考，包括正式 FAQ 和其它候选 FAQ。"""
+        sql = """
+        SELECT id, question, answer
+        FROM faq_documents
+        UNION ALL
+        SELECT id, question, answer
+        FROM import_candidates
+        WHERE chunk_id <> %(chunk_id)s
+          AND status IN ('pending', 'saved')
         """
         with self.connect() as conn:
             return conn.execute(sql, {"chunk_id": chunk_id}).fetchall()
@@ -581,12 +767,28 @@ class Database:
         return """
         INSERT INTO import_candidates (
             id, file_id, chunk_id, question, answer, similar_questions, category,
-            tags, confidence, internal_note, source_excerpt, status
+            tags, confidence, internal_note, source_excerpt, duplicate_level,
+            duplicate_score, duplicate_target_id, duplicate_reason, status
         )
         VALUES (
             %(id)s, %(file_id)s, %(chunk_id)s, %(question)s, %(answer)s,
             %(similar_questions)s::jsonb, %(category)s, %(tags)s::jsonb,
-            %(confidence)s, %(internal_note)s, %(source_excerpt)s, %(status)s
+            %(confidence)s, %(internal_note)s, %(source_excerpt)s, %(duplicate_level)s,
+            %(duplicate_score)s, %(duplicate_target_id)s, %(duplicate_reason)s, %(status)s
+        )
+        RETURNING *
+        """
+
+    @staticmethod
+    def _insert_import_generation_job_item_sql() -> str:
+        """集中维护生成任务切块插入 SQL。"""
+        return """
+        INSERT INTO import_generation_job_items (
+            id, job_id, chunk_id, status, reason, candidate_count, error
+        )
+        VALUES (
+            %(id)s, %(job_id)s, %(chunk_id)s, %(status)s, %(reason)s,
+            %(candidate_count)s, %(error)s
         )
         RETURNING *
         """

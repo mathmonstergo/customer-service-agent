@@ -107,10 +107,46 @@ CREATE TABLE IF NOT EXISTS import_candidates (
     confidence TEXT NOT NULL DEFAULT 'medium',
     internal_note TEXT,
     source_excerpt TEXT NOT NULL,
+    duplicate_level TEXT NOT NULL DEFAULT 'none',
+    duplicate_score DOUBLE PRECISION NOT NULL DEFAULT 0,
+    duplicate_target_id TEXT,
+    duplicate_reason TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     saved_faq_id TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE import_candidates
+    ADD COLUMN IF NOT EXISTS duplicate_level TEXT NOT NULL DEFAULT 'none',
+    ADD COLUMN IF NOT EXISTS duplicate_score DOUBLE PRECISION NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS duplicate_target_id TEXT,
+    ADD COLUMN IF NOT EXISTS duplicate_reason TEXT;
+
+CREATE TABLE IF NOT EXISTS import_generation_jobs (
+    id TEXT PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'queued',
+    total_count INTEGER NOT NULL DEFAULT 0,
+    queued_count INTEGER NOT NULL DEFAULT 0,
+    processing_count INTEGER NOT NULL DEFAULT 0,
+    generated_count INTEGER NOT NULL DEFAULT 0,
+    skipped_count INTEGER NOT NULL DEFAULT 0,
+    failed_count INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS import_generation_job_items (
+    id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL REFERENCES import_generation_jobs(id) ON DELETE CASCADE,
+    chunk_id TEXT NOT NULL REFERENCES import_chunks(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'queued',
+    reason TEXT,
+    candidate_count INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (job_id, chunk_id)
 );
 
 CREATE INDEX IF NOT EXISTS import_files_status_idx
@@ -121,3 +157,6 @@ CREATE INDEX IF NOT EXISTS import_chunks_file_idx
 
 CREATE INDEX IF NOT EXISTS import_candidates_chunk_idx
     ON import_candidates (chunk_id, status);
+
+CREATE INDEX IF NOT EXISTS import_generation_job_items_chunk_status_idx
+    ON import_generation_job_items (chunk_id, status);

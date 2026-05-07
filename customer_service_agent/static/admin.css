@@ -875,7 +875,7 @@ kbd {
 
 .import-chunks-panel {
   display: grid;
-  grid-template-rows: 70px 50px minmax(210px, 1.15fr) minmax(210px, 0.85fr) 58px;
+  grid-template-rows: 70px 50px auto minmax(210px, 1.15fr) minmax(210px, 0.85fr) 58px;
   overflow: hidden;
 }
 
@@ -936,6 +936,47 @@ kbd {
   color: var(--muted);
   font-size: 13px;
   white-space: nowrap;
+}
+
+.generation-progress {
+  border-bottom: 1px solid var(--line);
+  background: #f8fbff;
+  padding: 10px 18px;
+}
+
+.generation-progress-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.generation-progress-header strong {
+  font-size: 14px;
+}
+
+.generation-progress-header span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.generation-progress-items {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.generation-progress-item {
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #fff;
+  padding: 0 8px;
+  color: #344054;
+  font-size: 13px;
 }
 
 .batch-button.inline {
@@ -1115,6 +1156,17 @@ kbd {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.duplicate-line {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #fbfcfe;
+  padding: 0 10px;
+  color: #344054;
 }
 
 .confidence-bar {

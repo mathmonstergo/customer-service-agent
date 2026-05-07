@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from customer_service_agent.ai_assist import AiAssistant, AiSuggestionError
 from customer_service_agent.config import Settings
 from customer_service_agent.db import Database, build_import_candidate_faq_row
+from customer_service_agent.import_dedupe import compare_candidate_duplicate
 from customer_service_agent.import_ai import ImportAiAssistant, ImportCandidateError
 from customer_service_agent.import_models import detect_file_type
 from customer_service_agent.llm import ChatClient, EmbeddingClient
@@ -109,6 +110,13 @@ def jsonable(value: Any) -> Any:
     if isinstance(value, list):
         return [jsonable(item) for item in value]
     return value
+
+
+def format_sse_event(event: dict[str, Any]) -> str:
+    """把任务进度事件格式化成浏览器 EventSource 可读的 SSE 文本。"""
+    event_type = str(event.get("type", "message"))
+    payload = json.dumps(jsonable(event), ensure_ascii=False)
+    return f"event: {event_type}\ndata: {payload}\n\n"
 
 
 @dataclass
@@ -317,6 +325,13 @@ class AdminApp:
         suggestions = ImportAiAssistant(self.chat_client()).generate_candidates(chunk["source_text"])
         rows = []
         for suggestion in suggestions:
+            duplicate = compare_candidate_duplicate(
+                {
+                    "question": suggestion.question,
+                    "answer": suggestion.answer,
+                },
+                self.database().list_import_dedupe_references(chunk["id"]),
+            )
             rows.append(
                 {
                     "id": f"cand_{uuid.uuid4().hex[:12]}",
@@ -330,10 +345,72 @@ class AdminApp:
                     "confidence": suggestion.confidence,
                     "internal_note": suggestion.internal_note,
                     "source_excerpt": str(chunk["source_text"])[:1200],
+                    "duplicate_level": duplicate.level,
+                    "duplicate_score": duplicate.score,
+                    "duplicate_target_id": duplicate.target_id,
+                    "duplicate_reason": duplicate.reason,
                     "status": "pending",
                 }
             )
         return {"items": self.database().create_import_candidates(chunk, rows)}
+
+    def create_import_generation_job(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """创建批量候选生成任务，去重切块 id 后交给数据库做幂等判断。"""
+        raw_ids = payload.get("chunk_ids", [])
+        if not isinstance(raw_ids, list):
+            raise AdminValidationError("chunk_ids must be a list")
+        chunk_ids = list(dict.fromkeys(str(item).strip() for item in raw_ids if str(item).strip()))
+        if not chunk_ids:
+            raise AdminValidationError("chunk_ids is required")
+        return self.database().create_import_generation_job(chunk_ids)
+
+    def iter_import_generation_events(self, job_id: str):
+        """顺序执行生成任务并产出可用于 SSE 的进度事件。"""
+        job = self.database().get_import_generation_job(job_id)
+        if job is None:
+            raise AdminNotFoundError(f"Import generation job not found: {job_id}")
+        for item in self.database().list_import_generation_job_items(job_id):
+            if item["status"] == "skipped":
+                yield {
+                    "type": "skipped",
+                    "job_id": job_id,
+                    "chunk_id": item["chunk_id"],
+                    "reason": item.get("reason"),
+                }
+                continue
+            if item["status"] != "queued":
+                continue
+            self.database().update_import_generation_job_item(item["id"], status="processing")
+            yield {"type": "processing", "job_id": job_id, "chunk_id": item["chunk_id"]}
+            try:
+                result = self.generate_import_candidates(item["chunk_id"])
+                candidate_count = len(result["items"])
+                self.database().update_import_generation_job_item(
+                    item["id"],
+                    status="generated",
+                    candidate_count=candidate_count,
+                    error=None,
+                )
+                yield {
+                    "type": "generated",
+                    "job_id": job_id,
+                    "chunk_id": item["chunk_id"],
+                    "candidate_count": candidate_count,
+                }
+            except Exception as exc:
+                self.database().update_import_generation_job_item(
+                    item["id"],
+                    status="failed",
+                    error=str(exc),
+                )
+                yield {
+                    "type": "failed",
+                    "job_id": job_id,
+                    "chunk_id": item["chunk_id"],
+                    "error": str(exc),
+                }
+        self.database().update_import_generation_job_summary(job_id, "completed")
+        yield {"type": "done", "job_id": job_id}
 
     def update_import_candidate(self, candidate_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         """保存用户对候选 FAQ 的人工编辑。"""
@@ -397,6 +474,10 @@ def make_handler(app: AdminApp):
                     chunk_id = parsed.path.removeprefix("/api/import/chunks/").removesuffix("/candidates")
                     self.send_json(app.list_import_candidates(chunk_id))
                     return
+                if parsed.path.startswith("/api/import/generation-jobs/") and parsed.path.endswith("/events"):
+                    job_id = parsed.path.removeprefix("/api/import/generation-jobs/").removesuffix("/events")
+                    self.send_sse(app.iter_import_generation_events(job_id))
+                    return
                 if parsed.path.startswith("/api/faqs/"):
                     faq_id = parsed.path.removeprefix("/api/faqs/")
                     self.send_json(app.get_faq(faq_id))
@@ -432,6 +513,9 @@ def make_handler(app: AdminApp):
                     return
                 if parsed.path == "/api/ai/optimize":
                     self.send_json(app.optimize(payload))
+                    return
+                if parsed.path == "/api/import/generation-jobs":
+                    self.send_json(app.create_import_generation_job(payload))
                     return
                 if parsed.path.startswith("/api/import/chunks/") and parsed.path.endswith("/generate"):
                     chunk_id = parsed.path.removeprefix("/api/import/chunks/").removesuffix("/generate")
@@ -511,6 +595,16 @@ def make_handler(app: AdminApp):
             self.send_header("Content-Length", str(len(content)))
             self.end_headers()
             self.wfile.write(content)
+
+        def send_sse(self, events: Any) -> None:
+            """发送生成任务进度事件流，供前端 EventSource 消费。"""
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            for event in events:
+                self.wfile.write(format_sse_event(event).encode("utf-8"))
+                self.wfile.flush()
 
         def send_error_json(self, exc: Exception) -> None:
             if isinstance(exc, AdminNotFoundError):

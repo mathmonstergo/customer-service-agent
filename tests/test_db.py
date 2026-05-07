@@ -35,3 +35,15 @@ def test_build_import_candidate_faq_row_defaults_to_needs_review():
             "excerpt": "客服 09:16: 隔10分钟刷新一次页面查看进度",
         }
     ]
+
+
+def test_insert_import_candidate_sql_includes_duplicate_fields():
+    """候选 FAQ 入库时需要保存查重结果字段。"""
+    from customer_service_agent.db import Database
+
+    sql = Database._insert_import_candidate_sql()
+
+    assert "duplicate_level" in sql
+    assert "duplicate_score" in sql
+    assert "duplicate_target_id" in sql
+    assert "duplicate_reason" in sql

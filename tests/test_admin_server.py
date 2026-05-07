@@ -5,6 +5,7 @@ import pytest
 from customer_service_agent.admin_server import (
     AdminApp,
     AdminValidationError,
+    format_sse_event,
     normalize_faq_payload,
     static_path,
 )
@@ -241,3 +242,117 @@ def test_admin_app_save_faq_keeps_existing_metadata_when_payload_omits_it():
 
     assert calls[0]["confidence"] == "low"
     assert calls[0]["source_file"] == "seed.jsonl"
+
+
+def test_admin_app_create_import_generation_job_requires_chunk_ids():
+    """创建生成任务时必须提供切块 id。"""
+    app = AdminApp(SimpleNamespace(database_url="postgresql://unused"))
+
+    with pytest.raises(AdminValidationError, match="chunk_ids"):
+        app.create_import_generation_job({"chunk_ids": []})
+
+
+def test_admin_app_create_import_generation_job_delegates_to_database():
+    """批量生成任务创建只把去重后的切块 id 交给数据库。"""
+    calls = []
+
+    class FakeDatabase:
+        def create_import_generation_job(self, chunk_ids):
+            calls.append(chunk_ids)
+            return {"id": "job_1", "items": [{"chunk_id": "chunk_1", "status": "queued"}]}
+
+    app = AdminApp(SimpleNamespace(database_url="postgresql://unused"), db=FakeDatabase())
+
+    result = app.create_import_generation_job({"chunk_ids": ["chunk_1", "chunk_1", "chunk_2"]})
+
+    assert calls == [["chunk_1", "chunk_2"]]
+    assert result["id"] == "job_1"
+
+
+def test_admin_app_iter_import_generation_events_streams_statuses():
+    """生成任务事件流应输出处理、完成和最终 done 状态。"""
+    calls = []
+
+    class FakeChat:
+        def complete(self, system_prompt, user_prompt):
+            return '{"candidates":[{"question":"报告没生成怎么办？","answer":"隔10分钟刷新。"}]}'
+
+    class FakeDatabase:
+        def get_import_generation_job(self, job_id):
+            assert job_id == "job_1"
+            return {"id": "job_1", "status": "queued"}
+
+        def list_import_generation_job_items(self, job_id):
+            assert job_id == "job_1"
+            return [
+                {"id": "item_1", "chunk_id": "chunk_1", "status": "queued"},
+                {"id": "item_2", "chunk_id": "chunk_2", "status": "skipped", "reason": "already_generated"},
+            ]
+
+        def update_import_generation_job_item(self, item_id, **fields):
+            calls.append(("item", item_id, fields))
+            return {"id": item_id, **fields}
+
+        def update_import_generation_job_summary(self, job_id, status):
+            calls.append(("job", job_id, status))
+            return {"id": job_id, "status": status}
+
+        def get_import_chunk(self, chunk_id):
+            return {
+                "id": chunk_id,
+                "file_id": "imp_1",
+                "source_text": "[2025-08-25 16:20] 用户: 报告没生成怎么办",
+            }
+
+        def list_import_dedupe_references(self, chunk_id):
+            return []
+
+        def create_import_candidates(self, chunk, rows):
+            calls.append(("candidates", chunk["id"], rows))
+            return rows
+
+    app = AdminApp(SimpleNamespace(database_url="postgresql://unused"), db=FakeDatabase(), chat=FakeChat())
+
+    events = list(app.iter_import_generation_events("job_1"))
+
+    assert [event["type"] for event in events] == ["processing", "generated", "skipped", "done"]
+    assert events[1]["candidate_count"] == 1
+    assert events[2]["reason"] == "already_generated"
+    assert calls[-1] == ("job", "job_1", "completed")
+
+
+def test_admin_app_generate_import_candidates_sets_duplicate_fields():
+    """候选生成后需要写入重复程度，供人工审核判断。"""
+    calls = []
+
+    class FakeChat:
+        def complete(self, system_prompt, user_prompt):
+            return '{"candidates":[{"question":"退款多久到账？","answer":"一般1-3个工作日到账。"}]}'
+
+    class FakeDatabase:
+        def get_import_chunk(self, chunk_id):
+            return {"id": chunk_id, "file_id": "imp_1", "source_text": "退款多久到账"}
+
+        def list_import_dedupe_references(self, chunk_id):
+            return [{"id": "faq_1", "question": "退款多久到账", "answer": "一般 1-3 个工作日到账"}]
+
+        def create_import_candidates(self, chunk, rows):
+            calls.extend(rows)
+            return rows
+
+    app = AdminApp(SimpleNamespace(database_url="postgresql://unused"), db=FakeDatabase(), chat=FakeChat())
+
+    app.generate_import_candidates("chunk_1")
+
+    assert calls[0]["duplicate_level"] == "high"
+    assert calls[0]["duplicate_target_id"] == "faq_1"
+    assert calls[0]["duplicate_reason"] == "exact_text"
+
+
+def test_format_sse_event_outputs_named_json_event():
+    """SSE 输出需要包含事件名和 JSON 数据。"""
+    content = format_sse_event({"type": "generated", "chunk_id": "chunk_1", "candidate_count": 2})
+
+    assert content.startswith("event: generated\n")
+    assert '"chunk_id": "chunk_1"' in content
+    assert content.endswith("\n\n")

@@ -98,3 +98,27 @@ def test_ai_suggestion_request_clears_previous_visible_result() -> None:
 
     assert "function resetAiSuggestionPanel" in js
     assert 'resetAiSuggestionPanel("生成中")' in js
+
+
+def test_import_generation_job_progress_uses_event_source() -> None:
+    """批量生成候选 FAQ 需要创建任务并通过 SSE 展示过程状态。"""
+    html = read_static_file("admin.html")
+    js = read_static_file("admin.js")
+
+    assert 'id="generationProgress"' in html
+    assert 'id="generationProgressText"' in html
+    assert 'id="generationProgressItems"' in html
+    assert "function startGenerationJob" in js
+    assert "new EventSource" in js
+    assert "/api/import/generation-jobs" in js
+
+
+def test_import_candidate_list_shows_duplicate_level() -> None:
+    """候选 FAQ 列表和审核抽屉需要展示重复程度。"""
+    html = read_static_file("admin.html")
+    js = read_static_file("admin.js")
+
+    assert "重复程度" in html
+    assert "candidateDuplicateLevel" in html
+    assert "duplicate_level" in js
+    assert "function duplicateLevelLabel" in js

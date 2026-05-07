@@ -22,6 +22,7 @@ const state = {
   currentCandidateIndex: 0,
   candidateVariants: [],
   candidateTags: [],
+  generationEvents: [],
 };
 
 const statusOptions = ["usable", "needs_review", "disabled"];
@@ -302,6 +303,12 @@ function candidateStatusPill(value) {
   return `<span class="status-pill ${classes[status] || "pending"}">${labels[status] || escapeHtml(status)}</span>`;
 }
 
+function duplicateLevelLabel(value) {
+  // 将查重级别转成审核人员能直接判断的中文标签。
+  const labels = { high: "高度重复", medium: "疑似重复", low: "低重复", none: "未重复" };
+  return labels[value || "none"] || "未重复";
+}
+
 function renderCandidateCounts() {
   // 统一刷新候选列表和审核抽屉使用的状态统计。
   const candidates = state.importCandidates;
@@ -321,7 +328,7 @@ function renderImportCandidateList(message = "") {
   if (!state.currentImportChunk) {
     $("candidateListSummary").textContent = message || "请选择切块后生成候选 FAQ";
     $("candidateList").innerHTML =
-      '<tr><td colspan="5" class="empty">请选择切块后查看候选 FAQ</td></tr>';
+      '<tr><td colspan="6" class="empty">请选择切块后查看候选 FAQ</td></tr>';
     return;
   }
   $("candidateListSummary").textContent = candidates.length
@@ -329,7 +336,7 @@ function renderImportCandidateList(message = "") {
     : message || "当前切块暂无候选 FAQ，可先批量生成";
   if (!candidates.length) {
     $("candidateList").innerHTML =
-      '<tr><td colspan="5" class="empty">当前切块暂无候选 FAQ</td></tr>';
+      '<tr><td colspan="6" class="empty">当前切块暂无候选 FAQ</td></tr>';
     return;
   }
   $("candidateList").innerHTML = candidates
@@ -340,6 +347,7 @@ function renderImportCandidateList(message = "") {
           <td>${candidateStatusPill(item.status)}</td>
           <td class="candidate-question-cell" title="${escapeHtml(item.question || "")}">${escapeHtml(item.question || "-")}</td>
           <td>${escapeHtml(item.category || "-")}</td>
+          <td>${escapeHtml(duplicateLevelLabel(item.duplicate_level))}</td>
           <td>${escapeHtml(item.confidence || "medium")}</td>
           <td><button class="candidate-review-button" type="button" data-import-candidate-index="${index}">审核</button></td>
         </tr>
@@ -362,6 +370,7 @@ function renderCurrentCandidate() {
   $("candidateCategory").value = current.category || "";
   $("candidateInternalNote").value = current.internal_note || "";
   $("candidateSource").textContent = current.source_excerpt || state.currentImportChunk?.source_text || "";
+  $("candidateDuplicateLevel").textContent = `${duplicateLevelLabel(current.duplicate_level)} ${Math.round((current.duplicate_score || 0) * 100)}%`;
   state.candidateVariants = current.similar_questions || [];
   state.candidateTags = current.tags || [];
   renderCandidateChips();
@@ -395,6 +404,7 @@ function renderCandidateEmpty(message) {
   $("candidateCategory").value = "";
   $("candidateInternalNote").value = "";
   $("candidateSource").textContent = message;
+  $("candidateDuplicateLevel").textContent = "未检测";
   state.candidateVariants = [];
   state.candidateTags = [];
   renderCandidateChips();
@@ -470,25 +480,78 @@ async function generateCandidatesForSelectedChunks() {
   }
   try {
     $("generateChunkCandidatesButton").disabled = true;
-    let generatedCount = 0;
-    for (const chunkId of chunkIds) {
-      const result = await requestJson(`/api/import/chunks/${encodeURIComponent(chunkId)}/generate`, {
-        method: "POST",
-        body: "{}",
-      });
-      generatedCount += (result.items || []).length;
-    }
-    showToast(`已生成 ${generatedCount} 条候选`);
+    const job = await requestJson("/api/import/generation-jobs", {
+      method: "POST",
+      body: JSON.stringify({ chunk_ids: chunkIds }),
+    });
+    startGenerationJob(job);
+  } catch (error) {
+    $("generateChunkCandidatesButton").disabled = false;
+    showToast(error.message);
+  }
+}
+
+function startGenerationJob(job) {
+  // 创建任务后通过 SSE 持续接收每个切块的生成状态。
+  state.generationEvents = job.items || [];
+  $("generationProgress").classList.remove("hidden");
+  $("generationProgressText").textContent = `任务 ${job.id} 已创建，等待生成`;
+  renderGenerationProgress();
+  const source = new EventSource(`/api/import/generation-jobs/${encodeURIComponent(job.id)}/events`);
+  source.addEventListener("processing", (event) => handleGenerationEvent(JSON.parse(event.data)));
+  source.addEventListener("generated", (event) => handleGenerationEvent(JSON.parse(event.data)));
+  source.addEventListener("skipped", (event) => handleGenerationEvent(JSON.parse(event.data)));
+  source.addEventListener("failed", (event) => handleGenerationEvent(JSON.parse(event.data)));
+  source.addEventListener("done", async (event) => {
+    handleGenerationEvent(JSON.parse(event.data));
+    source.close();
+    $("generateChunkCandidatesButton").disabled = false;
     state.selectedImportChunks.clear();
     await loadImportChunks(state.currentImportFile.id);
     if (state.currentImportChunk) await loadImportCandidates(state.currentImportChunk.id);
     else renderImportCandidateList();
     closeCandidateDrawer();
-  } catch (error) {
-    showToast(error.message);
-  } finally {
+  });
+  source.onerror = () => {
+    source.close();
     $("generateChunkCandidatesButton").disabled = false;
-  }
+    showToast("生成任务连接中断");
+  };
+}
+
+function handleGenerationEvent(event) {
+  // 合并服务端进度事件并刷新任务可视状态。
+  state.generationEvents.push(event);
+  const labels = {
+    processing: "处理中",
+    generated: `已生成 ${event.candidate_count || 0} 条候选`,
+    skipped: `已跳过：${event.reason || "-"}`,
+    failed: "生成失败",
+    done: "任务完成",
+  };
+  $("generationProgressText").textContent = labels[event.type] || event.type;
+  renderGenerationProgress();
+}
+
+function renderGenerationProgress() {
+  // 渲染任务事件摘要，保持过程可见但不占用过多空间。
+  $("generationProgressItems").innerHTML = state.generationEvents
+    .slice(-12)
+    .map((event) => {
+      const chunkLabel = event.chunk_id ? event.chunk_id.slice(-6) : "任务";
+      const text =
+        event.type === "generated"
+          ? `${chunkLabel}: 生成 ${event.candidate_count || 0}`
+          : event.type === "skipped"
+            ? `${chunkLabel}: 跳过`
+            : event.type === "failed"
+              ? `${chunkLabel}: 失败`
+              : event.type === "processing"
+                ? `${chunkLabel}: 处理中`
+                : "完成";
+      return `<span class="generation-progress-item">${escapeHtml(text)}</span>`;
+    })
+    .join("");
 }
 
 async function reparseCurrentImportFile() {
