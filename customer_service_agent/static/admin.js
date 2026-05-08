@@ -13,12 +13,21 @@ const state = {
   tags: [],
   importQuery: "",
   importStatus: "",
+  importView: "chunks",
   importFiles: [],
   currentImportFile: null,
   importChunks: [],
   selectedImportChunks: new Set(),
+  selectedImportCandidates: new Set(),
   currentImportChunk: null,
   importCandidates: [],
+  candidateQuery: "",
+  candidateStatus: "",
+  candidateCategory: "",
+  candidateConfidence: "",
+  candidateDuplicate: "",
+  candidateOnlyPending: false,
+  candidateChunkFilter: null,
   currentCandidateIndex: 0,
   candidateVariants: [],
   candidateTags: [],
@@ -26,6 +35,10 @@ const state = {
   generationJob: null,
   generationItems: {},
   generationFocusText: "当前：-",
+  progressDisplayPercent: 0,
+  progressResetOnNextRender: false,
+  overviewAnimateOnNextRender: false,
+  progressCardsAnimateOnNextRender: false,
   chunkPage: 1,
   chunkPageSize: 10,
   aiRequestInFlight: false,
@@ -86,6 +99,28 @@ function statusPill(value) {
   return `<span class="status-pill ${safeCssToken(status)}">${escapeHtml(status)}</span>`;
 }
 
+function importChunkStatusPill(value) {
+  // 切块表格使用中文状态，避免审核人员看到数据库状态值后还要二次理解。
+  const status = value || "pending";
+  const labels = {
+    queued: "待解析",
+    pending: "待审核",
+    processing: "解析中",
+    generated: "已完成",
+    skipped: "已完成",
+    failed: "解析失败",
+  };
+  const classes = {
+    queued: "queued",
+    pending: "needs_review",
+    processing: "processing",
+    generated: "generated",
+    skipped: "skipped",
+    failed: "failed",
+  };
+  return `<span class="status-pill ${classes[status] || safeCssToken(status)}">${escapeHtml(labels[status] || status)}</span>`;
+}
+
 function statusPillClass(value) {
   // 将状态值统一转成可复用的 CSS class 名。
   return safeCssToken(value || "pending");
@@ -98,8 +133,82 @@ function chunkDisplayName(chunkId) {
   return chunkId ? `#${String(chunkId).slice(-6)}` : "#-";
 }
 
+function chunkKeywordSummary(chunk) {
+  // 当前处理区只展示能帮助定位的关键词摘要，避免把原文内容塞进进度卡。
+  if (!chunk) return "当前：-";
+  const keywords = Array.isArray(chunk.keywords) ? chunk.keywords.join(" / ") : "";
+  return keywords || chunk.source_section || chunk.source_ref || "当前：-";
+}
+
+function progressFocusChunk(chunks = state.importChunks) {
+  // 进度卡优先展示真实处理中的切块；没有任务时展示下一条待审核切块作为操作焦点。
+  const processingItem = Object.values(state.generationItems).find(
+    (item) => item.status === "processing",
+  );
+  if (processingItem?.chunk_id) {
+    const processingChunk = state.importChunks.find((item) => item.id === processingItem.chunk_id);
+    if (processingChunk) return processingChunk;
+  }
+  if (state.currentImportChunk) return state.currentImportChunk;
+  return chunks.find((item) => item.status === "processing")
+    || chunks.find((item) => item.status !== "generated")
+    || chunks[0]
+    || null;
+}
+
+function setCandidateChunkFilter(chunk) {
+  // 记录候选 FAQ 的来源块筛选，保证从解析块进入时只看该块候选。
+  state.candidateChunkFilter = chunk
+    ? { id: chunk.id, index: chunk.chunk_index || "-", label: chunkDisplayName(chunk.id) }
+    : null;
+  if (!$("candidateSourceFilterLabel")) return;
+  $("candidateSourceFilterLabel").textContent = state.candidateChunkFilter
+    ? `来源块 ${state.candidateChunkFilter.label}`
+    : "全部来源块";
+  $("clearCandidateChunkFilterButton").classList.toggle("hidden", !state.candidateChunkFilter);
+}
+
+function animatePanelCards(selector) {
+  // 切换解析块/候选 FAQ 时只让内部卡片逐个进入，外层框架保持固定。
+  document.querySelectorAll(selector).forEach((item, index) => {
+    item.classList.remove("metric-enter");
+    item.style.animationDelay = `${index * 48}ms`;
+    void item.offsetWidth;
+    item.classList.add("metric-enter");
+  });
+}
+
+function animateOverviewMetrics() {
+  // 概览区只动画当前模式可见的指标卡。
+  animatePanelCards(".overview-metric:not(.hidden)");
+}
+
+function setProgressPercent(percent, options = {}) {
+  // 工作区切换时让同一条进度条先回到 0，再增长到新页面百分比。
+  const bar = $("generationProgressBar");
+  const track = bar.parentElement;
+  const target = Math.max(Math.min(percent, 100), 0);
+  if (options.reset) {
+    bar.style.width = `${state.progressDisplayPercent || 0}%`;
+    window.requestAnimationFrame(() => {
+      bar.style.width = "0%";
+      track.style.setProperty("--progress-percent", "0%");
+      window.setTimeout(() => {
+        bar.style.width = `${target}%`;
+        track.style.setProperty("--progress-percent", `${target}%`);
+      }, 220);
+    });
+  } else {
+    bar.style.width = `${target}%`;
+    track.style.setProperty("--progress-percent", `${target}%`);
+  }
+  state.progressDisplayPercent = target;
+}
+
 function switchWorkspace(workspace) {
   // 切换知识库下的标准问答和导入审核工作区。
+  closeDrawer({ force: true });
+  closeCandidateDrawer();
   state.workspace = workspace;
   $("faqWorkspace").classList.toggle("hidden", workspace !== "faq");
   $("importWorkspace").classList.toggle("hidden", workspace !== "import");
@@ -108,6 +217,31 @@ function switchWorkspace(workspace) {
     button.classList.toggle("active", button.dataset.workspace === workspace);
   });
   if (workspace === "import") loadImportFiles();
+}
+
+async function switchImportView(view, options = {}) {
+  // 在导入审核内切换解析块和候选 FAQ 两个工作阶段。
+  const changed = state.importView !== view;
+  state.importView = view;
+  if (changed) {
+    state.progressResetOnNextRender = true;
+    state.overviewAnimateOnNextRender = true;
+    state.progressCardsAnimateOnNextRender = true;
+  }
+  if (view === "candidates" && !options.keepCandidateChunkFilter) {
+    setCandidateChunkFilter(null);
+  }
+  document.querySelectorAll(".import-view-tab").forEach((button) => {
+    button.classList.toggle("active", button.dataset.importView === view);
+  });
+  $("chunkWorkspace").classList.toggle("hidden", view !== "chunks");
+  $("candidateWorkspace").classList.toggle("hidden", view !== "candidates");
+  if (view === "candidates" && state.currentImportFile) {
+    await loadImportFileCandidates(state.currentImportFile.id);
+  } else {
+    renderImportOverview(state.currentImportFile, state.importChunks);
+    renderGenerationProgress();
+  }
 }
 
 function filterItem(group, value, label, count, activeValue) {
@@ -127,12 +261,15 @@ function renderImportPlaceholder() {
   $("importFiles").innerHTML =
     '<div class="import-empty">暂无导入文件，点击“上传文件”开始。</div>';
   $("importChunks").innerHTML =
-    '<tr><td colspan="7" class="empty">请选择左侧文件查看时间切块</td></tr>';
-  $("candidateList").innerHTML =
-    '<tr><td colspan="5" class="empty">请选择切块后查看候选 FAQ</td></tr>';
-  $("candidateListSummary").textContent = "请选择切块后生成候选 FAQ";
-  $("openCurrentCandidateButton").disabled = true;
+    '<tr><td colspan="8" class="empty">请选择左侧文件查看解析块</td></tr>';
+  $("fileCandidateList").innerHTML =
+    '<tr><td colspan="9" class="empty">请选择文件后查看候选 FAQ</td></tr>';
+  $("candidateList").innerHTML = "";
+  $("candidateListSummary").textContent = "请选择文件后查看候选 FAQ";
+  setCandidateChunkFilter(null);
+  renderImportOverview(null, []);
   updateSelectedChunkCount();
+  updateSelectedCandidateCount();
   closeCandidateDrawer();
   resetGenerationProgress();
 }
@@ -144,14 +281,35 @@ function resetGenerationProgress() {
   state.generationItems = {};
   state.generationFocusText = "当前：-";
   if (!$("generationProgress")) return;
-  $("generationProgress").classList.add("hidden");
   $("generationProgress").classList.remove("running");
   $("generationProgressText").textContent = "等待任务开始";
-  $("generationProgressBar").style.width = "0%";
-  $("generationProgressBar").parentElement.style.setProperty("--progress-percent", "0%");
-  $("generationProgressRatio").textContent = "0 / 0 块";
-  $("generationCurrentChunk").textContent = "当前：-";
-  $("generationProgressItems").innerHTML = "";
+  setProgressPercent(0);
+  $("generationProgressRatio").textContent = "0%";
+  $("generationCurrentIndex").textContent = "-";
+  $("generationCurrentChunk").textContent = "请选择解析块或开始自动识别 FAQ";
+  $("generationCurrentBar").style.width = "0%";
+  $("generationEstimate").textContent = "--";
+  $("generationLastUpdated").textContent = "--";
+  $("generationCurrentEta").textContent = "预计剩余 --";
+  renderGenerationProgress();
+}
+
+function resetCandidateFilters() {
+  // 切换导入文件时重置候选审核筛选，避免上一个文件的条件影响当前文件。
+  state.candidateQuery = "";
+  state.candidateStatus = "";
+  state.candidateCategory = "";
+  state.candidateConfidence = "";
+  state.candidateDuplicate = "";
+  state.candidateOnlyPending = false;
+  setCandidateChunkFilter(null);
+  if (!$("candidateSearchInput")) return;
+  $("candidateSearchInput").value = "";
+  $("candidateStatusSelect").value = "";
+  $("candidateCategorySelect").value = "";
+  $("candidateConfidenceSelect").value = "";
+  $("candidateDuplicateSelect").value = "";
+  $("onlyPendingCandidates").checked = false;
 }
 
 async function loadImportFiles() {
@@ -173,8 +331,10 @@ async function loadImportFiles() {
       state.importCandidates = [];
       state.importChunks = [];
       state.selectedImportChunks.clear();
+      state.selectedImportCandidates.clear();
       state.chunkPage = 1;
       renderImportChunks([]);
+      renderImportCandidateList();
     }
     if (!state.currentImportFile && state.importFiles.length) {
       await selectImportFile(state.importFiles[0].id);
@@ -196,6 +356,62 @@ function renderImportFileCounts(data) {
   $("importCountFailed").textContent = counts.failed || 0;
   $("importFailedCount").textContent = counts.failed || 0;
   $("importFileSummary").textContent = `共 ${data.total || 0} 个`;
+}
+
+function renderImportOverview(file, chunks = state.importChunks) {
+  // 汇总当前文件的解析块和候选数量，作为导入审核工作台的顶部上下文。
+  $("overviewFileName").textContent = file?.original_name || "请选择导入文件";
+  $("overviewFileMeta").textContent = file
+    ? `来源：${file.file_type || "-"} / ${file.parser || "-"} · 共 ${file.chunk_count || 0} 块`
+    : "选择文件后查看解析块和候选 FAQ。";
+  $("overviewParserTag").textContent = file?.parser || "-";
+  $("overviewStatusTag").textContent = file?.status || "-";
+  if (state.importView === "candidates") {
+    const candidates = candidateScopeItems();
+    $("overviewMetric1Label").textContent = "候选 FAQ 总数";
+    $("overviewMetric2Label").textContent = "待审核";
+    $("overviewMetric3Label").textContent = "已保存";
+    $("overviewMetric4Label").textContent = "已忽略";
+    $("overviewMetric5Label").textContent = "低置信度";
+    $("overviewChunkCount").textContent = String(candidates.length || file?.candidate_count || 0);
+    $("overviewPendingChunkCount").textContent = String(
+      candidates.filter((item) => item.status === "pending").length,
+    );
+    $("overviewCandidateCount").textContent = String(
+      candidates.filter((item) => item.status === "saved").length,
+    );
+    $("overviewFailedChunkCount").textContent = String(
+      candidates.filter((item) => item.status === "ignored").length,
+    );
+    $("overviewLowConfidenceCount").textContent = String(
+      candidates.filter((item) => item.confidence === "low").length,
+    );
+    $("overviewExtraMetric").classList.remove("hidden");
+    if (state.overviewAnimateOnNextRender) {
+      animateOverviewMetrics();
+      state.overviewAnimateOnNextRender = false;
+    }
+    return;
+  }
+  $("overviewMetric1Label").textContent = "总解析块";
+  $("overviewMetric2Label").textContent = "待审核块";
+  $("overviewMetric3Label").textContent = "生成候选 FAQ";
+  $("overviewMetric4Label").textContent = "解析失败块";
+  $("overviewExtraMetric").classList.add("hidden");
+  $("overviewChunkCount").textContent = String(chunks.length || file?.chunk_count || 0);
+  $("overviewPendingChunkCount").textContent = String(
+    chunks.filter((item) => item.status !== "generated").length || 0,
+  );
+  $("overviewCandidateCount").textContent = String(
+    state.importCandidates.length || file?.candidate_count || 0,
+  );
+  $("overviewFailedChunkCount").textContent = String(
+    chunks.filter((item) => item.status === "failed").length || 0,
+  );
+  if (state.overviewAnimateOnNextRender) {
+    animateOverviewMetrics();
+    state.overviewAnimateOnNextRender = false;
+  }
 }
 
 function renderImportFiles(items) {
@@ -246,6 +462,8 @@ async function selectImportFile(fileId) {
   state.currentImportChunk = null;
   state.importCandidates = [];
   state.selectedImportChunks.clear();
+  state.selectedImportCandidates.clear();
+  resetCandidateFilters();
   state.currentCandidateIndex = 0;
   state.chunkPage = 1;
   renderImportFiles(state.importFiles);
@@ -254,13 +472,15 @@ async function selectImportFile(fileId) {
   resetGenerationProgress();
   $("currentImportFileName").textContent = file.original_name || "导入文件";
   $("currentImportMeta").textContent = `${file.file_type || "-"} / ${file.parser || "-"} / ${file.status || "-"}`;
+  renderImportOverview(file, []);
   if (file.status === "unsupported") {
     $("importChunks").innerHTML =
-      '<tr><td colspan="7" class="empty">当前文件类型已识别，但第一期暂不支持解析</td></tr>';
+      '<tr><td colspan="8" class="empty">当前文件类型已识别，但第一期暂不支持解析</td></tr>';
     renderImportCandidateList("当前文件类型暂不支持解析");
     return;
   }
   await loadImportChunks(fileId);
+  if (state.importView === "candidates") await loadImportFileCandidates(fileId);
 }
 
 async function loadImportChunks(fileId) {
@@ -268,6 +488,7 @@ async function loadImportChunks(fileId) {
   try {
     const data = await requestJson(`/api/import/files/${encodeURIComponent(fileId)}/chunks`);
     state.importChunks = data.items || [];
+    renderImportOverview(state.currentImportFile, state.importChunks);
     renderImportChunks(state.importChunks);
   } catch (error) {
     showToast(error.message);
@@ -281,18 +502,25 @@ function renderImportChunks(items) {
   const totalPages = Math.max(Math.ceil(filteredItems.length / state.chunkPageSize), 1);
   state.chunkPage = Math.min(Math.max(state.chunkPage, 1), totalPages);
   $("chunkSummary").textContent = `共 ${filteredItems.length} 块`;
+  $("chunkRangeStart").value = filteredItems.length ? "1" : "0";
+  $("chunkRangeEnd").value = String(filteredItems.length);
   $("chunkPageNumber").textContent = String(state.chunkPage);
   $("prevChunkPage").disabled = state.chunkPage <= 1;
   $("nextChunkPage").disabled = state.chunkPage >= totalPages;
   updateSelectedChunkCount();
+  renderGenerationProgress();
   if (!visibleItems.length) {
-    $("importChunks").innerHTML = '<tr><td colspan="7" class="empty">暂无切块</td></tr>';
-    renderImportCandidateList("当前文件暂无可审核切块");
+    $("importChunks").innerHTML = '<tr><td colspan="8" class="empty">暂无解析块</td></tr>';
     return;
   }
+  const focusChunk = progressFocusChunk(visibleItems);
   $("importChunks").innerHTML = visibleItems
     .map((item) => {
-      const active = state.currentImportChunk?.id === item.id ? "selected" : "";
+      const active = state.currentImportChunk?.id === item.id
+        ? "selected"
+        : !state.currentImportChunk && focusChunk?.id === item.id
+          ? "visual-current"
+          : "";
       const checked = state.selectedImportChunks.has(item.id) ? "checked" : "";
       const keywords = Array.isArray(item.keywords) ? item.keywords.join(" / ") : "";
       return `
@@ -302,8 +530,9 @@ function renderImportChunks(items) {
           <td>${formatDate(item.start_at)} - ${formatDate(item.end_at).slice(11) || "-"}</td>
           <td>${item.message_count || 0} 条消息</td>
           <td>${escapeHtml(keywords || "-")}</td>
-          <td>${statusPill(item.status)}</td>
+          <td>${importChunkStatusPill(item.status)}</td>
           <td>${item.candidate_count || 0} 条候选</td>
+          <td><button class="candidate-review-button" type="button" data-import-chunk-id="${escapeHtml(item.id)}">查看</button></td>
         </tr>
       `;
     })
@@ -339,12 +568,13 @@ function updateSelectedChunkCount() {
 }
 
 async function selectImportChunk(chunkId) {
-  // 选择切块后只载入候选列表，详细审核由侧滑抽屉承载。
+  // 选择切块后切到候选审核视图，并按来源块自动筛出该块候选。
   state.currentImportChunk = state.importChunks.find((item) => item.id === chunkId) || null;
   state.currentCandidateIndex = 0;
+  setCandidateChunkFilter(state.currentImportChunk);
   renderImportChunks(state.importChunks);
   closeCandidateDrawer();
-  await loadImportCandidates(chunkId);
+  await switchImportView("candidates", { keepCandidateChunkFilter: true });
 }
 
 async function loadImportCandidates(chunkId, options = {}) {
@@ -357,6 +587,25 @@ async function loadImportCandidates(chunkId, options = {}) {
       requestedIndex,
       Math.max(state.importCandidates.length - 1, 0),
     );
+    renderImportCandidateList();
+    if ($("candidateDrawer").classList.contains("open")) renderCurrentCandidate();
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+async function loadImportFileCandidates(fileId, options = {}) {
+  // 载入当前文件下全部候选 FAQ，支撑候选 FAQ 审核工作台。
+  try {
+    const data = await requestJson(`/api/import/files/${encodeURIComponent(fileId)}/candidates`);
+    state.importCandidates = data.items || [];
+    state.selectedImportCandidates.clear();
+    const requestedIndex = options.index ?? state.currentCandidateIndex ?? 0;
+    state.currentCandidateIndex = Math.min(
+      requestedIndex,
+      Math.max(state.importCandidates.length - 1, 0),
+    );
+    renderImportOverview(state.currentImportFile, state.importChunks);
     renderImportCandidateList();
     if ($("candidateDrawer").classList.contains("open")) renderCurrentCandidate();
   } catch (error) {
@@ -378,65 +627,149 @@ function duplicateLevelLabel(value) {
   return labels[value || "none"] || "未重复";
 }
 
+function candidateScopeItems() {
+  // 候选审核范围优先受来源块约束，未指定来源块时才查看当前文件全部候选。
+  if (!state.candidateChunkFilter) return state.importCandidates;
+  return state.importCandidates.filter((item) => item.chunk_id === state.candidateChunkFilter.id);
+}
+
+function renderCandidateFilterOptions() {
+  // 根据当前来源范围刷新候选筛选项，避免下拉中出现无结果分类。
+  const select = $("candidateCategorySelect");
+  if (!select) return;
+  const categories = Array.from(
+    new Set(candidateScopeItems().map((item) => item.category).filter(Boolean)),
+  );
+  select.innerHTML = [
+    '<option value="">全部</option>',
+    ...categories.map((item) => `<option value="${escapeHtml(item)}">${escapeHtml(item)}</option>`),
+  ].join("");
+  if (!categories.includes(state.candidateCategory)) state.candidateCategory = "";
+  select.value = state.candidateCategory;
+}
+
+function filteredImportCandidates() {
+  // 候选 FAQ 视图只做轻量搜索和状态筛选，避免小团队审核入口过重。
+  return candidateScopeItems().filter((item) => {
+    const query = state.candidateQuery.trim();
+    const matchesQuery =
+      !query ||
+      String(item.question || "").includes(query) ||
+      String(item.answer || "").includes(query) ||
+      String(item.category || "").includes(query);
+    const matchesStatus = !state.candidateStatus || item.status === state.candidateStatus;
+    const matchesCategory = !state.candidateCategory || item.category === state.candidateCategory;
+    const matchesConfidence =
+      !state.candidateConfidence || (item.confidence || "medium") === state.candidateConfidence;
+    const matchesDuplicate =
+      !state.candidateDuplicate || (item.duplicate_level || "none") === state.candidateDuplicate;
+    const matchesPending = !state.candidateOnlyPending || item.status === "pending";
+    return matchesQuery
+      && matchesStatus
+      && matchesCategory
+      && matchesConfidence
+      && matchesDuplicate
+      && matchesPending;
+  });
+}
+
+function updateSelectedCandidateCount() {
+  // 维护候选 FAQ 批量操作选择数量和按钮可用状态。
+  if (!$("selectedCandidateCount")) return;
+  const visibleIds = filteredImportCandidates().map((item) => item.id);
+  const selectedVisibleCount = visibleIds.filter((id) => state.selectedImportCandidates.has(id)).length;
+  const selectedCount = state.selectedImportCandidates.size;
+  $("selectedCandidateCount").textContent = `已选择 ${selectedCount} 条`;
+  $("batchSaveCandidatesButton").disabled = selectedCount === 0;
+  $("batchIgnoreCandidatesButton").disabled = selectedCount === 0;
+  const selectAll = $("selectAllCandidates");
+  if (!selectAll) return;
+  selectAll.checked = visibleIds.length > 0 && selectedVisibleCount === visibleIds.length;
+  selectAll.indeterminate = selectedVisibleCount > 0 && selectedVisibleCount < visibleIds.length;
+}
+
 function renderCandidateCounts() {
   // 统一刷新候选列表和审核抽屉使用的状态统计。
-  const candidates = state.importCandidates;
-  $("candidateIndex").textContent = candidates.length
-    ? `${state.currentCandidateIndex + 1} / ${candidates.length}`
+  const scopedCandidates = candidateScopeItems();
+  const visibleCandidates = filteredImportCandidates();
+  $("candidateIndex").textContent = visibleCandidates.length
+    ? `${state.currentCandidateIndex + 1} / ${visibleCandidates.length}`
     : "0 / 0";
-  $("candidatePendingCount").textContent = candidates.filter((item) => item.status === "pending").length;
-  $("candidateSavedCount").textContent = candidates.filter((item) => item.status === "saved").length;
-  $("candidateIgnoredCount").textContent = candidates.filter((item) => item.status === "ignored").length;
-  $("openCurrentCandidateButton").disabled = !candidates.length;
-  const hasCandidate = candidates.length > 0;
+  $("candidatePendingCount").textContent = scopedCandidates.filter((item) => item.status === "pending").length;
+  $("candidateSavedCount").textContent = scopedCandidates.filter((item) => item.status === "saved").length;
+  $("candidateIgnoredCount").textContent = scopedCandidates.filter((item) => item.status === "ignored").length;
+  const hasCandidate = visibleCandidates.length > 0;
   $("prevCandidate").disabled = state.currentCandidateIndex <= 0 || !hasCandidate;
   $("nextCandidate").disabled =
-    !hasCandidate || state.currentCandidateIndex >= candidates.length - 1;
+    !hasCandidate || state.currentCandidateIndex >= visibleCandidates.length - 1;
   $("saveCandidateButton").disabled = !hasCandidate;
   $("ignoreCandidateButton").disabled = !hasCandidate;
   $("rewriteCandidateButton").disabled = !hasCandidate;
   $("viewCandidateSourceButton").disabled = !hasCandidate;
 }
 
+function currentVisibleCandidate() {
+  // 返回当前筛选范围内正在审核的候选 FAQ，所有单条动作都必须尊重来源块筛选。
+  return filteredImportCandidates()[state.currentCandidateIndex] || null;
+}
+
 function renderImportCandidateList(message = "") {
-  // 在主工作区显示候选摘要，用户点击行或审核按钮后才打开右侧抽屉。
-  const candidates = state.importCandidates;
+  // 在主工作区显示文件级候选摘要，用户点击行或审核按钮后打开右侧抽屉。
+  renderCandidateFilterOptions();
+  const candidates = filteredImportCandidates();
+  const scopedCandidates = candidateScopeItems();
+  state.currentCandidateIndex = Math.min(
+    state.currentCandidateIndex,
+    Math.max(candidates.length - 1, 0),
+  );
   renderCandidateCounts();
-  if (!state.currentImportChunk) {
-    $("candidateListSummary").textContent = message || "请选择切块后生成候选 FAQ";
-    $("candidateList").innerHTML =
-      '<tr><td colspan="6" class="empty">请选择切块后查看候选 FAQ</td></tr>';
+  updateSelectedCandidateCount();
+  renderImportOverview(state.currentImportFile, state.importChunks);
+  renderGenerationProgress();
+  if (!state.currentImportFile) {
+    $("candidateListSummary").textContent = message || "请选择文件后查看候选 FAQ";
+    $("fileCandidateList").innerHTML =
+      '<tr><td colspan="9" class="empty">请选择文件后查看候选 FAQ</td></tr>';
+    $("candidateList").innerHTML = "";
     return;
   }
-  $("candidateListSummary").textContent = candidates.length
-    ? `当前切块 ${candidates.length} 条候选，点击行进入审核`
-    : message || "当前切块暂无候选 FAQ，可先批量生成";
+  const sourceCopy = state.candidateChunkFilter ? `${state.candidateChunkFilter.label} · ` : "";
+  $("candidateListSummary").textContent = scopedCandidates.length
+    ? `${sourceCopy}当前范围 ${scopedCandidates.length} 条候选，筛选后 ${candidates.length} 条；保存后会同步生成 embedding。`
+    : message || "当前文件暂无候选 FAQ，可先在解析块中自动识别";
   if (!candidates.length) {
-    $("candidateList").innerHTML =
-      '<tr><td colspan="6" class="empty">当前切块暂无候选 FAQ</td></tr>';
+    $("fileCandidateList").innerHTML =
+      '<tr><td colspan="9" class="empty">当前筛选下暂无候选 FAQ</td></tr>';
+    $("candidateList").innerHTML = "";
     return;
   }
-  $("candidateList").innerHTML = candidates
+  const rows = candidates
     .map((item, index) => {
       const active = index === state.currentCandidateIndex ? "selected" : "";
+      const checked = state.selectedImportCandidates.has(item.id) ? "checked" : "";
       return `
         <tr class="${active}" data-import-candidate-index="${index}">
+          <td><input type="checkbox" class="candidate-check" data-id="${escapeHtml(item.id)}" ${checked}></td>
           <td>${candidateStatusPill(item.status)}</td>
           <td class="candidate-question-cell" title="${escapeHtml(item.question || "")}">${escapeHtml(item.question || "-")}</td>
           <td>${escapeHtml(item.category || "-")}</td>
           <td>${escapeHtml(duplicateLevelLabel(item.duplicate_level))}</td>
           <td>${escapeHtml(item.confidence || "medium")}</td>
+          <td>${item.chunk_index ? `#${escapeHtml(item.chunk_index)}` : "-"}</td>
+          <td>${formatDate(item.updated_at || item.created_at)}</td>
           <td><button class="candidate-review-button" type="button" data-import-candidate-index="${index}">审核</button></td>
         </tr>
       `;
     })
     .join("");
+  $("fileCandidateList").innerHTML = rows;
+  $("candidateList").innerHTML = rows;
+  updateSelectedCandidateCount();
 }
 
 function renderCurrentCandidate() {
   // 渲染侧滑抽屉中的当前候选 FAQ 表单和状态统计。
-  const candidates = state.importCandidates;
-  const current = candidates[state.currentCandidateIndex];
+  const current = currentVisibleCandidate();
   renderCandidateCounts();
   if (!current) {
     renderCandidateEmpty("请选择切块或生成候选 FAQ");
@@ -447,31 +780,48 @@ function renderCurrentCandidate() {
   $("candidateCategory").value = current.category || "";
   $("candidateInternalNote").value = current.internal_note || "";
   $("candidateSource").textContent = current.source_excerpt || state.currentImportChunk?.source_text || "";
-  $("candidateDuplicateLevel").textContent = `${duplicateLevelLabel(current.duplicate_level)} ${Math.round((current.duplicate_score || 0) * 100)}%`;
+  renderCandidateDuplicate(current);
   state.candidateVariants = current.similar_questions || [];
   state.candidateTags = current.tags || [];
   renderCandidateChips();
   renderCandidateConfidence(current.confidence || "medium");
 }
 
+function syncDrawerBackdrop() {
+  // 两个详情抽屉共用一个透明遮罩，只在任一抽屉打开时接管外部点击。
+  const backdrop = $("drawerBackdrop");
+  const faqDrawer = $("drawer");
+  const candidateDrawer = $("candidateDrawer");
+  if (!backdrop) return;
+  const isOpen =
+    Boolean(faqDrawer?.classList.contains("open")) ||
+    Boolean(candidateDrawer?.classList.contains("open"));
+  backdrop.classList.toggle("open", isOpen);
+  backdrop.setAttribute("aria-hidden", isOpen ? "false" : "true");
+}
+
 function openCandidateDrawer(index = state.currentCandidateIndex) {
   // 打开候选 FAQ 审核抽屉，避免详情常驻占用主工作区。
-  if (!state.importCandidates.length) {
-    showToast("当前切块暂无候选 FAQ");
+  const candidates = filteredImportCandidates();
+  if (!candidates.length) {
+    showToast("当前文件暂无候选 FAQ");
     return;
   }
-  state.currentCandidateIndex = Math.min(index, state.importCandidates.length - 1);
+  state.currentCandidateIndex = Math.min(index, candidates.length - 1);
   renderCurrentCandidate();
   renderImportCandidateList();
   $("candidateDrawer").classList.add("open");
   $("candidateDrawer").setAttribute("aria-hidden", "false");
+  syncDrawerBackdrop();
 }
 
 function closeCandidateDrawer() {
   // 关闭候选审核抽屉，不影响当前切块和候选列表选择。
-  if (!$("candidateDrawer")) return;
-  $("candidateDrawer").classList.remove("open");
-  $("candidateDrawer").setAttribute("aria-hidden", "true");
+  const candidateDrawer = $("candidateDrawer");
+  if (!candidateDrawer) return;
+  candidateDrawer.classList.remove("open");
+  candidateDrawer.setAttribute("aria-hidden", "true");
+  syncDrawerBackdrop();
 }
 
 function renderCandidateEmpty(message) {
@@ -481,7 +831,7 @@ function renderCandidateEmpty(message) {
   $("candidateCategory").value = "";
   $("candidateInternalNote").value = "";
   $("candidateSource").textContent = message;
-  $("candidateDuplicateLevel").textContent = "未检测";
+  renderCandidateDuplicate({ duplicate_level: "none", duplicate_score: 0 });
   state.candidateVariants = [];
   state.candidateTags = [];
   renderCandidateChips();
@@ -504,6 +854,16 @@ function renderCandidateConfidence(value) {
   $("candidateConfidenceValue").textContent = value;
   $("candidateConfidenceBar").style.width = `${score}%`;
   $("candidateConfidencePercent").textContent = `${score}%`;
+  $("candidateConfidenceMirror").textContent = value;
+  $("candidateConfidenceMirrorBar").style.width = `${score}%`;
+}
+
+function renderCandidateDuplicate(candidate) {
+  // 重复度只表示与已有知识的重复风险，不作为业务重要性评分。
+  const score = Math.round((candidate?.duplicate_score || 0) * 100);
+  $("candidateDuplicateLevel").textContent = `${duplicateLevelLabel(candidate?.duplicate_level)} ${score}%`;
+  $("candidateDuplicatePercent").textContent = `${score}%`;
+  $("candidateDuplicateBar").style.width = `${score}%`;
 }
 
 function collectCandidatePayload() {
@@ -598,7 +958,7 @@ function startGenerationJob(job) {
     $("generateChunkCandidatesButton").disabled = false;
     state.selectedImportChunks.clear();
     await loadImportChunks(state.currentImportFile.id);
-    if (state.currentImportChunk) await loadImportCandidates(state.currentImportChunk.id);
+    if (state.importView === "candidates") await loadImportFileCandidates(state.currentImportFile.id);
     else renderImportCandidateList();
     closeCandidateDrawer();
   });
@@ -624,6 +984,7 @@ function handleGenerationEvent(event) {
   if (event.type === "processing") {
     state.generationFocusText = `当前：${chunkDisplayName(event.chunk_id)}`;
     $("generationProgressText").textContent = `正在生成 ${chunkDisplayName(event.chunk_id)}`;
+    $("generationCurrentIndex").textContent = chunkDisplayName(event.chunk_id);
   } else if (event.type === "generated") {
     state.generationFocusText = `刚完成：${chunkDisplayName(event.chunk_id)}`;
     $("generationProgressText").textContent =
@@ -645,30 +1006,132 @@ function handleGenerationEvent(event) {
 }
 
 function renderGenerationProgress() {
-  // 用进度条和聚合统计展示批量任务，避免一次选择多块时刷满事件标签。
-  const items = Object.values(state.generationItems);
-  const total = state.generationJob?.total || items.length;
-  const generated = items.filter((item) => item.status === "generated").length;
-  const skipped = items.filter((item) => item.status === "skipped").length;
-  const failed = items.filter((item) => item.status === "failed").length;
-  const processing = items.filter((item) => item.status === "processing").length;
+  // 用进度条和聚合卡片展示解析块处理状态。
+  if (state.importView === "candidates") {
+    renderCandidateAuditProgress();
+    return;
+  }
+  $("generationProgress").classList.remove("candidate-audit-mode");
+  $("progressPanelTitle").textContent = "解析与生成进度";
+  $("progressMainLabel").textContent = "整体进度";
+  $("progressCurrentLabel").textContent = "当前处理块";
+  const jobItems = Object.values(state.generationItems);
+  const chunks = state.importChunks || [];
+  const focusChunk = progressFocusChunk(chunks);
+  const total = state.generationJob?.total || chunks.length || jobItems.length;
+  const generated = jobItems.length
+    ? jobItems.filter((item) => item.status === "generated").length
+    : chunks.filter((item) => item.status === "generated").length;
+  const skipped = jobItems.filter((item) => item.status === "skipped").length;
+  const failed = jobItems.length
+    ? jobItems.filter((item) => item.status === "failed").length
+    : chunks.filter((item) => item.status === "failed").length;
+  const processing = jobItems.filter((item) => item.status === "processing").length;
+  const pending = Math.max(total - generated - failed - processing - skipped, 0);
   const completed = generated + skipped + failed;
   const percent = total ? Math.round((completed / total) * 100) : 0;
-  $("generationProgressBar").style.width = `${percent}%`;
-  $("generationProgressBar").parentElement.style.setProperty("--progress-percent", `${percent}%`);
-  $("generationProgressRatio").textContent = `${completed} / ${total} 块`;
-  $("generationCurrentChunk").textContent = state.generationFocusText || "当前：-";
+  setProgressPercent(percent, { reset: state.progressResetOnNextRender });
+  state.progressResetOnNextRender = false;
+  $("generationProgressRatio").textContent = `${percent}%`;
+  $("generationCurrentIndex").textContent = focusChunk ? `#${focusChunk.chunk_index || "-"}` : "-";
+  const currentStatus = processing ? "processing" : focusChunk?.status || "pending";
+  const statusLabels = {
+    queued: "待解析",
+    pending: "待审核",
+    processing: "解析中",
+    generated: "已完成",
+    skipped: "已完成",
+    failed: "解析失败",
+  };
+  const statusClasses = {
+    queued: "queued",
+    pending: "needs_review",
+    processing: "processing",
+    generated: "generated",
+    skipped: "skipped",
+    failed: "failed",
+  };
+  $("generationCurrentStatus").textContent = statusLabels[currentStatus] || currentStatus;
+  $("generationCurrentStatus").className =
+    `status-pill ${statusClasses[currentStatus] || safeCssToken(currentStatus)}`;
+  $("generationCurrentChunk").textContent =
+    state.generationJob?.status === "running" && state.generationFocusText
+      ? state.generationFocusText
+      : chunkKeywordSummary(focusChunk);
+  $("generationCurrentBar").style.width = processing ? "32%" : percent ? `${percent}%` : "0%";
+  $("generationEstimate").textContent = state.generationJob?.status === "running" ? "计算中" : "--";
+  $("generationLastUpdated").textContent = formatDate(new Date().toISOString()).slice(11) || "--";
+  $("generationCurrentEta").textContent = processing ? "预计剩余 计算中" : "预计剩余 --";
   $("generationProgressItems").innerHTML = [
-    ["generated", `已生成 ${generated}`],
-    ["processing", `处理中 ${processing}`],
-    ["skipped", `已跳过 ${skipped}`],
-    ["failed", `失败 ${failed}`],
+    ["pending", "待解析", pending],
+    ["processing", "解析中", processing],
+    ["skipped", "待审核", pending + skipped],
+    ["generated", "已完成", generated],
+    ["failed", "失败", failed],
   ]
     .map(
-      ([status, text]) =>
-        `<span class="generation-progress-item ${statusPillClass(status)}">${escapeHtml(text)}</span>`,
+      ([status, label, count]) =>
+        `<span class="generation-progress-item ${statusPillClass(status)}">${escapeHtml(label)}<b>${escapeHtml(count)}</b></span>`,
     )
     .join("");
+  if (state.progressCardsAnimateOnNextRender) {
+    animatePanelCards(".generation-progress-item");
+    state.progressCardsAnimateOnNextRender = false;
+  }
+}
+
+function renderCandidateAuditProgress() {
+  // 候选 FAQ 是人工审核，不展示耗时估算，只复用进度框展示审核状态。
+  const scopedCandidates = candidateScopeItems();
+  const visibleCandidates = filteredImportCandidates();
+  const total = scopedCandidates.length;
+  const saved = scopedCandidates.filter((item) => item.status === "saved").length;
+  const ignored = scopedCandidates.filter((item) => item.status === "ignored").length;
+  const pending = scopedCandidates.filter((item) => item.status === "pending").length;
+  const lowConfidence = scopedCandidates.filter((item) => item.confidence === "low").length;
+  const current = visibleCandidates[state.currentCandidateIndex] || visibleCandidates[0] || null;
+  const percent = total ? Math.round(((saved + ignored) / total) * 100) : 0;
+  $("generationProgress").classList.remove("running");
+  $("generationProgress").classList.add("candidate-audit-mode");
+  $("progressPanelTitle").textContent = "候选 FAQ 审核进度";
+  $("progressMainLabel").textContent = "审核进度";
+  $("progressCurrentLabel").textContent = "当前审核项";
+  $("generationProgressText").textContent = "人工审核";
+  setProgressPercent(percent, { reset: state.progressResetOnNextRender });
+  state.progressResetOnNextRender = false;
+  $("generationProgressRatio").textContent = `${percent}%`;
+  $("generationCurrentIndex").textContent = current
+    ? `#${current.chunk_index || state.currentCandidateIndex + 1}`
+    : "-";
+  const currentStatus = current?.status || "pending";
+  const statusLabels = { pending: "待审核", saved: "已保存", ignored: "已忽略" };
+  const statusClasses = { pending: "needs_review", saved: "generated", ignored: "skipped" };
+  $("generationCurrentStatus").textContent = statusLabels[currentStatus] || currentStatus;
+  $("generationCurrentStatus").className =
+    `status-pill ${statusClasses[currentStatus] || safeCssToken(currentStatus)}`;
+  $("generationCurrentChunk").textContent = current
+    ? `${current.category || "-"}${current.question ? ` / ${current.question}` : ""}`
+    : "当前筛选下暂无候选 FAQ";
+  $("generationCurrentBar").style.width = `${percent}%`;
+  $("generationEstimate").textContent = "--";
+  $("generationLastUpdated").textContent = formatDate(new Date().toISOString()).slice(11) || "--";
+  $("generationCurrentEta").textContent = "";
+  $("generationProgressItems").innerHTML = [
+    ["pending", "待审核", pending],
+    ["processing", "审核中", current ? 1 : 0],
+    ["generated", "已保存", saved],
+    ["skipped", "已忽略", ignored],
+    ["low", "低置信度", lowConfidence],
+  ]
+    .map(
+      ([status, label, count]) =>
+        `<span class="generation-progress-item ${statusPillClass(status)}">${escapeHtml(label)}<b>${escapeHtml(count)}</b></span>`,
+    )
+    .join("");
+  if (state.progressCardsAnimateOnNextRender) {
+    animatePanelCards(".generation-progress-item");
+    state.progressCardsAnimateOnNextRender = false;
+  }
 }
 
 async function reparseCurrentImportFile() {
@@ -702,8 +1165,8 @@ async function reparseCurrentImportFile() {
 }
 
 async function saveCurrentCandidate() {
-  // 先保存人工编辑，再写入标准问答。
-  const current = state.importCandidates[state.currentCandidateIndex];
+  // 先保存人工编辑，再写入标准问答并生成 embedding。
+  const current = currentVisibleCandidate();
   if (!current) return;
   const index = state.currentCandidateIndex;
   try {
@@ -715,8 +1178,8 @@ async function saveCurrentCandidate() {
       method: "POST",
       body: "{}",
     });
-    showToast("已保存到标准问答");
-    await loadImportCandidates(current.chunk_id, { index });
+    showToast("已保存到标准问答并生成 embedding");
+    await loadImportFileCandidates(current.file_id || state.currentImportFile.id, { index });
     openCandidateDrawer(state.currentCandidateIndex);
   } catch (error) {
     showToast(error.message);
@@ -725,7 +1188,7 @@ async function saveCurrentCandidate() {
 
 async function ignoreCurrentCandidate() {
   // 忽略不适合沉淀为标准问答的候选。
-  const current = state.importCandidates[state.currentCandidateIndex];
+  const current = currentVisibleCandidate();
   if (!current) return;
   const index = state.currentCandidateIndex;
   try {
@@ -734,16 +1197,70 @@ async function ignoreCurrentCandidate() {
       body: "{}",
     });
     showToast("已忽略候选 FAQ");
-    await loadImportCandidates(current.chunk_id, { index });
+    await loadImportFileCandidates(current.file_id || state.currentImportFile.id, { index });
     openCandidateDrawer(state.currentCandidateIndex);
   } catch (error) {
     showToast(error.message);
   }
 }
 
+async function saveSelectedCandidates() {
+  // 批量保存当前选中的候选 FAQ，每条保存后由后端立即生成 embedding。
+  const ids = Array.from(state.selectedImportCandidates);
+  if (!ids.length) {
+    showToast("请先选择候选 FAQ");
+    return;
+  }
+  try {
+    $("batchSaveCandidatesButton").disabled = true;
+    for (const id of ids) {
+      const candidate = state.importCandidates.find((item) => item.id === id);
+      if (!candidate || candidate.status !== "pending") continue;
+      await requestJson(`/api/import/candidates/${encodeURIComponent(id)}/save`, {
+        method: "POST",
+        body: "{}",
+      });
+    }
+    showToast(`已处理 ${ids.length} 条候选`);
+    await loadImportFileCandidates(state.currentImportFile.id);
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    $("batchSaveCandidatesButton").disabled = false;
+    updateSelectedCandidateCount();
+  }
+}
+
+async function ignoreSelectedCandidates() {
+  // 批量忽略当前选中的候选 FAQ。
+  const ids = Array.from(state.selectedImportCandidates);
+  if (!ids.length) {
+    showToast("请先选择候选 FAQ");
+    return;
+  }
+  try {
+    $("batchIgnoreCandidatesButton").disabled = true;
+    for (const id of ids) {
+      const candidate = state.importCandidates.find((item) => item.id === id);
+      if (!candidate || candidate.status !== "pending") continue;
+      await requestJson(`/api/import/candidates/${encodeURIComponent(id)}/ignore`, {
+        method: "POST",
+        body: "{}",
+      });
+    }
+    showToast(`已忽略 ${ids.length} 条候选`);
+    await loadImportFileCandidates(state.currentImportFile.id);
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    $("batchIgnoreCandidatesButton").disabled = false;
+    updateSelectedCandidateCount();
+  }
+}
+
 async function rewriteCurrentCandidate() {
   // 用 AI 对当前候选 FAQ 做保守改写，只回填表单，不自动保存。
-  const current = state.importCandidates[state.currentCandidateIndex];
+  const current = currentVisibleCandidate();
   if (!current) return;
   const question = $("candidateQuestion").value.trim();
   const answer = $("candidateAnswer").value.trim();
@@ -773,7 +1290,7 @@ async function rewriteCurrentCandidate() {
 
 function focusCurrentCandidateSource() {
   // 将审核抽屉滚动到来源片段，并短暂高亮证据区域。
-  if (!state.importCandidates.length) {
+  if (!currentVisibleCandidate()) {
     showToast("请选择候选 FAQ");
     return;
   }
@@ -847,6 +1364,7 @@ async function loadFaqs() {
 }
 
 function openDrawer(record = null) {
+  // 打开标准问答编辑抽屉，关闭态不占页面宽度，只在 open 状态显示。
   state.current = record;
   state.dirty = false;
   state.aiSuggestion = null;
@@ -858,20 +1376,30 @@ function openDrawer(record = null) {
   $("questionInput").value = record?.question || "";
   $("answerInput").value = record?.answer || "";
   $("categoryInput").value = record?.category || "";
+  $("faqInternalNote").value = record?.internal_note || "";
   $("statusInput").value = record?.status || "usable";
   $("aiPanel").classList.add("hidden");
   renderChips();
+  renderFaqSource(record);
   renderEmbeddingState(record?.embedding_status || "pending", record?.embedding_error || "");
   $("drawer").classList.add("open");
   $("drawer").setAttribute("aria-hidden", "false");
+  syncDrawerBackdrop();
 }
 
-function closeDrawer() {
-  if (state.dirty && !window.confirm("有未保存改动，确认关闭？")) return;
-  $("drawer").classList.remove("open");
-  $("drawer").setAttribute("aria-hidden", "true");
+function closeDrawer({ force = false } = {}) {
+  // 关闭标准问答抽屉；外部点击可强制关闭，按钮关闭仍保留未保存确认。
+  const drawer = $("drawer");
+  if (!drawer?.classList.contains("open")) {
+    syncDrawerBackdrop();
+    return;
+  }
+  if (!force && state.dirty && !window.confirm("有未保存改动，确认关闭？")) return;
+  drawer.classList.remove("open");
+  drawer.setAttribute("aria-hidden", "true");
   state.current = null;
   state.dirty = false;
+  syncDrawerBackdrop();
 }
 
 function renderEmbeddingState(status, error) {
@@ -889,6 +1417,23 @@ function renderEmbeddingState(status, error) {
         : status === "failed"
           ? error || "生成失败，可重试"
           : "未生成 embedding";
+}
+
+function renderFaqSource(record) {
+  // 在标准问答编辑抽屉中展示来源证据，和候选审核保持同一信息层级。
+  const evidence = record?.evidence || [];
+  if (!evidence.length) {
+    $("faqSourceBox").textContent = record?.source_file ? `来源文件：${record.source_file}` : "暂无来源证据";
+    return;
+  }
+  $("faqSourceBox").textContent = evidence
+    .map((item) => {
+      const source = item.source_file || record?.source_file || "-";
+      const chunk = item.chunk_id ? ` / ${item.chunk_id}` : "";
+      const excerpt = item.excerpt ? `\n${item.excerpt}` : "";
+      return `${source}${chunk}${excerpt}`;
+    })
+    .join("\n\n");
 }
 
 function chipHtml(value, group) {
@@ -928,6 +1473,7 @@ function collectForm() {
     tags: state.tags,
     status: $("statusInput").value,
     confidence: "high",
+    internal_note: $("faqInternalNote").value,
   };
 }
 
@@ -1073,6 +1619,9 @@ function bindEvents() {
   document.querySelectorAll(".workspace-tab").forEach((button) => {
     button.addEventListener("click", () => switchWorkspace(button.dataset.workspace));
   });
+  document.querySelectorAll(".import-view-tab").forEach((button) => {
+    button.addEventListener("click", () => switchImportView(button.dataset.importView));
+  });
   document.querySelectorAll(".filter-title").forEach((button) => {
     button.addEventListener("click", () => {
       const list = button.parentElement?.querySelector(".filter-list");
@@ -1083,6 +1632,10 @@ function bindEvents() {
   });
   $("newFaqButton").addEventListener("click", () => openDrawer());
   $("closeDrawer").addEventListener("click", closeDrawer);
+  $("drawerBackdrop").addEventListener("click", () => {
+    closeDrawer({ force: true });
+    closeCandidateDrawer();
+  });
   $("refreshButton").addEventListener("click", loadFaqs);
   $("faqForm").addEventListener("submit", saveFaq);
   $("embedButton").addEventListener("click", generateEmbedding);
@@ -1111,6 +1664,46 @@ function bindEvents() {
     if (failedRadio) failedRadio.checked = true;
     loadImportFiles();
   });
+  $("candidateSearchInput").addEventListener("input", (event) => {
+    state.candidateQuery = event.target.value.trim();
+    renderImportCandidateList();
+  });
+  $("candidateStatusSelect").addEventListener("change", (event) => {
+    state.candidateStatus = event.target.value;
+    renderImportCandidateList();
+  });
+  $("candidateCategorySelect").addEventListener("change", (event) => {
+    state.candidateCategory = event.target.value;
+    renderImportCandidateList();
+  });
+  $("candidateConfidenceSelect").addEventListener("change", (event) => {
+    state.candidateConfidence = event.target.value;
+    renderImportCandidateList();
+  });
+  $("candidateDuplicateSelect").addEventListener("change", (event) => {
+    state.candidateDuplicate = event.target.value;
+    renderImportCandidateList();
+  });
+  $("onlyPendingCandidates").addEventListener("change", (event) => {
+    state.candidateOnlyPending = event.target.checked;
+    renderImportCandidateList();
+  });
+  $("clearCandidateChunkFilterButton").addEventListener("click", () => {
+    setCandidateChunkFilter(null);
+    renderImportCandidateList();
+  });
+  $("selectAllCandidates").addEventListener("change", (event) => {
+    filteredImportCandidates().forEach((candidate) => {
+      if (event.target.checked) state.selectedImportCandidates.add(candidate.id);
+      else state.selectedImportCandidates.delete(candidate.id);
+    });
+    renderImportCandidateList();
+  });
+  $("batchSaveCandidatesButton").addEventListener("click", saveSelectedCandidates);
+  $("batchIgnoreCandidatesButton").addEventListener("click", ignoreSelectedCandidates);
+  $("batchRewriteCandidatesButton").addEventListener("click", () =>
+    showToast("请打开单条候选后使用 AI 保守改写"),
+  );
   $("generateChunkCandidatesButton").addEventListener("click", generateCandidatesForSelectedChunks);
   $("reparseImportButton").addEventListener("click", reparseCurrentImportFile);
   $("selectAllChunks").addEventListener("change", (event) => {
@@ -1137,7 +1730,6 @@ function bindEvents() {
     state.chunkPage = 1;
     renderImportChunks(state.importChunks);
   });
-  $("openCurrentCandidateButton").addEventListener("click", () => openCandidateDrawer());
   $("closeCandidateDrawer").addEventListener("click", closeCandidateDrawer);
   $("saveCandidateButton").addEventListener("click", saveCurrentCandidate);
   $("ignoreCandidateButton").addEventListener("click", ignoreCurrentCandidate);
@@ -1151,7 +1743,7 @@ function bindEvents() {
   $("nextCandidate").addEventListener("click", () => {
     state.currentCandidateIndex = Math.min(
       state.currentCandidateIndex + 1,
-      Math.max(state.importCandidates.length - 1, 0),
+      Math.max(filteredImportCandidates().length - 1, 0),
     );
     renderCurrentCandidate();
     renderImportCandidateList();
@@ -1249,6 +1841,13 @@ function bindEvents() {
       if (event.target.checked) state.selected.add(id);
       else state.selected.delete(id);
       updateSelectedCount();
+      return;
+    }
+    if (event.target.classList.contains("candidate-check")) {
+      const id = event.target.dataset.id;
+      if (event.target.checked) state.selectedImportCandidates.add(id);
+      else state.selectedImportCandidates.delete(id);
+      updateSelectedCandidateCount();
       return;
     }
     if (importCandidate) {

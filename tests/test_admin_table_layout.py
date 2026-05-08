@@ -107,6 +107,138 @@ def test_import_review_workspace_exposes_parse_options_and_chunk_selection() -> 
     assert "function generateCandidatesForSelectedChunks" in js
 
 
+def test_import_review_workspace_has_parse_and_candidate_views() -> None:
+    """导入审核主区按解析块和候选 FAQ 分阶段，不实现无意义的状态范围筛选。"""
+    html = read_static_file("admin.html")
+    js = read_static_file("admin.js")
+    css = read_static_file("admin.css")
+
+    assert 'data-import-view="chunks"' in html
+    assert 'data-import-view="candidates"' in html
+    assert "解析块" in html
+    assert "候选 FAQ" in html
+    assert "状态范围" not in html
+    assert "importView" in js
+    assert "function switchImportView" in js
+    assert "function loadImportFileCandidates" in js
+    assert ".import-view-tab" in css
+
+
+def test_import_candidate_view_groups_candidates_by_file() -> None:
+    """候选 FAQ 视图需要展示文件级候选表格和批量审核入口。"""
+    html = read_static_file("admin.html")
+    js = read_static_file("admin.js")
+
+    assert 'id="candidateWorkspace"' in html
+    assert 'id="fileCandidateList"' in html
+    assert 'id="candidateSearchInput"' in html
+    assert "批量保存" in html
+    assert "AI 保守改写" in html
+    assert "/api/import/files/${encodeURIComponent(fileId)}/candidates" in js
+
+
+def test_import_candidate_view_can_filter_by_source_chunk() -> None:
+    """从解析块跳到候选 FAQ 时，只展示该来源块生成的候选。"""
+    html = read_static_file("admin.html")
+    js = read_static_file("admin.js")
+
+    assert 'id="candidateSourceFilterLabel"' in html
+    assert 'id="clearCandidateChunkFilterButton"' in html
+    assert "candidateChunkFilter: null" in js
+    assert "function setCandidateChunkFilter" in js
+    assert "item.chunk_id === state.candidateChunkFilter.id" in js
+    assert "setCandidateChunkFilter(state.currentImportChunk)" in js
+    assert 'switchImportView("candidates", { keepCandidateChunkFilter: true })' in js
+
+
+def test_import_review_progress_removes_redundant_reviewed_summary_copy() -> None:
+    """解析块和候选 FAQ 顶部进度不再重复展示已解析/已审核 xx/xx。"""
+    html = read_static_file("admin.html")
+    js = read_static_file("admin.js")
+
+    assert "generationResolvedSummary" not in html
+    assert "candidateReviewedSummary" not in html
+    assert "已解析 0 / 0" not in html
+    assert "已审核" not in html
+    assert "generationResolvedSummary" not in js
+
+
+def test_import_shared_shell_hides_candidate_only_metric_in_parse_mode() -> None:
+    """低置信度是候选 FAQ 指标，解析块模式不能被 CSS display 覆盖后露出。"""
+    html = read_static_file("admin.html")
+    css = read_static_file("admin.css")
+    js = read_static_file("admin.js")
+
+    assert 'id="overviewExtraMetric"' in html
+    assert "overviewExtraMetric\").classList.add(\"hidden\")" in js
+    assert ".overview-metric.hidden" in css
+    assert ".generation-progress-item.metric-enter" in css
+
+
+def test_import_view_switch_animates_metric_and_progress_cards_without_resizing_shell() -> None:
+    """解析块和候选 FAQ 切换时只做内部元素动效，外层框架高度保持一致。"""
+    css = read_static_file("admin.css")
+    js = read_static_file("admin.js")
+
+    assert "function animatePanelCards" in js
+    assert "animatePanelCards(\".generation-progress-item\")" in js
+    assert "grid-template-rows: 52px 126px 213px minmax(0, 1fr);" in css
+    assert "min-height: 66px;" in css
+    assert "height: 66px;" in css
+    assert "overflow: hidden;" in css
+
+
+def test_candidate_review_uses_duplicate_score_not_importance() -> None:
+    """候选审核抽屉展示重复度，不能把查重风险误写成重要程度。"""
+    html = read_static_file("admin.html")
+
+    assert "重复度" in html
+    assert "重要程度" not in html
+    assert "candidateDuplicatePercent" in html
+    assert "candidateDuplicateBar" in html
+
+
+def test_faq_drawer_matches_candidate_review_editor_structure() -> None:
+    """标准问答编辑抽屉也需要采用新版审核抽屉的信息层级。"""
+    html = read_static_file("admin.html")
+    css = read_static_file("admin.css")
+
+    assert "标准问答编辑" in html
+    assert 'id="faqSourceBox"' in html
+    assert 'id="faqInternalNote"' in html
+    assert 'id="faqEditorToolbar"' in html
+    assert ".review-editor-toolbar" in css
+
+
+def test_drawers_are_hidden_until_explicitly_opened() -> None:
+    """关闭态抽屉不能停在页面右侧，避免横向滑动看到未打开的详情页。"""
+    css = read_static_file("admin.css")
+
+    assert ".drawer {\n  position: fixed;" in css
+    assert "transform: translateX(100%);" in css
+    assert "visibility: hidden;" in css
+    assert "pointer-events: none;" in css
+    assert "opacity: 0;" in css
+    assert ".drawer.open {\n  transform: translateX(0);\n  visibility: visible;" in css
+    assert "pointer-events: auto;" in css
+    assert "opacity: 1;" in css
+
+
+def test_drawer_backdrop_closes_drawers_from_outside_click() -> None:
+    """抽屉打开后点击非抽屉区域，需要通过透明遮罩关闭当前详情页。"""
+    html = read_static_file("admin.html")
+    css = read_static_file("admin.css")
+    js = read_static_file("admin.js")
+
+    assert 'id="drawerBackdrop"' in html
+    assert ".drawer-backdrop" in css
+    assert ".drawer-backdrop.open" in css
+    assert "function syncDrawerBackdrop" in js
+    assert "closeDrawer({ force: true })" in js
+    assert '$("drawerBackdrop").addEventListener("click", () => {' in js
+    assert "closeCandidateDrawer();" in js
+
+
 def test_ai_suggestion_request_clears_previous_visible_result() -> None:
     """第二次请求 AI 建议时不能继续展示上一次结果。"""
     js = read_static_file("admin.js")
@@ -163,11 +295,11 @@ def test_import_file_panel_spacing_and_failed_summary_behavior() -> None:
 
 
 def test_import_candidate_list_shows_duplicate_level() -> None:
-    """候选 FAQ 列表和审核抽屉需要展示重复程度。"""
+    """候选 FAQ 列表和审核抽屉需要展示重复度。"""
     html = read_static_file("admin.html")
     js = read_static_file("admin.js")
 
-    assert "重复程度" in html
+    assert "重复度" in html
     assert "candidateDuplicateLevel" in html
     assert "duplicate_level" in js
     assert "function duplicateLevelLabel" in js
@@ -179,8 +311,8 @@ def test_import_chunk_table_has_bounded_layout_and_pagination() -> None:
     js = read_static_file("admin.js")
 
     assert "grid-template-areas:" in css
-    assert ".import-chunks-panel > .table-wrap" in css
-    assert "grid-area: chunks;" in css
+    assert ".chunk-workspace > .table-wrap" in css
+    assert "grid-template-rows: 54px minmax(0, 1fr) 58px;" in css
     assert "chunkPageSize" in js
     assert 'id="prevChunkPage"' in read_static_file("admin.html")
     assert '$("prevChunkPage").addEventListener("click"' in js

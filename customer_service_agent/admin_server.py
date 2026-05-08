@@ -317,6 +317,10 @@ class AdminApp:
         """返回某个切块下的候选 FAQ 列表。"""
         return {"items": self.database().list_import_candidates(chunk_id)}
 
+    def list_import_file_candidates(self, file_id: str) -> dict[str, Any]:
+        """返回某个导入文件下的全部候选 FAQ，供文件级审核视图使用。"""
+        return {"items": self.database().list_import_file_candidates(file_id)}
+
     def generate_import_candidates(self, chunk_id: str) -> dict[str, Any]:
         """调用 AI 为切块生成候选 FAQ，结果仍需人工审核。"""
         chunk = self.database().get_import_chunk(chunk_id)
@@ -428,13 +432,19 @@ class AdminApp:
         return self.database().update_import_candidate(candidate_id, row)
 
     def save_import_candidate(self, candidate_id: str) -> dict[str, Any]:
-        """将候选 FAQ 保存为标准问答，embedding 仍保持独立生成。"""
+        """将候选 FAQ 保存为标准问答，并立即生成 embedding。"""
         candidate = self.database().get_import_candidate(candidate_id)
         if candidate is None:
             raise AdminNotFoundError(f"Import candidate not found: {candidate_id}")
         faq_row = build_import_candidate_faq_row(candidate)
         saved = self.database().save_faq_text(faq_row)
-        return self.database().mark_import_candidate_saved(candidate_id, saved["id"])
+        embedded = self.embed_faq(saved["id"])
+        marked = self.database().mark_import_candidate_saved(candidate_id, saved["id"])
+        return {
+            **marked,
+            "embedding_status": embedded.get("embedding_status"),
+            "embedding_error": embedded.get("embedding_error"),
+        }
 
     def ignore_import_candidate(self, candidate_id: str) -> dict[str, Any]:
         """忽略不适合沉淀为知识库的候选 FAQ。"""
@@ -469,6 +479,10 @@ def make_handler(app: AdminApp):
                 if parsed.path.startswith("/api/import/files/") and parsed.path.endswith("/chunks"):
                     file_id = parsed.path.removeprefix("/api/import/files/").removesuffix("/chunks")
                     self.send_json(app.list_import_chunks(file_id))
+                    return
+                if parsed.path.startswith("/api/import/files/") and parsed.path.endswith("/candidates"):
+                    file_id = parsed.path.removeprefix("/api/import/files/").removesuffix("/candidates")
+                    self.send_json(app.list_import_file_candidates(file_id))
                     return
                 if parsed.path.startswith("/api/import/chunks/") and parsed.path.endswith("/candidates"):
                     chunk_id = parsed.path.removeprefix("/api/import/chunks/").removesuffix("/candidates")

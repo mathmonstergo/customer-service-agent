@@ -29,7 +29,7 @@
     </nav>
 
     <nav class="workspace-tabs">
-      <button class="workspace-tab active" type="button" data-workspace="faq">标准问答</button>
+      <button class="workspace-tab active" type="button" data-workspace="faq">标准内容</button>
       <button class="workspace-tab" type="button" data-workspace="import">导入审核</button>
     </nav>
 
@@ -109,14 +109,17 @@
       </main>
 
       <aside class="drawer" id="drawer" aria-hidden="true">
-        <div class="drawer-header">
-          <h2 id="drawerTitle">编辑问答</h2>
+        <div class="drawer-header candidate-header">
+          <div>
+            <h2 id="drawerTitle">标准问答编辑</h2>
+            <p>维护正式 FAQ，保存后可直接生成或重试 embedding</p>
+          </div>
           <div class="drawer-actions">
             <button class="icon-button" type="button" id="closeDrawer" title="关闭">×</button>
           </div>
         </div>
 
-        <form class="drawer-body" id="faqForm">
+        <form class="drawer-body candidate-review-body" id="faqForm">
           <input type="hidden" id="faqId" />
 
           <label class="field">
@@ -129,6 +132,16 @@
 
           <label class="field">
             <span>答案 / 答复 <strong>*</strong></span>
+            <div class="review-editor-toolbar" id="faqEditorToolbar">
+              <select aria-label="正文格式">
+                <option>正文</option>
+              </select>
+              <button type="button"><b>B</b></button>
+              <button type="button"><i>I</i></button>
+              <button type="button"><u>U</u></button>
+              <button type="button">≡</button>
+              <button type="button">•</button>
+            </div>
             <div class="textarea-wrap">
               <textarea id="answerInput" required></textarea>
               <button class="ai-icon textarea-ai" type="button" id="optimizeButton" title="优化描述">✧</button>
@@ -191,6 +204,16 @@
               </div>
             </label>
           </div>
+
+          <label class="field">
+            <span>内部备注</span>
+            <input id="faqInternalNote" placeholder="可填写补充说明，仅内部可见（选填）" />
+          </label>
+
+          <label class="field">
+            <span>来源证据</span>
+            <div class="source-box" id="faqSourceBox">暂无来源证据</div>
+          </label>
         </form>
 
         <div class="drawer-footer">
@@ -251,90 +274,204 @@
             <p id="currentImportMeta">上传文件后自动识别格式，第一期支持 Markdown 微信聊天记录。</p>
           </div>
         </div>
-        <div class="chunk-toolbar">
-          <div class="parse-controls">
-            <label>
-              解析模式
-              <select id="parseModeSelect">
-                <option value="by_days">按时间范围</option>
-                <option value="by_gap">按连续对话</option>
+
+        <div class="import-view-tabs">
+          <button class="import-view-tab active" type="button" data-import-view="chunks">解析块</button>
+          <button class="import-view-tab" type="button" data-import-view="candidates">候选 FAQ</button>
+        </div>
+
+        <section class="import-file-overview">
+          <div class="overview-main">
+            <span class="file-icon">▧</span>
+            <div>
+              <strong id="overviewFileName">请选择导入文件</strong>
+              <p id="overviewFileMeta">选择文件后查看解析块和候选 FAQ。</p>
+              <div class="overview-tags">
+                <span id="overviewParserTag">-</span>
+                <span id="overviewStatusTag">-</span>
+              </div>
+            </div>
+          </div>
+          <div class="overview-metric">
+            <span id="overviewMetric1Label">总解析块</span>
+            <b id="overviewChunkCount">0</b>
+          </div>
+          <div class="overview-metric">
+            <span id="overviewMetric2Label">待审核块</span>
+            <b id="overviewPendingChunkCount">0</b>
+          </div>
+          <div class="overview-metric">
+            <span id="overviewMetric3Label">生成候选 FAQ</span>
+            <b id="overviewCandidateCount">0</b>
+          </div>
+          <div class="overview-metric">
+            <span id="overviewMetric4Label">解析失败块</span>
+            <b id="overviewFailedChunkCount">0</b>
+          </div>
+          <div class="overview-metric hidden" id="overviewExtraMetric">
+            <span id="overviewMetric5Label">低置信度</span>
+            <b id="overviewLowConfidenceCount">0</b>
+          </div>
+        </section>
+
+        <section class="generation-progress" id="generationProgress">
+          <div class="generation-progress-left">
+            <div class="generation-progress-header">
+              <strong id="progressPanelTitle">解析与生成进度</strong>
+              <span id="generationProgressText">等待任务开始</span>
+            </div>
+            <div class="generation-progress-main">
+              <span id="progressMainLabel">整体进度</span>
+              <span class="generation-progress-bar"><i id="generationProgressBar"></i></span>
+              <strong id="generationProgressRatio">0%</strong>
+            </div>
+            <div class="generation-progress-items" id="generationProgressItems"></div>
+          </div>
+          <div class="generation-progress-current">
+            <div class="progress-meta">
+              <span>预计剩余 <b id="generationEstimate">--</b></span>
+              <span>上次更新 <b id="generationLastUpdated">--</b></span>
+            </div>
+            <div class="current-title">
+              <strong><span id="progressCurrentLabel">当前处理块</span>：<b id="generationCurrentIndex">-</b></strong>
+              <span class="status-pill pending" id="generationCurrentStatus">待审核</span>
+            </div>
+            <p id="generationCurrentChunk">请选择解析块或开始自动识别 FAQ</p>
+            <span class="current-progress-bar"><i id="generationCurrentBar"></i></span>
+            <em id="generationCurrentEta">预计剩余 --</em>
+          </div>
+        </section>
+
+        <section class="import-view-panel chunk-workspace" id="chunkWorkspace">
+          <div class="chunk-toolbar">
+            <div class="parse-controls">
+              <label>
+                解析模式
+                <select id="parseModeSelect">
+                  <option value="by_days">按时间范围</option>
+                  <option value="by_gap">按连续对话</option>
+                </select>
+              </label>
+              <label>
+                每块
+                <input id="chunkDaysInput" type="number" min="1" max="7" value="1" />
+                天
+              </label>
+              <label class="range-control">
+                块范围
+                <input id="chunkRangeStart" type="number" min="1" value="1" disabled />
+                至
+                <input id="chunkRangeEnd" type="number" min="1" value="1" disabled />
+              </label>
+              <button class="secondary-icon inline-action" type="button" id="reparseImportButton" title="重新解析">↻ 重新解析</button>
+            </div>
+            <div class="chunk-actions">
+              <span id="selectedChunkCount">已选择 0 块</span>
+              <button class="batch-button inline" type="button" id="generateChunkCandidatesButton">✧ 自动识别 FAQ</button>
+              <label class="checkbox-label"><input type="checkbox" id="onlyReviewChunks"> 仅查看待审核</label>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="faq-table import-table">
+              <thead>
+                <tr>
+                  <th><input type="checkbox" id="selectAllChunks" /></th>
+                  <th>编号</th>
+                  <th>时间范围</th>
+                  <th>消息数</th>
+                  <th title="关键词由内置业务词表命中生成，只用于列表扫描">关键词</th>
+                  <th>AI 处理状态</th>
+                  <th>候选数</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="importChunks"></tbody>
+            </table>
+          </div>
+          <footer class="pagination">
+            <span class="chunk-footer-note">已过滤到当前文件参与“自动识别 FAQ”，识别完成后，可切换到「候选 FAQ」查看生成的候选问题与答案。</span>
+            <span id="chunkSummary">共 0 块</span>
+            <button type="button" id="prevChunkPage">‹</button>
+            <span id="chunkPageNumber">1</span>
+            <button type="button" id="nextChunkPage">›</button>
+            <select id="chunkPageSize">
+              <option value="10">10 条/页</option>
+              <option value="20">20 条/页</option>
+            </select>
+          </footer>
+        </section>
+
+        <section class="import-view-panel candidate-workspace hidden" id="candidateWorkspace">
+          <div class="candidate-list-header">
+            <label class="candidate-search">
+              <span>⌕</span>
+              <input id="candidateSearchInput" type="search" placeholder="搜索标准问题" />
+            </label>
+            <label class="candidate-filter">
+              候选状态
+              <select id="candidateStatusSelect">
+                <option value="">全部</option>
+                <option value="pending">待审核</option>
+                <option value="saved">已保存</option>
+                <option value="ignored">已忽略</option>
               </select>
             </label>
-            <label>
-              每块
-              <input id="chunkDaysInput" type="number" min="1" max="7" value="1" />
-              天
+            <label class="candidate-filter">
+              分类
+              <select id="candidateCategorySelect">
+                <option value="">全部</option>
+              </select>
             </label>
-            <button class="secondary-icon inline-action" type="button" id="reparseImportButton" title="重新解析">↻</button>
-          </div>
-          <div class="chunk-actions">
-            <span id="selectedChunkCount">已选择 0 块</span>
-            <button class="batch-button inline" type="button" id="generateChunkCandidatesButton">✧ 自动识别 FAQ</button>
-            <label class="checkbox-label"><input type="checkbox" id="onlyReviewChunks"> 仅查看待审核</label>
-          </div>
-        </div>
-        <section class="generation-progress hidden" id="generationProgress">
-          <div class="generation-progress-header">
-            <strong>候选 FAQ 生成进度</strong>
-            <span id="generationProgressText">等待任务开始</span>
-          </div>
-          <div class="generation-progress-main">
-            <span class="generation-progress-bar"><i id="generationProgressBar"></i></span>
-            <span id="generationProgressRatio">0 / 0 块</span>
-            <span id="generationCurrentChunk">当前：-</span>
-          </div>
-          <div class="generation-progress-items" id="generationProgressItems"></div>
-        </section>
-        <div class="table-wrap">
-          <table class="faq-table import-table">
-            <thead>
-              <tr>
-                <th><input type="checkbox" id="selectAllChunks" /></th>
-                <th>编号</th>
-                <th>时间范围</th>
-                <th>消息数</th>
-                <th title="关键词由内置业务词表命中生成，只用于列表扫描">关键词</th>
-                <th>AI 处理状态</th>
-                <th>候选数</th>
-              </tr>
-            </thead>
-            <tbody id="importChunks"></tbody>
-          </table>
-        </div>
-        <section class="candidate-list-section">
-          <div class="candidate-list-header">
-            <div>
-              <h3>候选 FAQ</h3>
-              <p id="candidateListSummary">请选择切块后生成候选 FAQ</p>
-            </div>
-            <button class="cancel-button" type="button" id="openCurrentCandidateButton">审核选中</button>
+            <label class="candidate-filter">
+              置信度
+              <select id="candidateConfidenceSelect">
+                <option value="">全部</option>
+                <option value="high">高</option>
+                <option value="medium">中</option>
+                <option value="low">低</option>
+              </select>
+            </label>
+            <label class="candidate-filter">
+              重复度
+              <select id="candidateDuplicateSelect">
+                <option value="">全部</option>
+                <option value="high">高</option>
+                <option value="medium">中</option>
+                <option value="low">低</option>
+                <option value="none">无</option>
+              </select>
+            </label>
+            <span class="candidate-source-filter" id="candidateSourceFilterLabel">全部来源块</span>
+            <button class="candidate-source-clear hidden" type="button" id="clearCandidateChunkFilterButton">清除来源</button>
+            <span id="selectedCandidateCount">已选择 0 条</span>
+            <button class="save-button compact" type="button" id="batchSaveCandidatesButton">批量保存</button>
+            <button class="cancel-button" type="button" id="batchRewriteCandidatesButton">AI 保守改写</button>
+            <button class="cancel-button" type="button" id="batchIgnoreCandidatesButton">批量忽略</button>
+            <label class="checkbox-label candidate-only-pending"><input type="checkbox" id="onlyPendingCandidates"> 仅查看待审核</label>
           </div>
           <div class="candidate-list-wrap">
             <table class="candidate-list-table">
               <thead>
                 <tr>
+                  <th><input type="checkbox" id="selectAllCandidates" /></th>
                   <th>状态</th>
                   <th>标准问题</th>
                   <th>分类</th>
-                  <th>重复程度</th>
+                  <th>重复度</th>
                   <th>置信度</th>
+                  <th>来源块</th>
+                  <th>更新时间</th>
                   <th>操作</th>
                 </tr>
               </thead>
-              <tbody id="candidateList"></tbody>
+              <tbody id="fileCandidateList"></tbody>
             </table>
           </div>
+          <div class="candidate-workspace-note">
+            <span id="candidateListSummary">请选择文件后查看生成的候选问题与答案。</span>
+          </div>
+          <table class="hidden"><tbody id="candidateList"></tbody></table>
         </section>
-        <footer class="pagination">
-          <span id="chunkSummary">共 0 块</span>
-          <button type="button" id="prevChunkPage">‹</button>
-          <span id="chunkPageNumber">1</span>
-          <button type="button" id="nextChunkPage">›</button>
-          <select id="chunkPageSize">
-            <option value="10">10 条/页</option>
-            <option value="20">20 条/页</option>
-          </select>
-        </footer>
       </main>
 
       <aside class="drawer candidate-drawer" id="candidateDrawer" aria-hidden="true">
@@ -367,6 +504,16 @@
             </label>
             <label class="field">
               <span>标准答案 <strong>*</strong></span>
+              <div class="review-editor-toolbar">
+                <select aria-label="正文格式">
+                  <option>正文</option>
+                </select>
+                <button type="button"><b>B</b></button>
+                <button type="button"><i>I</i></button>
+                <button type="button"><u>U</u></button>
+                <button type="button">≡</button>
+                <button type="button">•</button>
+              </div>
               <textarea id="candidateAnswer" maxlength="1000"></textarea>
             </label>
             <label class="field">
@@ -394,7 +541,7 @@
               </div>
             </label>
             <label class="field">
-              <span>重复程度</span>
+              <span>重复度</span>
               <div class="duplicate-line" id="candidateDuplicateLevel">未检测</div>
             </label>
             <label class="field">
@@ -407,11 +554,23 @@
             </label>
           </form>
 
-          <div class="save-note import-save-note">保存仅写入标准问答，不会自动生成 embedding</div>
+          <div class="save-note import-save-note">保存后会立即生成 embedding；失败时可在标准问答中重试</div>
+          <div class="candidate-score-grid">
+            <div>
+              <span>置信度</span>
+              <strong id="candidateConfidenceMirror">-</strong>
+              <span class="confidence-bar"><i id="candidateConfidenceMirrorBar"></i></span>
+            </div>
+            <div>
+              <span>重复度</span>
+              <strong id="candidateDuplicatePercent">0%</strong>
+              <span class="confidence-bar duplicate-bar"><i id="candidateDuplicateBar"></i></span>
+            </div>
+          </div>
         </div>
 
         <div class="drawer-footer candidate-drawer-footer">
-          <button class="save-button" type="button" id="saveCandidateButton">保存到标准问答</button>
+          <button class="save-button" type="button" id="saveCandidateButton">保存到标准问答并生成 embedding</button>
           <button class="cancel-button" type="button" id="ignoreCandidateButton">忽略</button>
           <button class="cancel-button" type="button" id="rewriteCandidateButton">✧ 应用 AI 改写</button>
           <button class="cancel-button" type="button" id="viewCandidateSourceButton">查看来源</button>
@@ -419,6 +578,7 @@
       </aside>
     </div>
 
+    <div class="drawer-backdrop" id="drawerBackdrop" aria-hidden="true"></div>
     <div class="toast" id="toast"></div>
     <script src="/admin.js"></script>
   </body>

@@ -658,6 +658,18 @@ class Database:
         with self.connect() as conn:
             return conn.execute(sql, {"chunk_id": chunk_id}).fetchall()
 
+    def list_import_file_candidates(self, file_id: str) -> list[dict[str, Any]]:
+        """按文件汇总候选 FAQ，并带上来源切块编号供审核列表定位。"""
+        sql = """
+        SELECT c.*, ch.chunk_index, ch.start_at, ch.end_at
+        FROM import_candidates c
+        JOIN import_chunks ch ON ch.id = c.chunk_id
+        WHERE c.file_id = %(file_id)s
+        ORDER BY c.updated_at DESC, c.created_at DESC, c.id ASC
+        """
+        with self.connect() as conn:
+            return conn.execute(sql, {"file_id": file_id}).fetchall()
+
     def list_import_dedupe_references(self, chunk_id: str) -> list[dict[str, Any]]:
         """列出候选查重参考，包括正式 FAQ 和其它候选 FAQ。"""
         sql = """

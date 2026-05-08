@@ -163,9 +163,10 @@ def test_admin_app_create_import_file_marks_unsupported(tmp_path):
     assert result["status"] == "unsupported"
 
 
-def test_admin_app_save_import_candidate_writes_needs_review_faq():
-    """候选 FAQ 保存到标准问答时默认仍需审核且不生成 embedding。"""
+def test_admin_app_save_import_candidate_writes_needs_review_faq_and_embeds():
+    """候选 FAQ 保存到标准问答后立即生成 embedding，减少人工二次操作。"""
     calls = []
+    saved_rows = {}
 
     class FakeDatabase:
         def get_import_candidate(self, candidate_id):
@@ -185,19 +186,74 @@ def test_admin_app_save_import_candidate_writes_needs_review_faq():
 
         def save_faq_text(self, row):
             calls.append(("faq", row))
-            return {**row, "embedding_status": "pending"}
+            saved = {**row, "embedding_status": "pending"}
+            saved_rows[row["id"]] = saved
+            return saved
+
+        def get_faq(self, faq_id):
+            calls.append(("get_faq", faq_id))
+            return saved_rows[faq_id]
+
+        def update_faq_embedding(self, faq_id, vector, *, embedding_model, embedding_dimensions):
+            calls.append(("embedding", faq_id, vector, embedding_model, embedding_dimensions))
+            saved = {
+                **saved_rows[faq_id],
+                "embedding_status": "ready",
+                "embedding_model": embedding_model,
+                "embedding_dimensions": embedding_dimensions,
+            }
+            saved_rows[faq_id] = saved
+            return saved
+
+        def mark_embedding_failed(self, faq_id, error):
+            calls.append(("embedding_failed", faq_id, error))
+            saved = {**saved_rows[faq_id], "embedding_status": "failed", "embedding_error": error}
+            saved_rows[faq_id] = saved
+            return saved
 
         def mark_import_candidate_saved(self, candidate_id, faq_id):
             calls.append(("saved", candidate_id, faq_id))
             return {"id": candidate_id, "status": "saved", "saved_faq_id": faq_id}
 
-    app = AdminApp(SimpleNamespace(database_url="postgresql://unused"), db=FakeDatabase())
+    class FakeEmbedding:
+        model = "fake-embedding"
+        dimensions = 3
+
+        def embed(self, text):
+            calls.append(("embed", text))
+            return [0.1, 0.2, 0.3]
+
+    app = AdminApp(
+        SimpleNamespace(database_url="postgresql://unused"),
+        db=FakeDatabase(),
+        embeddings=FakeEmbedding(),
+    )
 
     result = app.save_import_candidate("cand_1")
 
     assert calls[0][1]["status"] == "needs_review"
     assert calls[0][1]["embedding_text"].startswith("标准问题")
+    assert ("embed", calls[0][1]["embedding_text"]) in calls
+    assert calls[-2] == ("embedding", result["saved_faq_id"], [0.1, 0.2, 0.3], "fake-embedding", 3)
     assert result["status"] == "saved"
+    assert result["embedding_status"] == "ready"
+
+
+def test_admin_app_list_import_file_candidates_delegates_to_database():
+    """候选 FAQ 视图按文件汇总候选，不要求用户先进入某个切块。"""
+    calls = []
+
+    class FakeDatabase:
+        def list_import_file_candidates(self, file_id):
+            calls.append(file_id)
+            return [{"id": "cand_1", "file_id": file_id, "chunk_index": 3}]
+
+    app = AdminApp(SimpleNamespace(database_url="postgresql://unused"), db=FakeDatabase())
+
+    assert app.list_import_file_candidates("imp_1") == {
+        "items": [{"id": "cand_1", "file_id": "imp_1", "chunk_index": 3}]
+    }
+    assert calls == ["imp_1"]
 
 
 def test_static_path_accepts_admin_html_route():
