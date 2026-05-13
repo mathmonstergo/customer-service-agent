@@ -3,39 +3,321 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>客服知识库管理系统</title>
+    <title>内部知识库管理系统</title>
     <link rel="stylesheet" href="/admin.css" />
   </head>
   <body>
+    <svg class="icon-sprite" aria-hidden="true">
+      <symbol id="icon-eye" viewBox="0 0 24 24">
+        <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"></path>
+        <circle cx="12" cy="12" r="3"></circle>
+      </symbol>
+      <symbol id="icon-eye-off" viewBox="0 0 24 24">
+        <path d="m2 2 20 20"></path>
+        <path d="M10.6 10.6a2 2 0 0 0 2.8 2.8"></path>
+        <path d="M17.9 17.9C16.2 18.6 14.2 19 12 19 5.5 19 2 12 2 12a19.2 19.2 0 0 1 4.2-5.2"></path>
+        <path d="M9.9 5.2A10 10 0 0 1 12 5c6.5 0 10 7 10 7a18.7 18.7 0 0 1-2.1 3.2"></path>
+      </symbol>
+      <symbol id="icon-copy" viewBox="0 0 24 24">
+        <rect x="8" y="8" width="12" height="12" rx="2"></rect>
+        <path d="M4 16V6a2 2 0 0 1 2-2h10"></path>
+      </symbol>
+      <symbol id="icon-x" viewBox="0 0 24 24">
+        <path d="M18 6 6 18"></path>
+        <path d="m6 6 12 12"></path>
+      </symbol>
+      <symbol id="icon-search" viewBox="0 0 24 24">
+        <circle cx="11" cy="11" r="7"></circle>
+        <path d="m20 20-3.5-3.5"></path>
+      </symbol>
+      <symbol id="icon-chevron-right" viewBox="0 0 24 24">
+        <path d="m9 18 6-6-6-6"></path>
+      </symbol>
+      <symbol id="icon-message-circle" viewBox="0 0 24 24">
+        <path d="M21 11.5a8.4 8.4 0 0 1-8.5 8.5 8.7 8.7 0 0 1-3.9-.9L3 21l1.9-5.3a8.5 8.5 0 1 1 16.1-4.2Z"></path>
+        <path d="M8.5 12h.01"></path>
+        <path d="M12 12h.01"></path>
+        <path d="M15.5 12h.01"></path>
+      </symbol>
+      <symbol id="icon-file-text" viewBox="0 0 24 24">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"></path>
+        <path d="M14 2v6h6"></path>
+        <path d="M8 13h8"></path>
+        <path d="M8 17h6"></path>
+      </symbol>
+      <symbol id="icon-bot-cloud" viewBox="0 0 24 24">
+        <path d="M8.5 18.5H8a5 5 0 0 1-.7-9.9 5.5 5.5 0 0 1 10.4 1.8A4.2 4.2 0 0 1 17 18.5h-1.5"></path>
+        <path d="M9 14h.01"></path>
+        <path d="M15 14h.01"></path>
+        <path d="M10 17c1.3.8 2.7.8 4 0"></path>
+      </symbol>
+      <symbol id="icon-hourglass" viewBox="0 0 24 24">
+        <path d="M6 2h12"></path>
+        <path d="M6 22h12"></path>
+        <path d="M7 2v6a5 5 0 0 0 10 0V2"></path>
+        <path d="M7 22v-6a5 5 0 0 1 10 0v6"></path>
+      </symbol>
+      <symbol id="icon-database" viewBox="0 0 24 24">
+        <ellipse cx="12" cy="5" rx="7" ry="3"></ellipse>
+        <path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5"></path>
+        <path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"></path>
+      </symbol>
+      <symbol id="icon-check-circle" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="9"></circle>
+        <path d="m8.5 12.5 2.2 2.2 4.8-5.4"></path>
+      </symbol>
+    </svg>
     <header class="topbar">
       <div class="window-dots" aria-hidden="true">
         <span class="dot red"></span>
         <span class="dot yellow"></span>
         <span class="dot green"></span>
       </div>
-      <div class="brand">客服知识库管理系统</div>
+      <div class="brand">内部知识库管理系统</div>
       <span class="badge">内部</span>
       <div class="topbar-spacer"></div>
       <div class="env-status"><span></span> 本地环境</div>
       <button class="icon-button" type="button" id="notificationButton" aria-label="通知" title="通知">⌂</button>
+      <button class="icon-button" type="button" id="settingsButton" aria-label="设置中心" title="设置中心">⚙</button>
       <div class="user-pill">A</div>
       <div class="user-name">admin</div>
     </header>
 
     <nav class="breadcrumb">
-      <span>知识库</span>
-      <span class="chevron">›</span>
-      <strong id="workspaceTitle">标准问答</strong>
+      <button class="breadcrumb-home" type="button" id="knowledgeHomeButton">知识库</button>
+      <span class="chevron hidden" id="workspaceChevron">›</span>
+      <strong class="hidden" id="workspaceTitle">主页</strong>
     </nav>
 
-    <nav class="workspace-tabs">
-      <button class="workspace-tab active" type="button" data-workspace="faq">标准内容</button>
-      <button class="workspace-tab" type="button" data-workspace="import">导入审核</button>
-    </nav>
+    <main class="knowledge-home" id="knowledgeWorkspace">
+      <section class="knowledge-hero">
+        <h1>知识库</h1>
+        <p>管理 FAQ、文档解析与候选问答审核</p>
+        <label class="knowledge-search">
+          <svg aria-hidden="true"><use href="#icon-search"></use></svg>
+          <input id="knowledgeSearchInput" type="search" placeholder="搜索 FAQ、文档、切片和来源" />
+          <kbd>⌘K</kbd>
+        </label>
+      </section>
 
-    <div class="app-shell" id="faqWorkspace">
+      <section class="knowledge-entry-grid" aria-label="知识库入口">
+        <article class="knowledge-entry" data-knowledge-entry="faq">
+          <button class="knowledge-card" type="button" data-knowledge-entry="faq" data-target-workspace="faq">
+            <span class="knowledge-card-icon">
+              <svg aria-hidden="true"><use href="#icon-message-circle"></use></svg>
+            </span>
+            <span class="knowledge-card-copy">
+              <strong>FAQ 管理</strong>
+              <small>维护标准问答、审核候选 FAQ、从文档生成问答。</small>
+            </span>
+            <svg class="knowledge-card-arrow" aria-hidden="true"><use href="#icon-chevron-right"></use></svg>
+          </button>
+          <div class="knowledge-popover" role="status">
+            <div class="knowledge-popover-arrow" aria-hidden="true"></div>
+            <div class="knowledge-popover-row">
+              <span class="task-icon warning"><svg aria-hidden="true"><use href="#icon-hourglass"></use></svg></span>
+              <span>候选 FAQ 待审核</span>
+              <strong id="homePendingFaqCount">0</strong>
+              <i class="task-dot orange"></i>
+            </div>
+            <div class="knowledge-popover-row">
+              <span class="task-icon muted"><svg aria-hidden="true"><use href="#icon-database"></use></svg></span>
+              <span>FAQ 未生成向量</span>
+              <strong id="homePendingEmbeddingCount">0</strong>
+              <i class="task-dot gray"></i>
+            </div>
+            <div class="knowledge-popover-row">
+              <span class="task-icon success"><svg aria-hidden="true"><use href="#icon-check-circle"></use></svg></span>
+              <span>最近审核通过 FAQ</span>
+              <strong id="homeUsableFaqCount">0</strong>
+              <i class="task-dot green"></i>
+            </div>
+            <p><span>ⓘ</span> 展开后再次点击卡片进入页面</p>
+          </div>
+        </article>
+
+        <article class="knowledge-entry" data-knowledge-entry="documents">
+          <button class="knowledge-card" type="button" data-knowledge-entry="documents" data-target-workspace="documents">
+            <span class="knowledge-card-icon">
+              <svg aria-hidden="true"><use href="#icon-file-text"></use></svg>
+            </span>
+            <span class="knowledge-card-copy">
+              <strong>文档管理</strong>
+              <small>上传资料、调用 MinerU 解析、查看切片和来源。</small>
+            </span>
+            <svg class="knowledge-card-arrow" aria-hidden="true"><use href="#icon-chevron-right"></use></svg>
+          </button>
+          <div class="knowledge-popover" role="status">
+            <div class="knowledge-popover-arrow" aria-hidden="true"></div>
+            <div class="knowledge-popover-row">
+              <span class="task-icon muted"><svg aria-hidden="true"><use href="#icon-file-text"></use></svg></span>
+              <span>已上传文档</span>
+              <strong id="homeDocumentCount">0</strong>
+              <i class="task-dot gray"></i>
+            </div>
+            <div class="knowledge-popover-row">
+              <span class="task-icon warning"><svg aria-hidden="true"><use href="#icon-hourglass"></use></svg></span>
+              <span>解析完成待生成 FAQ</span>
+              <strong id="homeParsedDocumentCount">0</strong>
+              <i class="task-dot orange"></i>
+            </div>
+            <div class="knowledge-popover-row">
+              <span class="task-icon danger"><svg aria-hidden="true"><use href="#icon-x"></use></svg></span>
+              <span>解析失败</span>
+              <strong id="homeParseFailedCount">0</strong>
+              <i class="task-dot red"></i>
+            </div>
+            <p><span>ⓘ</span> 展开后再次点击卡片进入页面</p>
+          </div>
+        </article>
+
+        <article class="knowledge-entry" data-knowledge-entry="assistant">
+          <button class="knowledge-card" type="button" data-knowledge-entry="assistant" data-target-workspace="assistant">
+            <span class="knowledge-card-icon">
+              <svg aria-hidden="true"><use href="#icon-bot-cloud"></use></svg>
+            </span>
+            <span class="knowledge-card-copy">
+              <strong>智能问答</strong>
+              <small>直接体验接入 RAG 服务后的问答效果，查看回答与来源。</small>
+            </span>
+            <svg class="knowledge-card-arrow" aria-hidden="true"><use href="#icon-chevron-right"></use></svg>
+          </button>
+          <div class="knowledge-popover" role="status">
+            <div class="knowledge-popover-arrow" aria-hidden="true"></div>
+            <div class="knowledge-popover-row">
+              <span class="task-icon muted"><svg aria-hidden="true"><use href="#icon-search"></use></svg></span>
+              <span>检索测试入口</span>
+              <strong>待接入</strong>
+              <i class="task-dot gray"></i>
+            </div>
+            <div class="knowledge-popover-row">
+              <span class="task-icon success"><svg aria-hidden="true"><use href="#icon-check-circle"></use></svg></span>
+              <span>回答来源追溯</span>
+              <strong>可规划</strong>
+              <i class="task-dot green"></i>
+            </div>
+            <div class="knowledge-popover-row">
+              <span class="task-icon warning"><svg aria-hidden="true"><use href="#icon-database"></use></svg></span>
+              <span>RAG 配置状态</span>
+              <strong>设置中心</strong>
+              <i class="task-dot orange"></i>
+            </div>
+            <p><span>ⓘ</span> 展开后再次点击卡片进入页面</p>
+          </div>
+        </article>
+      </section>
+    </main>
+
+    <main class="document-shell hidden" id="documentWorkspace">
+      <section class="document-board">
+        <header class="document-header">
+          <div>
+            <h1>文档管理</h1>
+            <p>文档导入、原件管理、MinerU 文档解析与切片查看</p>
+          </div>
+          <label class="document-upload-button">
+            <input id="documentFileInput" type="file" accept=".md,.markdown,.pdf,.docx,.xlsx,.xls" />
+            上传文档
+          </label>
+        </header>
+
+        <div class="document-toolbar">
+          <label class="document-search">
+            <svg aria-hidden="true"><use href="#icon-search"></use></svg>
+            <input id="documentSearchInput" type="search" placeholder="搜索文件名、格式或解析器" />
+          </label>
+          <div class="document-status-tabs" id="documentStatusTabs" aria-label="文档状态筛选">
+            <button class="active" type="button" data-document-status="">全部</button>
+            <button type="button" data-document-status="pending">未解析</button>
+            <button type="button" data-document-status="processing">解析中</button>
+            <button type="button" data-document-status="needs_review">已解析</button>
+            <button type="button" data-document-status="failed">解析失败</button>
+          </div>
+        </div>
+
+        <section class="document-summary-strip" aria-label="文档状态">
+          <span><b id="documentTotalCount">0</b> 全部文档</span>
+          <span><b id="documentPendingCount">0</b> 未解析</span>
+          <span><b id="documentParsedCount">0</b> 已解析</span>
+          <span><b id="documentFailedCount">0</b> 失败</span>
+        </section>
+
+        <section class="document-table-panel">
+          <div class="document-table-head">
+            <strong>文件列表</strong>
+            <span id="documentListMeta">共 0 个文档</span>
+          </div>
+          <table class="document-table">
+            <thead>
+              <tr>
+                <th>文件信息</th>
+                <th>上传时间</th>
+                <th>解析状态</th>
+                <th>切片数</th>
+                <th>最近解析时间</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="documentRows"></tbody>
+          </table>
+        </section>
+      </section>
+
+      <div class="document-drawer-backdrop" id="documentDrawerBackdrop" aria-hidden="true"></div>
+      <aside class="document-drawer" id="documentDrawer" aria-hidden="true">
+        <header class="document-drawer-header">
+          <span class="document-file-badge" id="documentDrawerFileBadge">DOC</span>
+          <div>
+            <h2 id="documentDrawerTitle">请选择文档</h2>
+            <p><span id="documentDrawerStatus">未选择</span><span id="documentDrawerMeta">未选择文档</span></p>
+          </div>
+          <button class="icon-button" type="button" id="closeDocumentDrawer" aria-label="关闭文档详情" title="关闭">×</button>
+        </header>
+
+        <div class="document-drawer-body">
+          <section class="document-info-strip" aria-label="文档详情">
+            <div><span>文件类型</span><strong id="documentDetailType">-</strong></div>
+            <div><span>上传时间</span><strong id="documentDetailUploadedAt">-</strong></div>
+            <div><span>解析器</span><strong id="documentDetailParser">-</strong></div>
+            <div><span>最后解析时间</span><strong id="documentDetailParsedAt">-</strong></div>
+            <div><span>切片总数</span><strong id="documentDetailChunks">0</strong></div>
+          </section>
+
+          <div class="document-action-row">
+            <button class="apply-button" type="button" id="parseDocumentButton">开始解析</button>
+            <button class="cancel-button" type="button" id="sendDocumentToFaqButton">生成 FAQ</button>
+            <button class="cancel-button" type="button" id="downloadDocumentButton">下载</button>
+            <button class="cancel-button danger" type="button" id="deleteDocumentButton">删除</button>
+          </div>
+
+          <section class="document-parse-progress hidden" id="documentParseProgress" aria-live="polite">
+            <div>
+              <strong id="documentParseProgressText">解析中</strong>
+              <span id="documentParseProgressMeta">等待 MinerU 返回进度</span>
+            </div>
+            <div class="document-progress-track"><i id="documentParseProgressBar"></i></div>
+          </section>
+          <p class="document-error hidden" id="documentErrorText"></p>
+
+          <section class="document-chunk-card">
+            <div class="document-section-title">
+              <strong>切片查看</strong>
+              <span id="documentChunkSummary">暂无切片</span>
+            </div>
+            <div class="document-chunk-reader">
+              <nav class="document-chunk-index" id="documentChunkIndex" aria-label="切片索引"></nav>
+              <article class="document-chunk-content" id="documentChunkContent"></article>
+            </div>
+          </section>
+
+          <section class="document-failed-chunks hidden" id="documentFailedChunks"></section>
+        </div>
+      </aside>
+    </main>
+
+    <div class="app-shell hidden" id="faqWorkspace">
       <aside class="sidebar">
-        <h1>标准问答</h1>
+        <h1>FAQ 管理</h1>
         <label class="search-box">
           <span>⌕</span>
           <input id="searchInput" type="search" placeholder="搜索 FAQ" />
@@ -72,8 +354,13 @@
       <main class="content">
         <div class="content-header">
           <div>
-            <h2>FAQ 列表 <span id="totalCount">共 0 条</span></h2>
+            <div class="faq-subview-tabs" aria-label="FAQ 管理视图">
+              <button class="faq-subview-tab active" type="button" data-faq-subview="list">FAQ 列表</button>
+              <button class="faq-subview-tab" type="button" data-faq-subview="generate">FAQ 自动生成</button>
+              <button class="faq-subview-tab" type="button" data-faq-subview="review">FAQ 审核</button>
+            </div>
           </div>
+          <span class="faq-list-total" id="totalCount">共 0 条</span>
           <button class="secondary-icon" type="button" id="refreshButton" title="刷新">↻</button>
           <button class="new-button" type="button" id="newFaqButton">＋ 新建 FAQ</button>
         </div>
@@ -227,12 +514,14 @@
     <div class="import-shell hidden" id="importWorkspace">
       <aside class="import-files-panel">
         <div class="import-panel-header">
-          <h1>导入文件</h1>
-          <label class="upload-button">
-            <input id="importFileInput" type="file" accept=".md,.markdown,.pdf,.docx,.xlsx,.xls" />
-            上传文件
-          </label>
+          <h1>选择文件</h1>
         </div>
+        <label class="import-file-select-label">
+          <span>已解析文件</span>
+          <select id="importFileSelect">
+            <option value="">请选择已解析文件</option>
+          </select>
+        </label>
         <label class="search-box">
           <span>⌕</span>
           <input id="importSearchInput" type="search" placeholder="搜索文件名" />
@@ -271,13 +560,14 @@
         <div class="content-header import-content-header">
           <div>
             <h2><span id="currentImportFileName">请选择文件</span></h2>
-            <p id="currentImportMeta">上传文件后自动识别格式，第一期支持 Markdown 微信聊天记录。</p>
+            <p id="currentImportMeta">请选择文档管理中已经解析完成的文件。</p>
           </div>
         </div>
 
-        <div class="import-view-tabs">
-          <button class="import-view-tab active" type="button" data-import-view="chunks">解析块</button>
-          <button class="import-view-tab" type="button" data-import-view="candidates">候选 FAQ</button>
+        <div class="faq-subview-tabs import-faq-tabs" aria-label="FAQ 管理视图">
+          <button class="faq-subview-tab" type="button" data-faq-subview="list">FAQ 列表</button>
+          <button class="faq-subview-tab active" type="button" data-faq-subview="generate">FAQ 自动生成</button>
+          <button class="faq-subview-tab" type="button" data-faq-subview="review">FAQ 审核</button>
         </div>
 
         <section class="import-file-overview">
@@ -336,7 +626,7 @@
               <strong><span id="progressCurrentLabel">当前处理块</span>：<b id="generationCurrentIndex">-</b></strong>
               <span class="status-pill pending" id="generationCurrentStatus">待审核</span>
             </div>
-            <p id="generationCurrentChunk">请选择解析块或开始自动识别 FAQ</p>
+            <p id="generationCurrentChunk">请选择解析块或按需识别候选 FAQ</p>
             <span class="current-progress-bar"><i id="generationCurrentBar"></i></span>
             <em id="generationCurrentEta">预计剩余 --</em>
           </div>
@@ -348,8 +638,8 @@
               <label>
                 解析模式
                 <select id="parseModeSelect">
-                  <option value="by_days">按时间范围</option>
-                  <option value="by_gap">按连续对话</option>
+                  <option value="by_days">按时间 / 章节范围</option>
+                  <option value="by_gap">按连续对话 / 段落</option>
                 </select>
               </label>
               <label>
@@ -367,7 +657,7 @@
             </div>
             <div class="chunk-actions">
               <span id="selectedChunkCount">已选择 0 块</span>
-              <button class="batch-button inline" type="button" id="generateChunkCandidatesButton">✧ 自动识别 FAQ</button>
+              <button class="batch-button inline" type="button" id="generateChunkCandidatesButton">✧ 识别所选切片 FAQ</button>
               <label class="checkbox-label"><input type="checkbox" id="onlyReviewChunks"> 仅查看待审核</label>
             </div>
           </div>
@@ -378,7 +668,7 @@
                   <th><input type="checkbox" id="selectAllChunks" /></th>
                   <th>编号</th>
                   <th>时间范围</th>
-                  <th>消息数</th>
+                  <th>内容量</th>
                   <th title="关键词由内置业务词表命中生成，只用于列表扫描">关键词</th>
                   <th>AI 处理状态</th>
                   <th>候选数</th>
@@ -388,8 +678,21 @@
               <tbody id="importChunks"></tbody>
             </table>
           </div>
+          <section class="chunk-preview-panel" id="chunkPreviewPanel">
+            <div class="chunk-preview-header">
+              <div>
+                <strong id="chunkPreviewTitle">请选择解析块</strong>
+                <span id="chunkPreviewMeta">点击上方解析块后查看原始切片内容。</span>
+              </div>
+              <div class="chunk-preview-actions">
+                <button class="cancel-button" type="button" id="generateCurrentChunkButton">✧ 仅识别当前切片</button>
+                <button class="cancel-button" type="button" id="viewChunkCandidatesButton">查看此切片候选</button>
+              </div>
+            </div>
+            <pre id="chunkPreviewText">解析块内容将在这里展示。不是每个切片都需要生成 FAQ，请先阅读内容再决定是否识别。</pre>
+          </section>
           <footer class="pagination">
-            <span class="chunk-footer-note">已过滤到当前文件参与“自动识别 FAQ”，识别完成后，可切换到「候选 FAQ」查看生成的候选问题与答案。</span>
+            <span class="chunk-footer-note">不是所有切片都需要生成 FAQ。请先查看切片内容，再按需识别候选问答。</span>
             <span id="chunkSummary">共 0 块</span>
             <button type="button" id="prevChunkPage">‹</button>
             <span id="chunkPageNumber">1</span>
@@ -576,6 +879,308 @@
           <button class="cancel-button" type="button" id="viewCandidateSourceButton">查看来源</button>
         </div>
       </aside>
+    </div>
+
+    <main class="assistant-shell hidden" id="assistantWorkspace">
+      <section class="assistant-placeholder">
+        <span class="knowledge-card-icon">
+          <svg aria-hidden="true"><use href="#icon-bot-cloud"></use></svg>
+        </span>
+        <div>
+          <h1>智能问答</h1>
+          <p>这里后续接入 RAG 问答测试、回答来源查看和召回内容检查。</p>
+        </div>
+        <button class="cancel-button" type="button" id="assistantBackButton">返回知识库</button>
+      </section>
+    </main>
+
+    <div class="settings-overlay hidden" id="settingsOverlay" aria-hidden="true">
+      <section class="settings-modal" id="settingsModal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+        <header class="settings-modal-header">
+          <div>
+            <h2 id="settingsTitle">设置中心</h2>
+            <p>本地知识库 / RAG 管理后台配置</p>
+          </div>
+          <div class="settings-header-actions">
+            <span class="settings-unsaved hidden" id="settingsUnsaved">△ 有未保存修改</span>
+            <button class="icon-button" type="button" id="closeSettingsButton" aria-label="关闭设置中心" title="关闭">×</button>
+          </div>
+        </header>
+
+        <div class="settings-modal-body">
+          <nav class="settings-nav" aria-label="设置分组">
+            <button class="settings-nav-item active" type="button" data-settings-section="parser">
+              <span class="settings-nav-icon">▧</span>
+              <strong>文档解析器</strong>
+              <em>已配置</em>
+            </button>
+            <button class="settings-nav-item" type="button" data-settings-section="llm">
+              <span class="settings-nav-icon">◉</span>
+              <strong>LLM 生成模型</strong>
+              <em>已配置</em>
+            </button>
+            <button class="settings-nav-item" type="button" data-settings-section="embedding">
+              <span class="settings-nav-icon">◇</span>
+              <strong>Embedding 模型</strong>
+              <small>维度锁定 1024</small>
+              <em>已配置</em>
+            </button>
+            <button class="settings-nav-item" type="button" data-settings-section="retrieval">
+              <span class="settings-nav-icon">⌕</span>
+              <strong>检索策略</strong>
+              <small>Top K=5</small>
+              <em class="partial">部分配置</em>
+            </button>
+            <button class="settings-nav-item" type="button" data-settings-section="files">
+              <span class="settings-nav-icon">▤</span>
+              <strong>文件与导入</strong>
+              <small>PDF / Word 等</small>
+              <em>已配置</em>
+            </button>
+            <button class="settings-nav-item" type="button" data-settings-section="wechat">
+              <span class="settings-nav-icon">☊</span>
+              <strong>微信服务</strong>
+              <small>已绑定服务号</small>
+              <em>已配置</em>
+            </button>
+            <button class="settings-nav-item" type="button" data-settings-section="advanced">
+              <span class="settings-nav-icon">⚙</span>
+              <strong>高级配置</strong>
+              <em class="quiet">高级</em>
+            </button>
+          </nav>
+
+          <div class="settings-content">
+            <section class="settings-panel active" id="settingsPanelParser" data-settings-panel="parser">
+              <div class="settings-section-head">
+                <div>
+                  <h3>文档解析器</h3>
+                  <p>用于 PDF / Office 文档解析与知识库预处理</p>
+                </div>
+                <button class="settings-test-button" type="button" data-settings-test="parser">测试连接</button>
+                <span class="settings-health">可用</span>
+                <span class="settings-test-hint">最近测试成功</span>
+              </div>
+
+              <div class="settings-grid two">
+                <label class="settings-field">
+                  <span>解析器 <strong>*</strong></span>
+                  <select id="documentParserSelect">
+                    <option>MinerU</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="settings-info-line">MinerU 云端解析固定使用官方批量文件接口，接口地址由代码维护。</div>
+
+              <label class="settings-field">
+                <span>MinerU API Token <strong>*</strong></span>
+                <div class="settings-secret">
+                  <input id="mineruApiToken" type="text" autocomplete="off" spellcheck="false" readonly />
+                  <button type="button" data-secret-toggle="mineruApiToken" data-secret-visible="false" aria-label="显示 MinerU Token" title="显示或隐藏 MinerU Token">
+                    <svg class="secret-icon secret-icon-eye" data-secret-icon="eye" aria-hidden="true"><use href="#icon-eye"></use></svg>
+                    <svg class="secret-icon secret-icon-eye-off" data-secret-icon="eye-off" aria-hidden="true"><use href="#icon-eye-off"></use></svg>
+                  </button>
+                  <button type="button" data-secret-copy="mineruApiToken" aria-label="复制 MinerU Token" title="复制 MinerU Token">
+                    <svg class="secret-icon" data-secret-icon="copy" aria-hidden="true"><use href="#icon-copy"></use></svg>
+                  </button>
+                  <button type="button" data-secret-clear="mineruApiToken" aria-label="清空 MinerU Token" title="清空 MinerU Token">
+                    <svg class="secret-icon" data-secret-icon="x" aria-hidden="true"><use href="#icon-x"></use></svg>
+                  </button>
+                </div>
+                <small>Token 仅用于 MinerU 官方批量解析接口，不在页面明文展示。</small>
+              </label>
+
+              <div class="settings-grid two">
+                <label class="settings-field">
+                  <span>解析超时时间 <strong>*</strong></span>
+                  <div class="settings-number">
+                    <input id="mineruTimeout" type="number" value="600" min="60" max="1800" />
+                    <em>秒</em>
+                  </div>
+                  <small>建议范围 60 - 1800 秒</small>
+                </label>
+                <label class="settings-toggle-row">
+                  <span>启用知识库再处理层</span>
+                  <input id="mineruKbPackager" type="checkbox" checked />
+                  <b>开启</b>
+                  <small>开启后将在解析结果基础上进行清洗、切分与结构优化</small>
+                </label>
+              </div>
+              <div class="settings-support-line">支持格式：PDF、docx、xlsx、xls</div>
+            </section>
+
+            <section class="settings-panel" id="settingsPanelLlm" data-settings-panel="llm">
+              <div class="settings-section-head">
+                <div>
+                  <h3>LLM 生成模型</h3>
+                  <p>用于生成答案与对话能力，仅影响生成，不影响召回</p>
+                </div>
+                <button class="settings-test-button" type="button" data-settings-test="llm">发送测试请求</button>
+                <span class="settings-health">可用</span>
+                <span class="settings-test-hint">最近测试成功</span>
+              </div>
+              <label class="settings-field">
+                <span>Chat Base URL <strong>*</strong></span>
+                <input id="chatBaseUrl" value="https://api.example.com/v1" />
+                <small>以 http:// 或 https:// 开头</small>
+              </label>
+              <label class="settings-field">
+                <span>Chat API Key <strong>*</strong></span>
+                <div class="settings-secret">
+                  <input id="chatApiKey" type="text" autocomplete="off" spellcheck="false" readonly />
+                  <button type="button" data-secret-toggle="chatApiKey" data-secret-visible="false" aria-label="显示 Chat API Key" title="显示或隐藏 Chat API Key">
+                    <svg class="secret-icon secret-icon-eye" data-secret-icon="eye" aria-hidden="true"><use href="#icon-eye"></use></svg>
+                    <svg class="secret-icon secret-icon-eye-off" data-secret-icon="eye-off" aria-hidden="true"><use href="#icon-eye-off"></use></svg>
+                  </button>
+                  <button type="button" data-secret-copy="chatApiKey" aria-label="复制 Chat API Key" title="复制 Chat API Key">
+                    <svg class="secret-icon" data-secret-icon="copy" aria-hidden="true"><use href="#icon-copy"></use></svg>
+                  </button>
+                  <button type="button" data-secret-clear="chatApiKey" aria-label="清空 Chat API Key" title="清空 Chat API Key">
+                    <svg class="secret-icon" data-secret-icon="x" aria-hidden="true"><use href="#icon-x"></use></svg>
+                  </button>
+                </div>
+              </label>
+              <label class="settings-field">
+                <span>Chat Model <strong>*</strong></span>
+                <input id="chatModel" list="chatModelOptions" value="gpt-4o-mini" />
+                <datalist id="chatModelOptions">
+                  <option value="gpt-4o-mini"></option>
+                  <option value="deepseek-chat"></option>
+                  <option value="qwen-plus"></option>
+                </datalist>
+                <small>可直接输入任意 OpenAI-compatible 模型名。</small>
+              </label>
+              <div class="settings-footnote">密钥默认掩码显示，点击眼睛图标后仅在当前本地页面明文查看。</div>
+            </section>
+
+            <section class="settings-panel" id="settingsPanelEmbedding" data-settings-panel="embedding">
+              <div class="settings-section-head">
+                <div>
+                  <h3>Embedding 模型</h3>
+                  <p>用于向量检索，维度必须匹配数据库 schema</p>
+                </div>
+                <button class="settings-test-button" type="button" data-settings-test="embedding">生成测试向量</button>
+                <span class="settings-health">可用</span>
+                <span class="settings-test-hint">维度匹配</span>
+              </div>
+              <label class="settings-field">
+                <span>Embedding Base URL <strong>*</strong></span>
+                <input id="embeddingBaseUrl" value="https://dashscope.aliyuncs.com/compatible-mode/v1" />
+              </label>
+              <label class="settings-field">
+                <span>Embedding API Key <strong>*</strong></span>
+                <div class="settings-secret">
+                  <input id="embeddingApiKey" type="text" autocomplete="off" spellcheck="false" readonly />
+                  <button type="button" data-secret-toggle="embeddingApiKey" data-secret-visible="false" aria-label="显示 Embedding API Key" title="显示或隐藏 Embedding API Key">
+                    <svg class="secret-icon secret-icon-eye" data-secret-icon="eye" aria-hidden="true"><use href="#icon-eye"></use></svg>
+                    <svg class="secret-icon secret-icon-eye-off" data-secret-icon="eye-off" aria-hidden="true"><use href="#icon-eye-off"></use></svg>
+                  </button>
+                  <button type="button" data-secret-copy="embeddingApiKey" aria-label="复制 Embedding API Key" title="复制 Embedding API Key">
+                    <svg class="secret-icon" data-secret-icon="copy" aria-hidden="true"><use href="#icon-copy"></use></svg>
+                  </button>
+                  <button type="button" data-secret-clear="embeddingApiKey" aria-label="清空 Embedding API Key" title="清空 Embedding API Key">
+                    <svg class="secret-icon" data-secret-icon="x" aria-hidden="true"><use href="#icon-x"></use></svg>
+                  </button>
+                </div>
+              </label>
+              <div class="settings-grid two">
+                <label class="settings-field">
+                  <span>Embedding Model <strong>*</strong></span>
+                  <input id="embeddingModel" value="text-embedding-v4" />
+                </label>
+                <label class="settings-field">
+                  <span>Embedding Dimensions <strong>*</strong></span>
+                  <input id="embeddingDimensions" type="number" value="1024" />
+                  <small>当前数据库固定 vector(1024)，不建议修改。</small>
+                </label>
+              </div>
+            </section>
+
+            <section class="settings-panel" id="settingsPanelRetrieval" data-settings-panel="retrieval">
+              <div class="settings-section-head">
+                <div>
+                  <h3>检索策略</h3>
+                  <p>控制 RAG 召回数量与最低相似度</p>
+                </div>
+              </div>
+              <div class="settings-grid two">
+                <label class="settings-field">
+                  <span>RAG Top K</span>
+                  <input id="ragTopK" type="number" min="1" max="20" value="5" />
+                  <small>越大召回越多，回答上下文更宽。</small>
+                </label>
+                <label class="settings-field">
+                  <span>最低相似度分数</span>
+                  <input id="ragMinScore" type="number" min="0" max="1" step="0.01" value="0.35" />
+                  <small>越高越保守，低相关内容越不容易进入上下文。</small>
+                </label>
+              </div>
+            </section>
+
+            <section class="settings-panel" id="settingsPanelFiles" data-settings-panel="files">
+              <div class="settings-section-head">
+                <div>
+                  <h3>文件与导入</h3>
+                  <p>控制上传原件位置与导入审核默认行为</p>
+                </div>
+              </div>
+              <label class="settings-field">
+                <span>上传目录</span>
+                <input id="uploadDir" value="data/uploads" />
+                <small>上传原件保存到本地目录，不提交 Git。</small>
+              </label>
+              <div class="settings-info-line">解析结果默认进入文档切片，不会直接保存为正式 FAQ 或进入向量检索。</div>
+            </section>
+
+            <section class="settings-panel" id="settingsPanelWechat" data-settings-panel="wechat">
+              <div class="settings-section-head">
+                <div>
+                  <h3>微信服务</h3>
+                  <p>控制微信登录 Token 与长消息分段</p>
+                </div>
+              </div>
+              <label class="settings-field">
+                <span>微信 Token 文件</span>
+                <input id="wechatTokenFile" value="/home/adam/.wxbot/token.json" />
+              </label>
+              <label class="settings-field">
+                <span>微信消息分段长度</span>
+                <input id="wechatMessageChunkSize" type="number" value="1800" />
+              </label>
+            </section>
+
+            <section class="settings-panel" id="settingsPanelAdvanced" data-settings-panel="advanced">
+              <div class="settings-section-head">
+                <div>
+                  <h3>高级配置</h3>
+                  <p>数据库连接等高风险配置，修改后可能需要重启服务</p>
+                </div>
+              </div>
+              <label class="settings-field">
+                <span>DATABASE_URL</span>
+                <div class="settings-secret">
+                  <input id="databaseUrl" type="text" autocomplete="off" spellcheck="false" readonly />
+                  <button type="button" data-secret-toggle="databaseUrl" data-secret-visible="false" aria-label="显示数据库地址" title="显示或隐藏数据库地址">
+                    <svg class="secret-icon secret-icon-eye" data-secret-icon="eye" aria-hidden="true"><use href="#icon-eye"></use></svg>
+                    <svg class="secret-icon secret-icon-eye-off" data-secret-icon="eye-off" aria-hidden="true"><use href="#icon-eye-off"></use></svg>
+                  </button>
+                  <button type="button" data-secret-copy="databaseUrl" aria-label="复制数据库地址" title="复制数据库地址">
+                    <svg class="secret-icon" data-secret-icon="copy" aria-hidden="true"><use href="#icon-copy"></use></svg>
+                  </button>
+                </div>
+              </label>
+              <div class="settings-danger-line">修改数据库配置可能导致管理后台无法连接，请确认备份和重启方案。</div>
+            </section>
+          </div>
+        </div>
+
+        <footer class="settings-modal-footer">
+          <span>关闭前若未保存，将提示二次确认</span>
+          <button class="cancel-button" type="button" id="settingsCancelButton">取消</button>
+          <button class="apply-button" type="button" id="saveSettingsButton">保存设置</button>
+        </footer>
+      </section>
     </div>
 
     <div class="drawer-backdrop" id="drawerBackdrop" aria-hidden="true"></div>

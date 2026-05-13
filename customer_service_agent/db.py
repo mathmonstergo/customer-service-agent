@@ -366,11 +366,25 @@ class Database:
 
     def update_import_file_summary(self, file_id: str, **fields: Any) -> dict[str, Any]:
         """更新导入文件解析摘要，只允许受控字段。"""
-        allowed = {"status", "message_count", "chunk_count", "candidate_count", "error"}
+        allowed = {
+            "status",
+            "message_count",
+            "chunk_count",
+            "candidate_count",
+            "error",
+            "parse_batch_id",
+            "parse_file_name",
+            "parse_progress",
+        }
         updates = {key: value for key, value in fields.items() if key in allowed}
         if not updates:
             return self.get_import_file(file_id)
-        assignments = ", ".join(f"{key} = %({key})s" for key in updates)
+        if "parse_progress" in updates:
+            updates["parse_progress"] = json.dumps(updates["parse_progress"] or {}, ensure_ascii=False)
+        assignments = ", ".join(
+            f"{key} = %({key})s::jsonb" if key == "parse_progress" else f"{key} = %({key})s"
+            for key in updates
+        )
         sql = f"""
         UPDATE import_files
         SET {assignments}, updated_at = now()
@@ -386,6 +400,12 @@ class Database:
     def get_import_file(self, file_id: str) -> dict[str, Any] | None:
         """按 id 获取导入文件记录。"""
         sql = "SELECT * FROM import_files WHERE id = %(id)s"
+        with self.connect() as conn:
+            return conn.execute(sql, {"id": file_id}).fetchone()
+
+    def delete_import_file(self, file_id: str) -> dict[str, Any] | None:
+        """删除导入文件记录，依赖外键级联清理切块和候选 FAQ。"""
+        sql = "DELETE FROM import_files WHERE id = %(id)s RETURNING *"
         with self.connect() as conn:
             return conn.execute(sql, {"id": file_id}).fetchone()
 

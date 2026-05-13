@@ -10,11 +10,19 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from customer_service_agent.ai_assist import AiAssistant, AiSuggestionError
 from customer_service_agent.config import Settings
 from customer_service_agent.db import Database, build_import_candidate_faq_row
+from customer_service_agent.document_parser import (
+    MINERU_BATCH_FILE_URL,
+    MINERU_BATCH_RESULT_URL_TEMPLATE,
+    MineruClient,
+    MineruParseError,
+    build_import_chunks_from_blocks,
+    extract_blocks_from_mineru_payload,
+)
 from customer_service_agent.import_dedupe import compare_candidate_duplicate
 from customer_service_agent.import_ai import ImportAiAssistant, ImportCandidateError
 from customer_service_agent.import_models import detect_file_type
@@ -96,6 +104,123 @@ def normalize_import_parse_options(payload: dict[str, Any]) -> dict[str, Any]:
     return {"parse_mode": parse_mode, "chunk_days": min(max(chunk_days, 1), 7)}
 
 
+def _normalize_parse_progress(value: Any) -> dict[str, Any]:
+    """规范化解析进度字段，兼容数据库 JSONB 和旧字符串记录。"""
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {"state": value.strip()}
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
+def _state_from_import_status(status: Any) -> str:
+    """把导入文件状态映射为前端轮询状态，避免页面理解 FAQ 审核状态。"""
+    mapping = {
+        "pending": "pending",
+        "processing": "running",
+        "needs_review": "done",
+        "completed": "done",
+        "failed": "failed",
+        "unsupported": "unsupported",
+    }
+    return mapping.get(str(status or "pending"), "pending")
+
+
+def _parse_progress_percent(progress: dict[str, Any]) -> int:
+    """根据 MinerU 页数进度计算百分比，缺少页数时按状态给默认值。"""
+    try:
+        total_pages = int(progress.get("total_pages") or 0)
+        extracted_pages = int(progress.get("extracted_pages") or 0)
+    except (TypeError, ValueError):
+        total_pages = 0
+        extracted_pages = 0
+    if total_pages > 0:
+        return min(max(round(extracted_pages * 100 / total_pages), 0), 100)
+    state = str(progress.get("state") or "")
+    if state in {"done", "finished", "success", "completed"}:
+        return 100
+    return 0
+
+
+def settings_payload_to_env(payload: dict[str, Any]) -> dict[str, str]:
+    """把设置页 payload 规范化成运行时环境键值，并复用 Settings 校验关键约束。"""
+    env_values = {
+        "DATABASE_URL": str(payload.get("database_url", "")).strip(),
+        "CHAT_BASE_URL": str(payload.get("chat_base_url", "")).strip(),
+        "CHAT_API_KEY": str(payload.get("chat_api_key", "")).strip(),
+        "CHAT_MODEL": str(payload.get("chat_model", "")).strip(),
+        "EMBEDDING_BASE_URL": str(payload.get("embedding_base_url", "")).strip(),
+        "EMBEDDING_API_KEY": str(payload.get("embedding_api_key", "")).strip(),
+        "EMBEDDING_MODEL": str(payload.get("embedding_model", "")).strip(),
+        "EMBEDDING_DIMENSIONS": str(payload.get("embedding_dimensions", "")).strip(),
+        "WECHAT_TOKEN_FILE": str(payload.get("wechat_token_file", "")).strip(),
+        "WECHAT_MESSAGE_CHUNK_SIZE": str(payload.get("wechat_message_chunk_size", "")).strip(),
+        "RAG_TOP_K": str(payload.get("rag_top_k", "")).strip(),
+        "RAG_MIN_SCORE": str(payload.get("rag_min_score", "")).strip(),
+        "UPLOAD_DIR": str(payload.get("upload_dir", "")).strip(),
+        "MINERU_API_MODE": "standard",
+        "MINERU_API_TOKEN": str(payload.get("mineru_api_token", "")).strip(),
+        "MINERU_PARSE_TIMEOUT_SECONDS": str(
+            payload.get("mineru_parse_timeout_seconds", "")
+        ).strip(),
+        "MINERU_USE_KB_PACKAGER": "true" if payload.get("mineru_use_kb_packager") else "false",
+    }
+    try:
+        Settings.from_env(env_values)
+    except Exception as exc:
+        raise AdminValidationError(str(exc)) from exc
+    return env_values
+
+
+def settings_to_tenant_settings(settings: Settings) -> dict[str, Any]:
+    """把 Settings 转成可持久化的租户配置，保留布尔和数字类型。"""
+    return {
+        "database_url": settings.database_url,
+        "chat_base_url": settings.chat_base_url,
+        "chat_api_key": settings.chat_api_key,
+        "chat_model": settings.chat_model,
+        "embedding_base_url": settings.embedding_base_url,
+        "embedding_api_key": settings.embedding_api_key,
+        "embedding_model": settings.embedding_model,
+        "embedding_dimensions": settings.embedding_dimensions,
+        "wechat_token_file": str(settings.wechat_token_file),
+        "wechat_message_chunk_size": settings.wechat_message_chunk_size,
+        "rag_top_k": settings.rag_top_k,
+        "rag_min_score": settings.rag_min_score,
+        "upload_dir": str(settings.upload_dir),
+        "mineru_api_token": settings.mineru_api_token or "",
+        "mineru_parse_timeout_seconds": settings.mineru_parse_timeout_seconds,
+        "mineru_use_kb_packager": settings.mineru_use_kb_packager,
+    }
+
+
+def write_tenant_settings(settings_file: Path, values: dict[str, Any], tenant_id: str = "default") -> None:
+    """写入本地租户设置文件，保留未来多租户配置的扩展结构。"""
+    payload: dict[str, Any] = {}
+    if settings_file.exists():
+        try:
+            loaded = json.loads(settings_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise AdminValidationError(f"Invalid settings file: {settings_file}") from exc
+        if isinstance(loaded, dict):
+            payload = loaded
+    tenants = payload.get("tenants")
+    if not isinstance(tenants, dict):
+        tenants = {}
+    tenants[tenant_id] = values
+    payload["version"] = 1
+    payload["active_tenant_id"] = tenant_id
+    payload["tenants"] = tenants
+    settings_file.parent.mkdir(parents=True, exist_ok=True)
+    settings_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    settings_file.chmod(0o600)
+
+
 def safe_upload_name(filename: str) -> str:
     """清理上传文件名，只保留本地存储需要的安全字符。"""
     name = Path(filename).name.strip() or "upload"
@@ -125,6 +250,8 @@ class AdminApp:
     db: Database | None = None
     embeddings: EmbeddingClient | None = None
     chat: ChatClient | None = None
+    settings_file: Path = Path("data/settings.local.json")
+    tenant_id: str = "default"
 
     def database(self) -> Database:
         if self.db is None:
@@ -140,6 +267,43 @@ class AdminApp:
         if self.chat is None:
             self.chat = ChatClient.from_settings(self.settings)
         return self.chat
+
+    def settings_snapshot(self) -> dict[str, Any]:
+        """给本地设置弹窗返回当前运行配置，密钥只在本机管理页显式查看时使用。"""
+        return {
+            "database_url": self.settings.database_url,
+            "chat_base_url": self.settings.chat_base_url,
+            "chat_api_key": self.settings.chat_api_key,
+            "chat_model": self.settings.chat_model,
+            "embedding_base_url": self.settings.embedding_base_url,
+            "embedding_api_key": self.settings.embedding_api_key,
+            "embedding_model": self.settings.embedding_model,
+            "embedding_dimensions": self.settings.embedding_dimensions,
+            "wechat_token_file": str(self.settings.wechat_token_file),
+            "wechat_message_chunk_size": self.settings.wechat_message_chunk_size,
+            "rag_top_k": self.settings.rag_top_k,
+            "rag_min_score": self.settings.rag_min_score,
+            "upload_dir": str(self.settings.upload_dir),
+            "mineru_api_token": self.settings.mineru_api_token or "",
+            "mineru_parse_timeout_seconds": self.settings.mineru_parse_timeout_seconds,
+            "mineru_use_kb_packager": self.settings.mineru_use_kb_packager,
+        }
+
+    def update_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """保存设置页配置到本地租户文件，并刷新当前管理进程使用的配置对象。"""
+        env_values = settings_payload_to_env(payload)
+        next_settings = Settings.from_env(env_values)
+        write_tenant_settings(
+            self.settings_file,
+            settings_to_tenant_settings(next_settings),
+            tenant_id=self.tenant_id,
+        )
+        self.settings = next_settings
+        self.embeddings = None
+        self.chat = None
+        if self.db is not None and getattr(self.db, "database_url", None) != self.settings.database_url:
+            self.db = None
+        return self.settings_snapshot()
 
     def list_faqs(self, params: dict[str, list[str]]) -> dict[str, Any]:
         page = max(int(params.get("page", ["1"])[0]), 1)
@@ -222,8 +386,8 @@ class AdminApp:
             offset=max(int(params.get("offset", ["0"])[0]), 0),
         )
 
-    def create_import_file(self, filename: str, content: bytes) -> dict[str, Any]:
-        """保存上传原件并按识别出的解析器处理第一期 Markdown。"""
+    def create_import_file(self, filename: str, content: bytes, *, auto_parse: bool = True) -> dict[str, Any]:
+        """保存上传原件；文档管理可选择先只入库，后续由用户手动解析。"""
         if not content:
             raise AdminValidationError("uploaded file is empty")
         file_type, parser = detect_file_type(filename)
@@ -245,8 +409,12 @@ class AdminApp:
                 "status": status,
             }
         )
+        if not auto_parse:
+            return record
         if parser == "markdown_chat":
             return self._parse_markdown_import(record, content)
+        if parser == "mineru":
+            return self._parse_mineru_import(record, stored_path)
         return record
 
     def _parse_markdown_import(
@@ -291,16 +459,170 @@ class AdminApp:
         )
         return {**record, **summary}
 
+    def _parse_mineru_import(self, record: dict[str, Any], stored_path: Path) -> dict[str, Any]:
+        """调用 MinerU 解析上传文件，并生成导入审核切块。"""
+        try:
+            blocks = self._mineru_client().parse_file(stored_path)
+            chunk_rows = build_import_chunks_from_blocks(record["id"], blocks)
+        except MineruParseError as exc:
+            self.database().update_import_file_summary(
+                record["id"],
+                status="failed",
+                error=str(exc),
+            )
+            raise AdminValidationError(f"MinerU parse failed: {exc}") from exc
+
+        self.database().replace_import_chunks(record["id"], chunk_rows)
+        summary = self.database().update_import_file_summary(
+            record["id"],
+            status="needs_review",
+            message_count=0,
+            chunk_count=len(chunk_rows),
+            candidate_count=0,
+            error=None,
+        )
+        return {**record, **summary}
+
+    def _mineru_client(self) -> MineruClient:
+        """创建 MinerU 客户端，集中使用项目内写死的官方批量接口。"""
+        return MineruClient(
+            api_token=getattr(self.settings, "mineru_api_token", None),
+            batch_file_url=MINERU_BATCH_FILE_URL,
+            batch_result_url_template=MINERU_BATCH_RESULT_URL_TEMPLATE,
+            timeout_seconds=self.settings.mineru_parse_timeout_seconds,
+            use_kb_packager=getattr(self.settings, "mineru_use_kb_packager", True),
+        )
+
+    def start_import_parse_job(self, file_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """提交文档解析任务，关键约束是 MinerU 长任务不在请求内同步等待。"""
+        record = self.database().get_import_file(file_id)
+        if record is None:
+            raise AdminNotFoundError(f"Import file not found: {file_id}")
+        if record.get("parser") == "markdown_chat":
+            parsed = self.reparse_import_file(file_id, payload)
+            return self._import_parse_status_payload(parsed, state="done", progress={"state": "done"})
+        if record.get("parser") != "mineru":
+            raise AdminValidationError("only MinerU files can start parse jobs")
+        stored_path = Path(record["stored_path"])
+        if not stored_path.exists():
+            raise AdminValidationError("stored upload file is missing")
+
+        status = self._mineru_client().start_file(stored_path)
+        progress = self._mineru_progress_payload(status)
+        summary = self.database().update_import_file_summary(
+            file_id,
+            status="processing",
+            parse_batch_id=status.batch_id,
+            parse_file_name=status.file_name,
+            parse_progress=progress,
+            error=None,
+        )
+        return self._import_parse_status_payload({**record, **summary}, state=status.state, progress=progress)
+
+    def get_import_parse_status(self, file_id: str) -> dict[str, Any]:
+        """查询文档解析状态；完成时落盘切片，进行中时只更新进度。"""
+        record = self.database().get_import_file(file_id)
+        if record is None:
+            raise AdminNotFoundError(f"Import file not found: {file_id}")
+        if record.get("parser") != "mineru" or record.get("status") != "processing":
+            return self._import_parse_status_payload(record)
+
+        batch_id = str(record.get("parse_batch_id") or "").strip()
+        file_name = str(record.get("parse_file_name") or record.get("original_name") or "").strip()
+        if not batch_id or not file_name:
+            return self._import_parse_status_payload(record)
+
+        status = self._mineru_client().get_task_status(batch_id, file_name)
+        progress = self._mineru_progress_payload(status)
+        if status.state in {"done", "finished", "success", "completed"}:
+            return self._finish_mineru_parse_job(record, status, progress)
+        if status.state in {"failed", "error", "cancelled", "canceled"}:
+            summary = self.database().update_import_file_summary(
+                file_id,
+                status="failed",
+                parse_progress=progress,
+                error=status.error or "MinerU parse failed",
+            )
+            return self._import_parse_status_payload({**record, **summary}, state=status.state, progress=progress)
+
+        summary = self.database().update_import_file_summary(
+            file_id,
+            status="processing",
+            parse_progress=progress,
+            error=None,
+        )
+        return self._import_parse_status_payload({**record, **summary}, state=status.state, progress=progress)
+
+    def _finish_mineru_parse_job(self, record: dict[str, Any], status: Any, progress: dict[str, Any]) -> dict[str, Any]:
+        """处理 MinerU 完成状态，下载结果并替换文档切片。"""
+        try:
+            payload = self._mineru_client().download_task_result(status)
+            blocks = extract_blocks_from_mineru_payload(
+                payload,
+                source_file=record.get("original_name") or status.file_name,
+                use_kb_packager=getattr(self.settings, "mineru_use_kb_packager", True),
+            )
+            chunk_rows = build_import_chunks_from_blocks(record["id"], blocks)
+        except MineruParseError as exc:
+            summary = self.database().update_import_file_summary(
+                record["id"],
+                status="failed",
+                parse_progress=progress,
+                error=str(exc),
+            )
+            return self._import_parse_status_payload({**record, **summary}, state="failed", progress=progress)
+
+        self.database().replace_import_chunks(record["id"], chunk_rows)
+        summary = self.database().update_import_file_summary(
+            record["id"],
+            status="needs_review",
+            message_count=0,
+            chunk_count=len(chunk_rows),
+            candidate_count=0,
+            parse_progress=progress,
+            error=None,
+        )
+        return self._import_parse_status_payload({**record, **summary}, state=status.state, progress=progress)
+
+    def _mineru_progress_payload(self, status: Any) -> dict[str, Any]:
+        """把 MinerU 原始进度整理成前端可直接消费的 JSON。"""
+        progress = dict(getattr(status, "progress", None) or {})
+        progress["state"] = getattr(status, "state", None) or progress.get("state") or "pending"
+        return progress
+
+    def _import_parse_status_payload(
+        self,
+        record: dict[str, Any],
+        *,
+        state: str | None = None,
+        progress: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """构造文档解析轮询响应，状态和百分比保持稳定字段名。"""
+        raw_progress = progress if progress is not None else record.get("parse_progress")
+        normalized_progress = _normalize_parse_progress(raw_progress)
+        current_state = state or normalized_progress.get("state") or _state_from_import_status(record.get("status"))
+        normalized_progress.setdefault("state", current_state)
+        return {
+            "file": record,
+            "status": record.get("status"),
+            "state": current_state,
+            "progress": normalized_progress,
+            "percent": _parse_progress_percent(normalized_progress),
+            "error": record.get("error"),
+        }
+
     def reparse_import_file(self, file_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         """按用户选择的解析参数重新切分已上传文件。"""
         record = self.database().get_import_file(file_id)
         if record is None:
             raise AdminNotFoundError(f"Import file not found: {file_id}")
-        if record.get("parser") != "markdown_chat":
-            raise AdminValidationError("only Markdown chat files can be reparsed in phase 1")
+        if record.get("parser") not in {"markdown_chat", "mineru"}:
+            raise AdminValidationError("only Markdown chat or MinerU files can be reparsed")
         stored_path = Path(record["stored_path"])
         if not stored_path.exists():
             raise AdminValidationError("stored upload file is missing")
+        if record.get("parser") == "mineru":
+            return self._parse_mineru_import(record, stored_path)
         options = normalize_import_parse_options(payload)
         return self._parse_markdown_import(
             record,
@@ -312,6 +634,26 @@ class AdminApp:
     def list_import_chunks(self, file_id: str) -> dict[str, Any]:
         """返回某个导入文件的时间切块列表。"""
         return {"items": self.database().list_import_chunks(file_id)}
+
+    def get_import_file_for_download(self, file_id: str) -> tuple[dict[str, Any], Path]:
+        """返回可下载的原件路径，关键约束是必须来自已登记导入文件。"""
+        record = self.database().get_import_file(file_id)
+        if record is None:
+            raise AdminNotFoundError(f"Import file not found: {file_id}")
+        stored_path = Path(record["stored_path"])
+        if not stored_path.exists():
+            raise AdminValidationError("stored upload file is missing")
+        return record, stored_path
+
+    def delete_import_file(self, file_id: str) -> dict[str, Any]:
+        """删除导入文件记录和本地原件，数据库级联清理切片与候选 FAQ。"""
+        record = self.database().delete_import_file(file_id)
+        if record is None:
+            raise AdminNotFoundError(f"Import file not found: {file_id}")
+        stored_path = Path(record.get("stored_path") or "")
+        if stored_path.exists():
+            stored_path.unlink()
+        return {"deleted": True, "id": file_id}
 
     def list_import_candidates(self, chunk_id: str) -> dict[str, Any]:
         """返回某个切块下的候选 FAQ 列表。"""
@@ -473,12 +815,24 @@ def make_handler(app: AdminApp):
                     self.send_response(HTTPStatus.NO_CONTENT)
                     self.end_headers()
                     return
+                if parsed.path == "/api/settings":
+                    self.send_json(app.settings_snapshot())
+                    return
                 if parsed.path == "/api/import/files":
                     self.send_json(app.list_import_files(parse_qs(parsed.query)))
+                    return
+                if parsed.path.startswith("/api/import/files/") and parsed.path.endswith("/download"):
+                    file_id = parsed.path.removeprefix("/api/import/files/").removesuffix("/download")
+                    record, stored_path = app.get_import_file_for_download(file_id)
+                    self.send_download(stored_path, record.get("original_name") or stored_path.name)
                     return
                 if parsed.path.startswith("/api/import/files/") and parsed.path.endswith("/chunks"):
                     file_id = parsed.path.removeprefix("/api/import/files/").removesuffix("/chunks")
                     self.send_json(app.list_import_chunks(file_id))
+                    return
+                if parsed.path.startswith("/api/import/files/") and parsed.path.endswith("/parse-status"):
+                    file_id = parsed.path.removeprefix("/api/import/files/").removesuffix("/parse-status")
+                    self.send_json(app.get_import_parse_status(file_id))
                     return
                 if parsed.path.startswith("/api/import/files/") and parsed.path.endswith("/candidates"):
                     file_id = parsed.path.removeprefix("/api/import/files/").removesuffix("/candidates")
@@ -508,12 +862,20 @@ def make_handler(app: AdminApp):
             try:
                 if parsed.path == "/api/import/files":
                     filename, content = self.read_multipart_file()
-                    self.send_json(app.create_import_file(filename, content))
+                    auto_parse = parse_qs(parsed.query).get("parse", ["true"])[0].lower() != "false"
+                    self.send_json(app.create_import_file(filename, content, auto_parse=auto_parse))
                     return
                 payload = self.read_json()
+                if parsed.path == "/api/settings":
+                    self.send_json(app.update_settings(payload))
+                    return
                 if parsed.path.startswith("/api/import/files/") and parsed.path.endswith("/reparse"):
                     file_id = parsed.path.removeprefix("/api/import/files/").removesuffix("/reparse")
                     self.send_json(app.reparse_import_file(file_id, payload))
+                    return
+                if parsed.path.startswith("/api/import/files/") and parsed.path.endswith("/parse-jobs"):
+                    file_id = parsed.path.removeprefix("/api/import/files/").removesuffix("/parse-jobs")
+                    self.send_json(app.start_import_parse_job(file_id, payload))
                     return
                 if parsed.path == "/api/faqs":
                     self.send_json(app.save_faq(payload))
@@ -550,6 +912,17 @@ def make_handler(app: AdminApp):
                 if parsed.path.startswith("/api/faqs/") and parsed.path.endswith("/embed"):
                     faq_id = parsed.path.removeprefix("/api/faqs/").removesuffix("/embed")
                     self.send_json(app.embed_faq(faq_id))
+                    return
+                raise AdminNotFoundError(parsed.path)
+            except Exception as exc:
+                self.send_error_json(exc)
+
+        def do_DELETE(self) -> None:
+            parsed = urlparse(self.path)
+            try:
+                if parsed.path.startswith("/api/import/files/"):
+                    file_id = parsed.path.removeprefix("/api/import/files/")
+                    self.send_json(app.delete_import_file(file_id))
                     return
                 raise AdminNotFoundError(parsed.path)
             except Exception as exc:
@@ -599,6 +972,19 @@ def make_handler(app: AdminApp):
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+
+        def send_download(self, path: Path, filename: str) -> None:
+            """发送已上传原件，文件名通过 RFC 5987 编码避免中文乱码。"""
+            if not path.exists():
+                raise AdminNotFoundError(str(path))
+            content = path.read_bytes()
+            content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(content)))
+            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(filename)}")
             self.end_headers()
             self.wfile.write(content)
 

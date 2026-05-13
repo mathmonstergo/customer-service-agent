@@ -76,9 +76,17 @@ CREATE TABLE IF NOT EXISTS import_files (
     chunk_count INTEGER NOT NULL DEFAULT 0,
     candidate_count INTEGER NOT NULL DEFAULT 0,
     error TEXT,
+    parse_batch_id TEXT,
+    parse_file_name TEXT,
+    parse_progress JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE import_files
+    ADD COLUMN IF NOT EXISTS parse_batch_id TEXT,
+    ADD COLUMN IF NOT EXISTS parse_file_name TEXT,
+    ADD COLUMN IF NOT EXISTS parse_progress JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 CREATE TABLE IF NOT EXISTS import_chunks (
     id TEXT PRIMARY KEY,

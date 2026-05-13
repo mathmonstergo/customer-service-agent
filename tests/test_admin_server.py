@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +10,7 @@ from customer_service_agent.admin_server import (
     normalize_faq_payload,
     static_path,
 )
+from customer_service_agent.config import Settings
 
 
 def test_normalize_faq_payload_sets_defaults_and_splits_lists():
@@ -67,6 +69,94 @@ def test_admin_app_batch_update_status_calls_database():
     assert calls == [(["faq_1"], "disabled")]
 
 
+def test_admin_app_settings_snapshot_exposes_runtime_config_for_local_modal(tmp_path):
+    """设置中心读取当前运行配置，密钥只经本地管理接口返回给弹窗。"""
+    app = AdminApp(
+        SimpleNamespace(
+            database_url="postgresql://user:pass@127.0.0.1:5432/app",
+            chat_base_url="https://chat.example/v1",
+            chat_api_key="chat-secret",
+            chat_model="deepseek-chat",
+            embedding_base_url="https://embed.example/v1",
+            embedding_api_key="embedding-secret",
+            embedding_model="text-embedding-v4",
+            embedding_dimensions=1024,
+            wechat_token_file=tmp_path / "token.json",
+            wechat_message_chunk_size=1800,
+            rag_top_k=6,
+            rag_min_score=0.42,
+            upload_dir=tmp_path / "uploads",
+            mineru_api_token="mineru-secret",
+            mineru_parse_timeout_seconds=600,
+            mineru_use_kb_packager=True,
+        )
+    )
+
+    snapshot = app.settings_snapshot()
+
+    assert snapshot["mineru_api_token"] == "mineru-secret"
+    assert snapshot["chat_api_key"] == "chat-secret"
+    assert snapshot["embedding_api_key"] == "embedding-secret"
+    assert snapshot["database_url"] == "postgresql://user:pass@127.0.0.1:5432/app"
+    assert "mineru_batch_file_url" not in snapshot
+    assert snapshot["rag_top_k"] == 6
+    assert snapshot["wechat_token_file"].endswith("token.json")
+
+
+def test_admin_app_update_settings_persists_local_tenant_settings_and_refreshes_runtime_config(tmp_path):
+    """保存设置应写入本地租户配置文件，不修改 .env，并立即刷新运行时配置。"""
+    settings_file = tmp_path / "settings.local.json"
+    env_file = tmp_path / ".env"
+    settings = Settings.from_env(
+        {
+            "DATABASE_URL": "postgresql://old@127.0.0.1:5432/app",
+            "CHAT_BASE_URL": "https://old-chat.example/v1",
+            "CHAT_API_KEY": "old-chat-key",
+            "CHAT_MODEL": "old-model",
+            "EMBEDDING_BASE_URL": "https://old-embedding.example/v1",
+            "EMBEDDING_API_KEY": "old-embedding-key",
+            "EMBEDDING_MODEL": "text-embedding-v4",
+        }
+    )
+    app = AdminApp(settings, settings_file=settings_file)
+
+    snapshot = app.update_settings(
+        {
+            "database_url": "postgresql://new@127.0.0.1:5432/app",
+            "chat_base_url": "https://new-chat.example/v1",
+            "chat_api_key": "new-chat-key",
+            "chat_model": "mimo-v2.5-pro",
+            "embedding_base_url": "https://new-embedding.example/v1",
+            "embedding_api_key": "new-embedding-key",
+            "embedding_model": "text-embedding-v4",
+            "embedding_dimensions": "1024",
+            "wechat_token_file": str(tmp_path / "token.json"),
+            "wechat_message_chunk_size": "1800",
+            "rag_top_k": "7",
+            "rag_min_score": "0.4",
+            "upload_dir": str(tmp_path / "uploads"),
+            "mineru_api_token": "new-mineru-token",
+            "mineru_parse_timeout_seconds": "600",
+            "mineru_use_kb_packager": False,
+        }
+    )
+
+    saved_settings = json.loads(settings_file.read_text(encoding="utf-8"))
+    assert snapshot["chat_model"] == "mimo-v2.5-pro"
+    assert "mineru_batch_file_url" not in snapshot
+    assert "mineru_batch_result_url_template" not in snapshot
+    assert "mineru_api_url" not in snapshot
+    assert app.settings.chat_api_key == "new-chat-key"
+    assert not env_file.exists()
+    assert saved_settings["version"] == 1
+    assert saved_settings["active_tenant_id"] == "default"
+    assert saved_settings["tenants"]["default"]["chat_model"] == "mimo-v2.5-pro"
+    assert "mineru_batch_file_url" not in saved_settings["tenants"]["default"]
+    assert "mineru_batch_result_url_template" not in saved_settings["tenants"]["default"]
+    assert saved_settings["tenants"]["default"]["mineru_use_kb_packager"] is False
+    assert (settings_file.stat().st_mode & 0o777) == 0o600
+
+
 def test_admin_app_create_import_file_parses_markdown(tmp_path):
     """上传 Markdown 时保存原件并生成时间切块。"""
     calls = []
@@ -97,6 +187,40 @@ def test_admin_app_create_import_file_parses_markdown(tmp_path):
     assert result["status"] == "needs_review"
     assert calls[1][0] == "chunks"
     assert calls[1][2][0]["message_count"] == 2
+
+
+def test_admin_app_create_import_file_can_store_without_parsing(tmp_path):
+    """文档管理页上传文件只保存原件，用户点击解析后才生成切块。"""
+    calls = []
+
+    class FakeDatabase:
+        def create_import_file(self, row):
+            calls.append(("file", row))
+            return {**row, "created_at": "now", "updated_at": "now"}
+
+    app = AdminApp(
+        SimpleNamespace(database_url="postgresql://unused", upload_dir=tmp_path),
+        db=FakeDatabase(),
+    )
+
+    result = app.create_import_file("manual.pdf", b"%PDF-1.7", auto_parse=False)
+
+    assert result["file_type"] == "pdf"
+    assert result["parser"] == "mineru"
+    assert result["status"] == "pending"
+    assert calls == [
+        (
+            "file",
+            {
+                "id": result["id"],
+                "original_name": "manual.pdf",
+                "stored_path": str(tmp_path / f"{result['id']}_manual.pdf"),
+                "file_type": "pdf",
+                "parser": "mineru",
+                "status": "pending",
+            },
+        )
+    ]
 
 
 def test_admin_app_reparse_import_file_uses_day_range_options(tmp_path):
@@ -142,25 +266,344 @@ def test_admin_app_reparse_import_file_uses_day_range_options(tmp_path):
     assert calls[0][0] == "chunks"
 
 
-def test_admin_app_create_import_file_marks_unsupported(tmp_path):
-    """非 Markdown 文件第一期只识别类型，不进入解析。"""
+def test_admin_app_create_import_file_parses_pdf_with_mineru(tmp_path, monkeypatch):
+    """上传 PDF 时调用 MinerU 解析并生成审核切块。"""
     calls = []
 
     class FakeDatabase:
         def create_import_file(self, row):
-            calls.append(row)
+            calls.append(("file", row))
             return row
 
+        def replace_import_chunks(self, file_id, chunks):
+            calls.append(("chunks", file_id, chunks))
+            return chunks
+
+        def update_import_file_summary(self, file_id, **fields):
+            calls.append(("summary", file_id, fields))
+            return {"id": file_id, **fields}
+
+    class FakeMineruClient:
+        def __init__(self, *args, **kwargs):
+            assert kwargs["api_token"] == "mineru-token"
+            assert kwargs["batch_file_url"] == "https://mineru.net/api/v4/file-urls/batch"
+            assert (
+                kwargs["batch_result_url_template"]
+                == "https://mineru.net/api/v4/extract-results/batch/{batch_id}"
+            )
+
+        def parse_file(self, path):
+            assert path.exists()
+            return [
+                {
+                    "text": "账号登录",
+                    "block_type": "title",
+                    "page_number": 1,
+                    "section_title": "账号登录",
+                    "evidence": {
+                        "source_file": "manual.pdf",
+                        "page_number": 1,
+                        "block_type": "title",
+                    },
+                }
+            ]
+
+    monkeypatch.setattr("customer_service_agent.admin_server.MineruClient", FakeMineruClient)
+
     app = AdminApp(
-        SimpleNamespace(database_url="postgresql://unused", upload_dir=tmp_path),
+        SimpleNamespace(
+            database_url="postgresql://unused",
+            upload_dir=tmp_path,
+            mineru_api_token="mineru-token",
+            mineru_parse_timeout_seconds=30,
+            mineru_use_kb_packager=True,
+        ),
         db=FakeDatabase(),
     )
 
     result = app.create_import_file("manual.pdf", b"%PDF")
 
     assert result["file_type"] == "pdf"
-    assert result["parser"] == "unsupported"
-    assert result["status"] == "unsupported"
+    assert result["parser"] == "mineru"
+    assert result["status"] == "needs_review"
+    assert calls[1][0] == "chunks"
+    assert "账号登录" in calls[1][2][0]["source_text"]
+
+
+def test_admin_app_starts_mineru_parse_job_without_blocking_for_result(tmp_path, monkeypatch):
+    """文档管理触发 MinerU 解析时只提交任务并保存批次号，长任务交给状态轮询。"""
+    source = tmp_path / "manual.pdf"
+    source.write_bytes(b"%PDF")
+    calls = []
+
+    class FakeDatabase:
+        def get_import_file(self, file_id):
+            assert file_id == "imp_1"
+            return {
+                "id": "imp_1",
+                "original_name": "manual.pdf",
+                "stored_path": str(source),
+                "file_type": "pdf",
+                "parser": "mineru",
+                "status": "pending",
+            }
+
+        def update_import_file_summary(self, file_id, **fields):
+            calls.append(("summary", file_id, fields))
+            return {
+                "id": file_id,
+                "original_name": "manual.pdf",
+                "stored_path": str(source),
+                "file_type": "pdf",
+                "parser": "mineru",
+                **fields,
+            }
+
+    class FakeMineruClient:
+        def __init__(self, *args, **kwargs):
+            assert kwargs["api_token"] == "mineru-token"
+
+        def start_file(self, path):
+            assert path == source
+            return SimpleNamespace(
+                batch_id="batch_1",
+                file_name="manual.pdf",
+                state="waiting-file",
+                progress={},
+                error=None,
+                result={},
+                zip_url=None,
+            )
+
+    monkeypatch.setattr("customer_service_agent.admin_server.MineruClient", FakeMineruClient)
+
+    app = AdminApp(
+        SimpleNamespace(
+            database_url="postgresql://unused",
+            upload_dir=tmp_path,
+            mineru_api_token="mineru-token",
+            mineru_parse_timeout_seconds=30,
+            mineru_use_kb_packager=True,
+        ),
+        db=FakeDatabase(),
+    )
+
+    result = app.start_import_parse_job("imp_1", {})
+
+    assert result["state"] == "waiting-file"
+    assert result["percent"] == 0
+    assert calls == [
+        (
+            "summary",
+            "imp_1",
+            {
+                "status": "processing",
+                "parse_batch_id": "batch_1",
+                "parse_file_name": "manual.pdf",
+                "parse_progress": {"state": "waiting-file"},
+                "error": None,
+            },
+        )
+    ]
+
+
+def test_admin_app_polling_mineru_parse_status_updates_progress(tmp_path, monkeypatch):
+    """解析中状态需要回写页面可读进度，避免用户只能看到阻塞后的结果。"""
+    source = tmp_path / "manual.pdf"
+    source.write_bytes(b"%PDF")
+    calls = []
+
+    class FakeDatabase:
+        def get_import_file(self, file_id):
+            assert file_id == "imp_1"
+            return {
+                "id": "imp_1",
+                "original_name": "manual.pdf",
+                "stored_path": str(source),
+                "file_type": "pdf",
+                "parser": "mineru",
+                "status": "processing",
+                "parse_batch_id": "batch_1",
+                "parse_file_name": "manual.pdf",
+                "parse_progress": {"state": "waiting-file"},
+            }
+
+        def update_import_file_summary(self, file_id, **fields):
+            calls.append(("summary", file_id, fields))
+            return {
+                "id": file_id,
+                "original_name": "manual.pdf",
+                "stored_path": str(source),
+                "file_type": "pdf",
+                "parser": "mineru",
+                "status": fields.get("status", "processing"),
+                "parse_batch_id": "batch_1",
+                "parse_file_name": "manual.pdf",
+                **fields,
+            }
+
+    class FakeMineruClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def get_task_status(self, batch_id, file_name):
+            assert (batch_id, file_name) == ("batch_1", "manual.pdf")
+            return SimpleNamespace(
+                batch_id=batch_id,
+                file_name=file_name,
+                state="running",
+                progress={"extracted_pages": 3, "total_pages": 12},
+                error=None,
+                result={},
+                zip_url=None,
+            )
+
+    monkeypatch.setattr("customer_service_agent.admin_server.MineruClient", FakeMineruClient)
+
+    app = AdminApp(
+        SimpleNamespace(
+            database_url="postgresql://unused",
+            upload_dir=tmp_path,
+            mineru_api_token="mineru-token",
+            mineru_parse_timeout_seconds=30,
+            mineru_use_kb_packager=True,
+        ),
+        db=FakeDatabase(),
+    )
+
+    result = app.get_import_parse_status("imp_1")
+
+    assert result["state"] == "running"
+    assert result["percent"] == 25
+    assert result["progress"] == {"extracted_pages": 3, "total_pages": 12, "state": "running"}
+    assert calls == [
+        (
+            "summary",
+            "imp_1",
+            {
+                "status": "processing",
+                "parse_progress": {"extracted_pages": 3, "total_pages": 12, "state": "running"},
+                "error": None,
+            },
+        )
+    ]
+
+
+def test_admin_app_polling_mineru_done_downloads_result_and_replaces_chunks(tmp_path, monkeypatch):
+    """MinerU 状态到 done 后才下载结果并替换文档切片。"""
+    source = tmp_path / "manual.pdf"
+    source.write_bytes(b"%PDF")
+    calls = []
+
+    class FakeDatabase:
+        def get_import_file(self, file_id):
+            assert file_id == "imp_1"
+            return {
+                "id": "imp_1",
+                "original_name": "manual.pdf",
+                "stored_path": str(source),
+                "file_type": "pdf",
+                "parser": "mineru",
+                "status": "processing",
+                "parse_batch_id": "batch_1",
+                "parse_file_name": "manual.pdf",
+                "parse_progress": {"state": "running"},
+            }
+
+        def replace_import_chunks(self, file_id, chunks):
+            calls.append(("chunks", file_id, chunks))
+            return chunks
+
+        def update_import_file_summary(self, file_id, **fields):
+            calls.append(("summary", file_id, fields))
+            return {
+                "id": file_id,
+                "original_name": "manual.pdf",
+                "stored_path": str(source),
+                "file_type": "pdf",
+                "parser": "mineru",
+                **fields,
+            }
+
+    class FakeMineruClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def get_task_status(self, batch_id, file_name):
+            assert (batch_id, file_name) == ("batch_1", "manual.pdf")
+            return SimpleNamespace(
+                batch_id=batch_id,
+                file_name=file_name,
+                state="done",
+                progress={"extracted_pages": 12, "total_pages": 12},
+                error=None,
+                result={"file_name": "manual.pdf"},
+                zip_url="https://cdn.example/result.zip",
+            )
+
+        def download_task_result(self, status):
+            assert status.zip_url == "https://cdn.example/result.zip"
+            return {
+                "content_list": [
+                    {"type": "title", "text": "账号登录", "page_idx": 0},
+                    {"type": "text", "text": "先检查账号状态。", "page_idx": 0},
+                ]
+            }
+
+    monkeypatch.setattr("customer_service_agent.admin_server.MineruClient", FakeMineruClient)
+
+    app = AdminApp(
+        SimpleNamespace(
+            database_url="postgresql://unused",
+            upload_dir=tmp_path,
+            mineru_api_token="mineru-token",
+            mineru_parse_timeout_seconds=30,
+            mineru_use_kb_packager=True,
+        ),
+        db=FakeDatabase(),
+    )
+
+    result = app.get_import_parse_status("imp_1")
+
+    assert result["state"] == "done"
+    assert result["percent"] == 100
+    assert calls[0][0] == "chunks"
+    assert "先检查账号状态。" in calls[0][2][0]["source_text"]
+    assert calls[1] == (
+        "summary",
+        "imp_1",
+        {
+            "status": "needs_review",
+            "message_count": 0,
+            "chunk_count": 1,
+            "candidate_count": 0,
+            "parse_progress": {"extracted_pages": 12, "total_pages": 12, "state": "done"},
+            "error": None,
+        },
+    )
+
+
+def test_admin_app_delete_import_file_removes_record_and_local_upload(tmp_path):
+    """文档管理删除文件时需要同时删除导入记录和本地原件。"""
+    source = tmp_path / "manual.pdf"
+    source.write_bytes(b"%PDF")
+    calls = []
+
+    class FakeDatabase:
+        def delete_import_file(self, file_id):
+            calls.append(("delete", file_id))
+            return {"id": file_id, "stored_path": str(source), "original_name": "manual.pdf"}
+
+    app = AdminApp(
+        SimpleNamespace(database_url="postgresql://unused", upload_dir=tmp_path),
+        db=FakeDatabase(),
+    )
+
+    result = app.delete_import_file("imp_1")
+
+    assert result == {"deleted": True, "id": "imp_1"}
+    assert calls == [("delete", "imp_1")]
+    assert not source.exists()
 
 
 def test_admin_app_save_import_candidate_writes_needs_review_faq_and_embeds():

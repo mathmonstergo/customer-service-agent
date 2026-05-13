@@ -1,13 +1,35 @@
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Mapping
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 
 
 class SettingsError(ValueError):
     pass
+
+
+SETTINGS_ENV_FIELDS = {
+    "DATABASE_URL": "database_url",
+    "CHAT_BASE_URL": "chat_base_url",
+    "CHAT_API_KEY": "chat_api_key",
+    "CHAT_MODEL": "chat_model",
+    "EMBEDDING_BASE_URL": "embedding_base_url",
+    "EMBEDDING_API_KEY": "embedding_api_key",
+    "EMBEDDING_MODEL": "embedding_model",
+    "EMBEDDING_DIMENSIONS": "embedding_dimensions",
+    "WECHAT_TOKEN_FILE": "wechat_token_file",
+    "WECHAT_MESSAGE_CHUNK_SIZE": "wechat_message_chunk_size",
+    "RAG_TOP_K": "rag_top_k",
+    "RAG_MIN_SCORE": "rag_min_score",
+    "UPLOAD_DIR": "upload_dir",
+    "MINERU_API_MODE": "mineru_api_mode",
+    "MINERU_API_TOKEN": "mineru_api_token",
+    "MINERU_PARSE_TIMEOUT_SECONDS": "mineru_parse_timeout_seconds",
+    "MINERU_USE_KB_PACKAGER": "mineru_use_kb_packager",
+}
 
 
 @dataclass(frozen=True)
@@ -27,14 +49,41 @@ class Settings:
     rag_top_k: int = 5
     rag_min_score: float = 0.35
     upload_dir: Path = Path("data/uploads")
+    mineru_api_mode: str = "standard"
+    mineru_api_token: str | None = None
+    mineru_batch_file_url: str = "https://mineru.net/api/v4/file-urls/batch"
+    mineru_batch_result_url_template: str = (
+        "https://mineru.net/api/v4/extract-results/batch/{batch_id}"
+    )
+    mineru_parse_timeout_seconds: int = 600
+    mineru_use_kb_packager: bool = True
 
     @classmethod
-    def load(cls, env_file: str | Path = ".env") -> "Settings":
-        load_dotenv(env_file)
-        return cls.from_env(os.environ)
+    def load(
+        cls,
+        env_file: str | Path = ".env",
+        *,
+        local_settings_file: str | Path | None = None,
+        tenant_id: str | None = None,
+    ) -> "Settings":
+        """读取启动环境和本地租户设置，并构造不可变配置对象。"""
+        env_values = {
+            key: value
+            for key, value in dotenv_values(env_file).items()
+            if value is not None
+        }
+        env_values.update(os.environ)
+        settings_path = Path(
+            local_settings_file or env_values.get("SETTINGS_FILE", "data/settings.local.json")
+        )
+        env_values.update(
+            cls._local_settings_env(settings_path, tenant_id or env_values.get("TENANT_ID"))
+        )
+        return cls.from_env(env_values)
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "Settings":
+        """从环境变量构造配置，并校验会影响运行的关键约束。"""
         required_fields = {
             "DATABASE_URL": "database_url",
             "CHAT_BASE_URL": "chat_base_url",
@@ -67,6 +116,20 @@ class Settings:
         values["rag_top_k"] = cls._integer_env(env, "RAG_TOP_K", 5)
         values["rag_min_score"] = cls._float_env(env, "RAG_MIN_SCORE", 0.35)
         values["upload_dir"] = Path(env.get("UPLOAD_DIR", "data/uploads"))
+        mineru_token = env.get("MINERU_API_TOKEN", "").strip() or None
+        mineru_mode = env.get("MINERU_API_MODE", "standard").strip().lower()
+        if mineru_mode not in {"standard"}:
+            raise SettingsError("MINERU_API_MODE must be standard")
+        values["mineru_api_mode"] = "standard"
+        values["mineru_api_token"] = mineru_token
+        values["mineru_batch_file_url"] = "https://mineru.net/api/v4/file-urls/batch"
+        values["mineru_batch_result_url_template"] = (
+            "https://mineru.net/api/v4/extract-results/batch/{batch_id}"
+        )
+        values["mineru_parse_timeout_seconds"] = cls._integer_env(
+            env, "MINERU_PARSE_TIMEOUT_SECONDS", 600
+        )
+        values["mineru_use_kb_packager"] = cls._bool_env(env, "MINERU_USE_KB_PACKAGER", True)
 
         return cls(**values)
 
@@ -89,3 +152,45 @@ class Settings:
             return float(value)
         except ValueError as exc:
             raise SettingsError(f"{name} must be a float") from exc
+
+    @staticmethod
+    def _bool_env(env: Mapping[str, str], name: str, default: bool) -> bool:
+        """读取布尔环境变量，支持常见 true/false 写法。"""
+        value = env.get(name)
+        if value is None or value == "":
+            return default
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        raise SettingsError(f"{name} must be a boolean")
+
+    @staticmethod
+    def _local_settings_env(path: Path, tenant_id: str | None = None) -> dict[str, str]:
+        """读取本地租户设置文件，并转换成 Settings 可复用的环境键。"""
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise SettingsError(f"Invalid local settings file: {path}") from exc
+        tenants = payload.get("tenants")
+        if not isinstance(tenants, dict):
+            return {}
+        active_tenant = tenant_id or payload.get("active_tenant_id") or "default"
+        tenant_settings = tenants.get(active_tenant)
+        if not isinstance(tenant_settings, dict):
+            return {}
+        result: dict[str, str] = {}
+        for env_name, field_name in SETTINGS_ENV_FIELDS.items():
+            if field_name not in tenant_settings:
+                continue
+            value = tenant_settings[field_name]
+            if isinstance(value, bool):
+                result[env_name] = "true" if value else "false"
+            elif value is None:
+                result[env_name] = ""
+            else:
+                result[env_name] = str(value)
+        return result

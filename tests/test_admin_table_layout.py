@@ -9,6 +9,16 @@ def read_static_file(name: str) -> str:
     return (STATIC_DIR / name).read_text(encoding="utf-8")
 
 
+def test_admin_brand_name_uses_internal_knowledge_base() -> None:
+    """管理后台名称应使用内部知识库文案，不出现具体品牌名或客服限定。"""
+    html = read_static_file("admin.html")
+
+    assert "新锐" not in html
+    assert "客服知识库管理系统" not in html
+    assert "<title>内部知识库管理系统</title>" in html
+    assert '<div class="brand">内部知识库管理系统</div>' in html
+
+
 def test_faq_table_renders_a_dedicated_index_column() -> None:
     html = read_static_file("admin.html")
     js = read_static_file("admin.js")
@@ -59,14 +69,16 @@ def test_admin_static_wires_visible_batch_controls_to_actions() -> None:
 
 
 def test_import_review_workspace_uses_generic_upload_file_copy() -> None:
-    """导入审核入口面向多格式扩展，不能把按钮写死为 Markdown。"""
+    """FAQ 自动生成入口只能选择已解析文件，不能在该页面继续上传原件。"""
     html = read_static_file("admin.html")
     css = read_static_file("admin.css")
     js = read_static_file("admin.js")
 
-    assert "标准问答" in html
-    assert "导入审核" in html
-    assert "上传文件" in html
+    assert "FAQ 管理" in html
+    assert "文档管理" in html
+    assert 'id="importFileInput"' not in html
+    assert 'id="importFileSelect"' in html
+    assert "选择文件" in html
     assert "上传 Markdown" not in html
     assert "importFiles" in html
     assert "importChunks" in html
@@ -76,6 +88,98 @@ def test_import_review_workspace_uses_generic_upload_file_copy() -> None:
     assert ".candidate-drawer" in css
     assert "function openCandidateDrawer" in js
     assert "function switchWorkspace" in js
+    assert "function isParsedImportFile" in js
+
+
+def test_knowledge_home_uses_lightweight_entry_cards() -> None:
+    """知识库主页只做轻量入口和待处理提示，不做沉重的数据大屏。"""
+    html = read_static_file("admin.html")
+    css = read_static_file("admin.css")
+
+    assert 'id="knowledgeWorkspace"' in html
+    assert "搜索 FAQ、文档、切片和来源" in html
+    assert 'data-knowledge-entry="faq"' in html
+    assert 'data-knowledge-entry="documents"' in html
+    assert 'data-knowledge-entry="assistant"' in html
+    assert "候选 FAQ 待审核" in html
+    assert "FAQ 未生成向量" in html
+    assert "大屏" not in html
+    assert ".knowledge-home" in css
+    assert ".knowledge-card.expanded" in css
+    assert ".knowledge-popover" in css
+    assert "position: absolute;" in css
+
+
+def test_knowledge_entry_click_expands_then_enters_workspace() -> None:
+    """知识库入口第一次点击展开悬浮面板，再次点击卡片本体进入页面。"""
+    js = read_static_file("admin.js")
+
+    assert 'workspace: "knowledge"' in js
+    assert "expandedKnowledgeEntry: null" in js
+    assert "function handleKnowledgeEntryClick" in js
+    assert "state.expandedKnowledgeEntry === entry" in js
+    assert "switchWorkspace(targetWorkspace)" in js
+    assert "function renderKnowledgeEntryState" in js
+
+
+def test_document_management_workspace_uses_overlay_drawer_for_file_details() -> None:
+    """文档管理页点击文件行后用顶层侧拉抽屉展示详情和切片，不挤压列表布局。"""
+    html = read_static_file("admin.html")
+    css = read_static_file("admin.css")
+    js = read_static_file("admin.js")
+
+    assert 'data-target-workspace="documents"' in html
+    assert 'id="documentWorkspace"' in html
+    assert 'id="documentFileInput"' in html
+    assert 'id="documentRows"' in html
+    assert 'id="documentDrawer"' in html
+    assert 'id="documentDrawerBackdrop"' in html
+    assert 'id="documentChunkIndex"' in html
+    assert 'id="documentChunkContent"' in html
+    assert "文档导入" in html
+    assert "文档解析" in html
+    assert "切片查看" in html
+    assert "解析失败的切片" not in html
+    assert 'id="documentFailedChunks"' in html
+    assert 'class="document-failed-chunks hidden"' in html
+    assert ".document-drawer" in css
+    assert "position: fixed;" in css
+    assert "transform: translateX(100%);" in css
+    assert ".document-chunk-reader" in css
+    assert ".document-chunk-index" in css
+    assert ".document-chunk-content" in css
+    assert "function openDocumentDrawer" in js
+    assert "function renderDocumentChunks" in js
+    assert "function renderDocumentFailedChunks" in js
+    assert "function parseCurrentDocumentFile" in js
+    assert "/api/import/files?parse=false" in js
+
+
+def test_document_management_workspace_polls_dynamic_mineru_progress() -> None:
+    """文档解析需要按 MinerU 批量任务状态轮询，而不是阻塞到最终结果。"""
+    html = read_static_file("admin.html")
+    css = read_static_file("admin.css")
+    js = read_static_file("admin.js")
+
+    assert 'id="documentStatusTabs"' in html
+    assert 'data-document-status="processing"' in html
+    assert 'id="documentParseProgress"' in html
+    assert 'id="documentParseProgressBar"' in html
+    assert 'id="documentParseProgressText"' in html
+    assert 'id="documentParseProgressMeta"' in html
+    assert ".document-progress-track" in css
+    assert ".document-progress-fill" in css
+    assert "documentParsePollTimer" in js
+    assert "function pollDocumentParseStatus" in js
+    assert "function applyDocumentParseStatus" in js
+    assert "extract_progress" in js
+    assert "/api/import/files/${encodeURIComponent(file.id)}/parse-jobs" in js
+    assert "/api/import/files/${encodeURIComponent(fileId)}/parse-status" in js
+    document_parse_function = js.split("async function parseCurrentDocumentFile", 1)[1].split(
+        "function downloadCurrentDocumentFile",
+        1,
+    )[0]
+    assert "/reparse" not in document_parse_function
 
 
 def test_import_workspace_hidden_state_overrides_grid_display() -> None:
@@ -94,7 +198,7 @@ def test_import_review_workspace_exposes_parse_options_and_chunk_selection() -> 
     assert 'id="parseModeSelect"' in html
     assert 'id="chunkDaysInput"' in html
     assert 'id="selectAllChunks"' in html
-    assert "自动识别 FAQ" in html
+    assert "识别所选切片 FAQ" in html
     assert "批量生成候选 FAQ" not in html
     assert "<th>编号</th>" in html
     assert "块编号" not in html
@@ -107,21 +211,96 @@ def test_import_review_workspace_exposes_parse_options_and_chunk_selection() -> 
     assert "function generateCandidatesForSelectedChunks" in js
 
 
-def test_import_review_workspace_has_parse_and_candidate_views() -> None:
-    """导入审核主区按解析块和候选 FAQ 分阶段，不实现无意义的状态范围筛选。"""
+def test_faq_management_has_list_generation_and_review_buttons() -> None:
+    """FAQ 管理页顶部用三个按钮切换列表、自动生成和审核视图。"""
     html = read_static_file("admin.html")
     js = read_static_file("admin.js")
     css = read_static_file("admin.css")
 
-    assert 'data-import-view="chunks"' in html
-    assert 'data-import-view="candidates"' in html
-    assert "解析块" in html
-    assert "候选 FAQ" in html
+    assert 'data-faq-subview="list"' in html
+    assert 'data-faq-subview="generate"' in html
+    assert 'data-faq-subview="review"' in html
+    assert "FAQ 列表" in html
+    assert "FAQ 自动生成" in html
+    assert "FAQ 审核" in html
     assert "状态范围" not in html
     assert "importView" in js
+    assert "function switchFaqSubview" in js
     assert "function switchImportView" in js
     assert "function loadImportFileCandidates" in js
-    assert ".import-view-tab" in css
+    assert ".faq-subview-tab" in css
+    assert ".faq-subview-tab.active::after" in css
+    assert ".faq-subview-tab.active::before" not in css
+    assert "linear-gradient(90deg, transparent" in css
+    assert "@keyframes faq-view-slide-from-right" in css
+    assert "@keyframes faq-view-slide-from-left" in css
+    assert "function animateFaqSubviewTransition" in js
+    assert "function faqSubviewDirection" in js
+
+
+def test_faq_generation_sidebar_matches_faq_list_width() -> None:
+    """FAQ 列表和自动生成/审核页左栏宽度需要一致，避免切换时跳变。"""
+    css = read_static_file("admin.css")
+
+    assert "grid-template-columns: 324px minmax(660px, 1fr);" in css
+    assert "grid-template-columns: 324px minmax(720px, 1fr);" in css
+    assert "grid-template-columns: 348px minmax(720px, 1fr);" not in css
+
+
+def test_faq_generation_tabs_match_list_header_height() -> None:
+    """FAQ 自动生成和审核页右栏应和 FAQ 列表页从同一高度开始。"""
+    css = read_static_file("admin.css")
+
+    assert "grid-template-rows: 60px 126px 213px minmax(0, 1fr);" in css
+    assert ".import-faq-tabs" in css
+    assert "height: 60px;" in css
+    assert "padding: 0 24px;" in css
+    assert "height: calc(100% + 44px);" not in css
+    assert "margin-top: -44px;" not in css
+    assert "height: 100%;" in css
+    assert "grid-template-rows: 52px 126px 213px minmax(0, 1fr);" not in css
+
+
+def test_faq_view_slide_animation_is_clipped_inside_workspace() -> None:
+    """FAQ 子页滑入动效不能让整个工作区横向溢出触发页面滚动条。"""
+    css = read_static_file("admin.css")
+    js = read_static_file("admin.js")
+
+    assert ".import-shell" in css
+    assert "overflow: hidden;" in css
+    assert "function faqSubviewAnimationTarget" in js
+    assert "document.querySelector(\"#faqWorkspace .content\")" in js
+    assert "document.querySelector(\"#importWorkspace .import-chunks-panel\")" in js
+    assert 'startFaqSubviewAnimation(faqSubviewAnimationTarget(subview), direction)' in js
+    assert 'startFaqSubviewAnimation($("importWorkspace"), direction)' not in js
+    assert 'startFaqSubviewAnimation($("faqWorkspace"), direction)' not in js
+
+
+def test_faq_generation_and_review_panels_align_with_right_column_edge() -> None:
+    """FAQ 自动生成和审核页的右栏面板应贴齐右栏左边界，保持和 FAQ 列表一致。"""
+    css = read_static_file("admin.css")
+
+    assert ".import-file-overview" in css
+    assert ".generation-progress" in css
+    assert ".import-view-panel" in css
+    assert "margin: 0 24px 14px;" not in css
+    assert "margin: 0 0 14px;" in css
+
+
+def test_faq_subviews_share_one_admin_workspace_frame() -> None:
+    """FAQ 三个子页应共用相同左栏宽度、顶部高度和右栏裁剪规则。"""
+    css = read_static_file("admin.css")
+
+    assert ".app-shell" in css
+    assert ".import-shell" in css
+    assert "grid-template-columns: 324px minmax(660px, 1fr);" in css
+    assert "grid-template-columns: 324px minmax(720px, 1fr);" in css
+    assert ".sidebar {\n  background: var(--panel);\n  border-right: 1px solid var(--line);\n  padding: 22px 24px;" in css
+    assert ".import-files-panel {\n  background: #fff;\n  border-right: 1px solid var(--line);\n  padding: 22px 24px;" in css
+    assert ".content {\n  display: grid;\n  grid-template-rows: 60px minmax(0, 1fr) 58px;" in css
+    assert ".import-chunks-panel {\n  display: grid;\n  grid-template-rows: 60px 126px 213px minmax(0, 1fr);" in css
+    assert ".import-chunks-panel {\n  display: grid;" in css
+    assert "overflow: hidden;" in css
 
 
 def test_import_candidate_view_groups_candidates_by_file() -> None:
@@ -182,7 +361,7 @@ def test_import_view_switch_animates_metric_and_progress_cards_without_resizing_
 
     assert "function animatePanelCards" in js
     assert "animatePanelCards(\".generation-progress-item\")" in js
-    assert "grid-template-rows: 52px 126px 213px minmax(0, 1fr);" in css
+    assert "grid-template-rows: 60px 126px 213px minmax(0, 1fr);" in css
     assert "min-height: 66px;" in css
     assert "height: 66px;" in css
     assert "overflow: hidden;" in css
@@ -312,12 +491,49 @@ def test_import_chunk_table_has_bounded_layout_and_pagination() -> None:
 
     assert "grid-template-areas:" in css
     assert ".chunk-workspace > .table-wrap" in css
-    assert "grid-template-rows: 54px minmax(0, 1fr) 58px;" in css
+    assert "grid-template-rows: 54px minmax(170px, 1fr) 220px 58px;" in css
     assert "chunkPageSize" in js
     assert 'id="prevChunkPage"' in read_static_file("admin.html")
     assert '$("prevChunkPage").addEventListener("click"' in js
     assert '$("nextChunkPage").addEventListener("click"' in js
     assert '$("chunkPageSize").addEventListener("change"' in js
+
+
+def test_import_chunk_selection_shows_source_text_before_candidate_navigation() -> None:
+    """点击解析块应先查看原始切片内容，不应直接跳到候选 FAQ 页。"""
+    html = read_static_file("admin.html")
+    js = read_static_file("admin.js")
+    css = read_static_file("admin.css")
+
+    assert 'id="chunkPreviewPanel"' in html
+    assert 'id="chunkPreviewText"' in html
+    assert 'id="viewChunkCandidatesButton"' in html
+    assert "function renderChunkPreview" in js
+    assert "function viewCurrentChunkCandidates" in js
+    assert "选择切块后切到候选审核视图" not in js
+    assert "选择切块后展示原始切片内容" in js
+    assert 'switchImportView("candidates", { keepCandidateChunkFilter: true })' in js
+    assert ".chunk-preview-panel" in css
+
+
+def test_document_chunk_reader_only_renders_raw_text_with_internal_scroll() -> None:
+    """文档详情里的切片查看框只展示原文，并由查看框自身滚动。"""
+    js = read_static_file("admin.js")
+    css = read_static_file("admin.css")
+
+    render_function = js.split("function renderDocumentChunkContent", 1)[1].split(
+        "function renderDocumentFailedChunks",
+        1,
+    )[0]
+    assert "document-chunk-text" in render_function
+    assert "source_text" in render_function
+    assert "chunkDisplayName" not in render_function
+    assert "document-chunk-tags" not in render_function
+    assert "chunk-meta" not in render_function
+    assert "可用于 FAQ 生成" not in render_function
+    assert ".document-chunk-reader" in css
+    assert ".document-chunk-text" in css
+    assert "overflow-y: auto;" in css
 
 
 def test_candidate_drawer_visible_actions_are_wired() -> None:
@@ -341,6 +557,111 @@ def test_faq_drawer_noop_save_and_dead_buttons_are_removed() -> None:
 
     assert 'title="最小化"' not in html
     assert 'id="notificationButton"' in html
+    assert html.index('id="notificationButton"') < html.index('id="settingsButton"') < html.index('class="user-pill"')
     assert '$("notificationButton").addEventListener("click"' in js
+    assert '$("settingsButton").addEventListener("click"' in js
     assert "没有需要保存的改动" in js
     assert "state.aiRequestInFlight" in js
+
+
+def test_settings_center_modal_matches_config_groups() -> None:
+    """设置中心应按截图提供居中弹窗、玻璃遮罩和配置分组入口。"""
+    html = read_static_file("admin.html")
+    css = read_static_file("admin.css")
+    js = read_static_file("admin.js")
+
+    assert 'id="settingsOverlay"' in html
+    assert 'id="settingsModal"' in html
+    assert 'data-settings-section="parser"' in html
+    assert 'data-settings-section="llm"' in html
+    assert 'data-settings-section="embedding"' in html
+    assert 'data-settings-section="retrieval"' in html
+    assert 'name="mineruMode"' not in html
+    assert 'id="mineruApiUrl"' not in html
+    assert 'id="mineruResultUrlTemplate"' not in html
+    assert "官方批量文件接口" in html
+    assert 'id="mineruApiToken"' in html
+    assert 'data-secret-toggle="mineruApiToken"' in html
+    assert 'id="saveSettingsButton"' in html
+    assert 'id="saveAndTestSettingsButton"' not in html
+    assert "保存并测试" not in html
+    assert ".settings-overlay" in css
+    assert "backdrop-filter: blur(14px);" in css
+    assert "function openSettingsModal" in js
+    assert "function closeSettingsModal" in js
+    assert "function switchSettingsSection" in js
+
+
+def test_settings_secret_fields_load_runtime_values_and_use_standard_icons() -> None:
+    """密钥框应读取运行配置，并使用眼睛与复制图标而不是占位符号。"""
+    html = read_static_file("admin.html")
+    css = read_static_file("admin.css")
+    js = read_static_file("admin.js")
+
+    assert 'value="********************************"' not in html
+    assert 'data-secret-icon="eye"' in html
+    assert 'data-secret-icon="copy"' in html
+    assert 'data-secret-icon="x"' in html
+    assert "function loadSettingsValues" in js
+    assert 'requestJson("/api/settings")' in js
+    assert "setSecretValue(\"mineruApiToken\", settings.mineru_api_token)" in js
+    assert 'button.dataset.secretVisible = visible ? "true" : "false"' in js
+    assert ".secret-icon-eye-off" in css
+
+
+def test_settings_toast_stays_above_glass_overlay() -> None:
+    """设置弹窗内触发的保存或错误提示必须显示在玻璃遮罩之上。"""
+    css = read_static_file("admin.css")
+
+    assert ".settings-overlay" in css
+    assert "z-index: 60;" in css
+    assert ".toast" in css
+    assert "z-index: 90;" in css
+
+
+def test_secret_hidden_state_uses_fixed_mask_length() -> None:
+    """密钥隐藏态应统一显示固定黑点，不暴露真实 Key 长度。"""
+    html = read_static_file("admin.html")
+    js = read_static_file("admin.js")
+    css = read_static_file("admin.css")
+
+    assert 'id="mineruApiToken" type="text"' in html
+    assert 'id="chatApiKey" type="text"' in html
+    assert 'id="embeddingApiKey" type="text"' in html
+    assert 'id="databaseUrl" type="text"' in html
+    assert 'const SECRET_MASK = "●".repeat(16);' in js
+    assert "function setSecretValue" in js
+    assert "function renderSecretInput" in js
+    assert "function readSecretValue" in js
+    assert "setSecretValue(\"mineruApiToken\", settings.mineru_api_token)" in js
+    assert "navigator.clipboard.writeText(readSecretValue(input))" in js
+    assert ".secret-mask-value" in css
+
+
+def test_settings_chat_model_accepts_custom_model_names() -> None:
+    """Chat 模型配置应允许直接输入自定义模型名，同时保留常用候选。"""
+    html = read_static_file("admin.html")
+    js = read_static_file("admin.js")
+
+    assert '<input id="chatModel"' in html
+    assert 'list="chatModelOptions"' in html
+    assert '<datalist id="chatModelOptions">' in html
+    assert '<select id="chatModel">' not in html
+    assert "setInputValue(\"chatModel\", settings.chat_model)" in js
+    assert "function setSelectValue" not in js
+
+
+def test_settings_save_posts_payload_and_dirty_state_compares_baseline() -> None:
+    """保存设置应调用后端接口；未保存提示要按表单快照比较，改回原值应自动消失。"""
+    js = read_static_file("admin.js")
+
+    assert "async function saveSettings" in js
+    assert 'requestJson("/api/settings", {' in js
+    assert 'method: "POST"' in js
+    assert "function collectSettingsPayload" in js
+    assert "function settingsFingerprint" in js
+    assert "state.settingsBaseline = settingsFingerprint(collectSettingsPayload())" in js
+    assert "state.settingsDirty = current !== state.settingsBaseline" in js
+    assert 'showToast("设置已保存")' in js
+    assert "设置保存接口待接入" not in js
+    assert "saveAndTestSettingsButton" not in js
