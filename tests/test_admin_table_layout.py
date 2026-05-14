@@ -182,6 +182,20 @@ def test_document_management_workspace_uses_overlay_drawer_for_file_details() ->
     assert "/api/import/files?parse=false" in js
 
 
+def test_document_management_exposes_embedding_button_only_for_parsed_files() -> None:
+    """文档管理页需要在解析完成后才能为文档切片生成 embedding。"""
+    html = read_static_file("admin.html")
+    js = read_static_file("admin.js")
+
+    assert 'id="embedDocumentButton"' in html
+    assert "生成 embedding" in html
+    assert "function isParsedDocumentFile" in js
+    assert "function embedCurrentDocumentFile" in js
+    assert '["needs_review", "completed"].includes(file?.status)' in js
+    assert '$("embedDocumentButton").disabled = !isParsedDocumentFile(file) || chunkCount === 0' in js
+    assert "/api/import/files/${encodeURIComponent(file.id)}/embed" in js
+
+
 def test_document_management_workspace_polls_dynamic_mineru_progress() -> None:
     """文档解析需要按 MinerU 批量任务状态轮询，而不是阻塞到最终结果。"""
     html = read_static_file("admin.html")

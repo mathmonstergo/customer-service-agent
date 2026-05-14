@@ -9,6 +9,7 @@ def test_parser_accepts_core_commands():
     for command in [
         "check-config",
         "init-db",
+        "sync-knowledge-chunks",
         "import-faq",
         "search",
         "ask",
@@ -20,6 +21,27 @@ def test_parser_accepts_core_commands():
     ]:
         args = parser.parse_args([command])
         assert args.command == command
+
+
+def test_sync_knowledge_chunks_projects_ready_faqs(monkeypatch, capsys):
+    """同步命令应复用数据库已有 FAQ 向量投影到统一知识单元表。"""
+    settings = SimpleNamespace(database_url="postgresql://unused")
+    calls = []
+
+    class FakeDatabase:
+        def __init__(self, database_url):
+            calls.append(("init", database_url))
+
+        def sync_ready_faq_knowledge_chunks(self):
+            calls.append(("sync",))
+            return 3
+
+    monkeypatch.setattr("customer_service_agent.cli.Settings.load", lambda: settings)
+    monkeypatch.setattr("customer_service_agent.cli.Database", FakeDatabase)
+
+    assert main(["sync-knowledge-chunks"]) == 0
+    assert calls == [("init", "postgresql://unused"), ("sync",)]
+    assert capsys.readouterr().out.strip() == "synced 3 ready faq knowledge chunks"
 
 
 def test_wechat_login_dispatches_to_service(monkeypatch):

@@ -13,10 +13,12 @@ from customer_service_agent.rag_tool import RagTool
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """构建命令行入口，约束是只暴露本地维护需要的受控命令。"""
     parser = argparse.ArgumentParser(prog="customer-service-agent")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("check-config")
     sub.add_parser("init-db")
+    sub.add_parser("sync-knowledge-chunks")
     import_parser = sub.add_parser("import-faq")
     import_parser.add_argument("--path", default="data/faqs.jsonl")
     search_parser = sub.add_parser("search")
@@ -62,6 +64,7 @@ def print_json(payload: dict) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """执行 CLI 命令，所有数据库写入都走 Database 封装。"""
     args = build_parser().parse_args(argv)
     settings = Settings.load()
 
@@ -71,6 +74,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "init-db":
         Database(settings.database_url).init_schema()
         print("database schema ok")
+        return 0
+    if args.command == "sync-knowledge-chunks":
+        count = Database(settings.database_url).sync_ready_faq_knowledge_chunks()
+        print(f"synced {count} ready faq knowledge chunks")
         return 0
     if args.command == "import-faq":
         count = import_faqs(

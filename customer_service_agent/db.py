@@ -39,6 +39,7 @@ def _clean_list(value: Any) -> list[str]:
 
 
 def build_embedding_text(row: dict[str, Any]) -> str:
+    """把 FAQ 问题、答案和标签拼成单条向量文本，保持一条 FAQ 一个向量。"""
     question = str(row.get("question", "")).strip()
     answer = str(row.get("answer", "")).strip()
     variants = _clean_list(row.get("question_variants"))
@@ -54,6 +55,106 @@ def build_embedding_text(row: dict[str, Any]) -> str:
     if tags:
         parts.append(f"标签：{'，'.join(tags)}")
     return "\n".join(parts)
+
+
+def _join_search_text(parts: Iterable[Any]) -> str:
+    """拼接全文检索文本，关键约束是跳过空值并保留中文原文。"""
+    values: list[str] = []
+    for part in parts:
+        if part is None:
+            continue
+        if isinstance(part, list):
+            values.extend(str(item).strip() for item in part if str(item).strip())
+            continue
+        text = str(part).strip()
+        if text:
+            values.append(text)
+    return "\n".join(values)
+
+
+def compute_knowledge_chunk_hash(row: dict[str, Any]) -> str:
+    """按统一知识单元的向量文本计算指纹，用于后续判断 embedding 是否过期。"""
+    payload = {"embedding_text": row["embedding_text"]}
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def build_faq_knowledge_chunk_row(row: dict[str, Any]) -> dict[str, Any]:
+    """把正式 FAQ 映射为统一知识单元，保持一条 FAQ 对应一个 chunk。"""
+    question = str(row.get("question", "")).strip()
+    answer = str(row.get("answer", "")).strip()
+    variants = _clean_list(row.get("question_variants"))
+    tags = _clean_list(row.get("tags"))
+    category = str(row.get("category", "") or "").strip()
+    content_parts = [f"问题：{question}"]
+    if variants:
+        content_parts.append(f"相似问法：{'；'.join(variants)}")
+    content_parts.append(f"答案：{answer}")
+    embedding_text = row.get("embedding_text") or build_embedding_text(row)
+    metadata = {
+        "category": category or None,
+        "question_variants": variants,
+        "evidence": row.get("evidence", []),
+        "source_file": row.get("source_file"),
+        "source_group": row.get("source_group"),
+        "source_date": row.get("source_date"),
+    }
+    chunk = {
+        "id": f"kc_faq_{row['id']}",
+        "source_type": "faq",
+        "source_id": row["id"],
+        "source_chunk_id": None,
+        "source_title": question,
+        "chunk_index": 0,
+        "content": "\n".join(content_parts),
+        "embedding_text": embedding_text,
+        "search_text": _join_search_text([question, variants, answer, category, tags]),
+        "metadata": metadata,
+        "tags": tags,
+        "confidence": row.get("confidence"),
+        "status": row.get("status", "usable"),
+    }
+    chunk["content_hash"] = compute_knowledge_chunk_hash(chunk)
+    return chunk
+
+
+def build_document_knowledge_chunk_row(
+    chunk: dict[str, Any],
+    import_file: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """把导入文档切片映射为统一知识单元，默认不直接进入可检索状态。"""
+    import_file = import_file or {}
+    source_text = str(chunk.get("source_text", "")).strip()
+    keywords = _clean_list(chunk.get("keywords"))
+    source_title = str(import_file.get("original_name") or chunk.get("file_id") or "").strip()
+    source_id = str(import_file.get("id") or chunk.get("file_id")).strip()
+    metadata = {
+        "file_id": chunk.get("file_id"),
+        "file_name": import_file.get("original_name"),
+        "file_type": import_file.get("file_type"),
+        "parser": import_file.get("parser"),
+        "chunk_id": chunk.get("id"),
+        "start_at": str(chunk.get("start_at")) if chunk.get("start_at") else None,
+        "end_at": str(chunk.get("end_at")) if chunk.get("end_at") else None,
+        "message_count": chunk.get("message_count", 0),
+    }
+    row = {
+        "id": f"kc_document_{chunk['id']}",
+        "source_type": "document",
+        "source_id": source_id,
+        "source_chunk_id": chunk.get("id"),
+        "source_title": source_title or None,
+        "chunk_index": int(chunk.get("chunk_index", 0)),
+        "content": source_text,
+        "embedding_text": source_text,
+        "search_text": _join_search_text([source_title, keywords, source_text]),
+        "metadata": metadata,
+        "tags": keywords,
+        "confidence": None,
+        "status": chunk.get("retrieval_status", "needs_review"),
+    }
+    row["content_hash"] = compute_knowledge_chunk_hash(row)
+    return row
 
 
 def compute_content_hash(row: dict[str, Any]) -> str:
@@ -116,6 +217,44 @@ class RetrievedDocument:
     confidence: str
     status: str
     score: float
+
+
+@dataclass(frozen=True)
+class RetrievedKnowledgeChunk:
+    """统一知识单元检索结果，兼容 FAQ 和文档切片两类来源。"""
+
+    id: str
+    source_type: str
+    source_id: str
+    source_chunk_id: str | None
+    source_title: str | None
+    content: str
+    metadata: dict[str, Any]
+    tags: list[str]
+    confidence: str | None
+    status: str
+    score: float
+
+    @property
+    def question(self) -> str:
+        """兼容旧 RAG prompt 的问题字段，文档切片使用来源标题。"""
+        return self.source_title or self.source_id
+
+    @property
+    def answer(self) -> str:
+        """兼容旧 RAG prompt 的答案字段，统一返回可引用正文。"""
+        return self.content
+
+    @property
+    def category(self) -> str | None:
+        """兼容旧 RAG prompt 的分类字段，优先使用元数据分类。"""
+        return self.metadata.get("category") or self.source_type
+
+    @property
+    def source_date(self) -> str | None:
+        """兼容旧 RAG prompt 的来源日期字段，来自元数据。"""
+        value = self.metadata.get("source_date")
+        return str(value) if value else None
 
 
 class Database:
@@ -311,6 +450,49 @@ class Database:
         if row is None:
             raise KeyError(f"FAQ not found: {faq_id}")
         return row
+
+    def upsert_knowledge_chunk(
+        self,
+        row: dict[str, Any],
+        embedding: list[float] | None = None,
+        *,
+        embedding_model: str | None = None,
+        embedding_dimensions: int | None = None,
+    ) -> dict[str, Any]:
+        """写入统一知识单元，关键约束是无向量时保持 pending 等待后续生成。"""
+        embedding_text = str(row.get("embedding_text") or row["content"]).strip()
+        payload = {
+            "id": row["id"],
+            "source_type": row["source_type"],
+            "source_id": row["source_id"],
+            "source_chunk_id": row.get("source_chunk_id"),
+            "source_title": row.get("source_title"),
+            "chunk_index": int(row.get("chunk_index", 0)),
+            "content": row["content"],
+            "embedding_text": embedding_text,
+            "search_text": row.get("search_text") or _join_search_text(
+                [row.get("source_title"), row.get("tags", []), row["content"]]
+            ),
+            "metadata": json.dumps(row.get("metadata", {}), ensure_ascii=False),
+            "tags": json.dumps(_clean_list(row.get("tags")), ensure_ascii=False),
+            "confidence": row.get("confidence"),
+            "status": row.get("status", "needs_review"),
+            "embedding": format_vector(embedding) if embedding is not None else None,
+            "embedding_status": "ready" if embedding is not None else row.get("embedding_status", "pending"),
+            "embedding_model": embedding_model,
+            "embedding_dimensions": embedding_dimensions,
+            "embedding_error": None if embedding is not None else row.get("embedding_error"),
+            "content_hash": row.get("content_hash")
+            or compute_knowledge_chunk_hash({**row, "embedding_text": embedding_text}),
+        }
+        with self.connect() as conn:
+            return conn.execute(self._insert_knowledge_chunk_sql(), payload).fetchone()
+
+    def sync_ready_faq_knowledge_chunks(self) -> int:
+        """把已有 ready FAQ 复用原向量投影到统一知识单元表。"""
+        with self.connect() as conn:
+            row = conn.execute(self._sync_ready_faq_knowledge_chunks_sql()).fetchone()
+        return int(row["count"])
 
     def mark_embedding_failed(self, faq_id: str, error: str) -> dict[str, Any]:
         sql = """
@@ -794,6 +976,111 @@ class Database:
         """
 
     @staticmethod
+    def _insert_knowledge_chunk_sql() -> str:
+        """集中维护统一知识单元 upsert SQL，避免多来源写入字段漂移。"""
+        return """
+        INSERT INTO knowledge_chunks (
+            id, source_type, source_id, source_chunk_id, source_title, chunk_index,
+            content, embedding_text, search_text, metadata, tags, confidence, status,
+            embedding, embedding_status, embedding_model, embedding_dimensions,
+            embedding_updated_at, embedding_error, content_hash
+        )
+        VALUES (
+            %(id)s, %(source_type)s, %(source_id)s, %(source_chunk_id)s, %(source_title)s,
+            %(chunk_index)s, %(content)s, %(embedding_text)s, %(search_text)s,
+            %(metadata)s::jsonb, %(tags)s::jsonb, %(confidence)s, %(status)s,
+            %(embedding)s::vector, %(embedding_status)s, %(embedding_model)s,
+            %(embedding_dimensions)s,
+            CASE WHEN %(embedding)s IS NULL THEN NULL ELSE now() END,
+            %(embedding_error)s, %(content_hash)s
+        )
+        ON CONFLICT (source_type, source_id, chunk_index) DO UPDATE SET
+            id = EXCLUDED.id,
+            source_chunk_id = EXCLUDED.source_chunk_id,
+            source_title = EXCLUDED.source_title,
+            content = EXCLUDED.content,
+            embedding_text = EXCLUDED.embedding_text,
+            search_text = EXCLUDED.search_text,
+            metadata = EXCLUDED.metadata,
+            tags = EXCLUDED.tags,
+            confidence = EXCLUDED.confidence,
+            status = EXCLUDED.status,
+            embedding = EXCLUDED.embedding,
+            embedding_status = EXCLUDED.embedding_status,
+            embedding_model = EXCLUDED.embedding_model,
+            embedding_dimensions = EXCLUDED.embedding_dimensions,
+            embedding_updated_at = EXCLUDED.embedding_updated_at,
+            embedding_error = EXCLUDED.embedding_error,
+            content_hash = EXCLUDED.content_hash,
+            updated_at = now()
+        RETURNING *
+        """
+
+    @staticmethod
+    def _sync_ready_faq_knowledge_chunks_sql() -> str:
+        """集中维护已有 FAQ 投影 SQL，关键约束是不重新生成向量。"""
+        return """
+        WITH upserted AS (
+            INSERT INTO knowledge_chunks (
+                id, source_type, source_id, source_chunk_id, source_title, chunk_index,
+                content, embedding_text, search_text, metadata, tags, confidence, status,
+                embedding, embedding_status, embedding_model, embedding_dimensions,
+                embedding_updated_at, embedding_error, content_hash
+            )
+            SELECT
+                'kc_faq_' || id,
+                'faq',
+                id,
+                NULL,
+                question,
+                0,
+                '问题：' || question || E'\n答案：' || answer,
+                embedding_text,
+                concat_ws(E'\n', question, question_variants::text, answer, category, tags::text),
+                jsonb_build_object(
+                    'category', category,
+                    'question_variants', question_variants,
+                    'evidence', evidence,
+                    'source_file', source_file,
+                    'source_group', source_group,
+                    'source_date', source_date
+                ),
+                tags,
+                confidence,
+                status,
+                embedding,
+                embedding_status,
+                embedding_model,
+                embedding_dimensions,
+                embedding_updated_at,
+                embedding_error,
+                COALESCE(content_hash, md5(embedding_text))
+            FROM faq_documents
+            WHERE embedding_status = 'ready'
+              AND embedding IS NOT NULL
+            ON CONFLICT (source_type, source_id, chunk_index) DO UPDATE SET
+                source_title = EXCLUDED.source_title,
+                content = EXCLUDED.content,
+                embedding_text = EXCLUDED.embedding_text,
+                search_text = EXCLUDED.search_text,
+                metadata = EXCLUDED.metadata,
+                tags = EXCLUDED.tags,
+                confidence = EXCLUDED.confidence,
+                status = EXCLUDED.status,
+                embedding = EXCLUDED.embedding,
+                embedding_status = EXCLUDED.embedding_status,
+                embedding_model = EXCLUDED.embedding_model,
+                embedding_dimensions = EXCLUDED.embedding_dimensions,
+                embedding_updated_at = EXCLUDED.embedding_updated_at,
+                embedding_error = EXCLUDED.embedding_error,
+                content_hash = EXCLUDED.content_hash,
+                updated_at = now()
+            RETURNING id
+        )
+        SELECT count(*) AS count FROM upserted
+        """
+
+    @staticmethod
     def _insert_import_candidate_sql() -> str:
         """集中维护候选 FAQ 插入 SQL，确保 API 和测试使用同一字段。"""
         return """
@@ -932,3 +1219,54 @@ class Database:
             )
             for row in rows
         ]
+
+    def search_knowledge(
+        self,
+        query_embedding: list[float],
+        *,
+        top_k: int,
+        min_score: float,
+        status: str = "usable",
+    ) -> list[RetrievedKnowledgeChunk]:
+        """从统一知识单元表检索内容，关键约束是不过滤 confidence 以允许文档切片命中。"""
+        params = {
+            "embedding": format_vector(query_embedding),
+            "status": status,
+            "max_distance": score_to_distance(min_score),
+            "top_k": top_k,
+        }
+        with self.connect() as conn:
+            rows = conn.execute(self._search_knowledge_sql(), params).fetchall()
+        return [
+            RetrievedKnowledgeChunk(
+                id=row["id"],
+                source_type=row["source_type"],
+                source_id=row["source_id"],
+                source_chunk_id=row["source_chunk_id"],
+                source_title=row["source_title"],
+                content=row["content"],
+                metadata=row["metadata"] or {},
+                tags=row["tags"] or [],
+                confidence=row["confidence"],
+                status=row["status"],
+                score=float(row["score"]),
+            )
+            for row in rows
+        ]
+
+    @staticmethod
+    def _search_knowledge_sql() -> str:
+        """集中维护统一知识单元向量检索 SQL，后续混合检索会复用同一候选表。"""
+        return """
+        SELECT
+            id, source_type, source_id, source_chunk_id, source_title, content,
+            metadata, tags, confidence, status,
+            1 - (embedding <=> %(embedding)s::vector) AS score
+        FROM knowledge_chunks
+        WHERE status = %(status)s
+          AND embedding_status = 'ready'
+          AND embedding IS NOT NULL
+          AND (embedding <=> %(embedding)s::vector) <= %(max_distance)s
+        ORDER BY embedding <=> %(embedding)s::vector
+        LIMIT %(top_k)s
+        """

@@ -11,7 +11,6 @@ from customer_service_agent.admin_server import (
     normalize_faq_payload,
     static_path,
 )
-from customer_service_agent.db import RetrievedDocument
 from customer_service_agent.config import Settings
 
 
@@ -650,6 +649,10 @@ def test_admin_app_save_import_candidate_writes_needs_review_faq_and_embeds():
             saved_rows[faq_id] = saved
             return saved
 
+        def upsert_knowledge_chunk(self, row, vector, *, embedding_model, embedding_dimensions):
+            calls.append(("knowledge_chunk", row, vector, embedding_model, embedding_dimensions))
+            return {**row, "embedding_status": "ready"}
+
         def mark_embedding_failed(self, faq_id, error):
             calls.append(("embedding_failed", faq_id, error))
             saved = {**saved_rows[faq_id], "embedding_status": "failed", "embedding_error": error}
@@ -679,9 +682,107 @@ def test_admin_app_save_import_candidate_writes_needs_review_faq_and_embeds():
     assert calls[0][1]["status"] == "needs_review"
     assert calls[0][1]["embedding_text"].startswith("标准问题")
     assert ("embed", calls[0][1]["embedding_text"]) in calls
-    assert calls[-2] == ("embedding", result["saved_faq_id"], [0.1, 0.2, 0.3], "fake-embedding", 3)
+    assert ("embedding", result["saved_faq_id"], [0.1, 0.2, 0.3], "fake-embedding", 3) in calls
+    knowledge_call = [call for call in calls if call[0] == "knowledge_chunk"][0]
+    assert knowledge_call[1]["source_type"] == "faq"
+    assert knowledge_call[1]["source_id"] == result["saved_faq_id"]
+    assert knowledge_call[2] == [0.1, 0.2, 0.3]
     assert result["status"] == "saved"
     assert result["embedding_status"] == "ready"
+
+
+def test_admin_app_embed_import_file_requires_parsed_document():
+    """文档切片生成 embedding 只能在解析完成后触发。"""
+
+    class FakeDatabase:
+        def get_import_file(self, file_id):
+            assert file_id == "imp_1"
+            return {
+                "id": "imp_1",
+                "original_name": "manual.pdf",
+                "status": "pending",
+                "chunk_count": 0,
+            }
+
+    app = AdminApp(SimpleNamespace(database_url="postgresql://unused"), db=FakeDatabase())
+
+    with pytest.raises(AdminValidationError, match="parsed"):
+        app.embed_import_file("imp_1")
+
+
+def test_admin_app_embed_import_file_writes_document_chunks_to_knowledge_chunks():
+    """解析完成的文档可以把每个切片写入统一知识单元并生成向量。"""
+    calls = []
+
+    class FakeDatabase:
+        def get_import_file(self, file_id):
+            calls.append(("file", file_id))
+            return {
+                "id": file_id,
+                "original_name": "manual.pdf",
+                "file_type": "pdf",
+                "parser": "mineru",
+                "status": "needs_review",
+                "chunk_count": 2,
+            }
+
+        def list_import_chunks(self, file_id):
+            calls.append(("chunks", file_id))
+            return [
+                {
+                    "id": "chunk_1",
+                    "file_id": file_id,
+                    "chunk_index": 1,
+                    "source_text": "第一段原文",
+                    "keywords": ["登录"],
+                    "status": "generated",
+                    "message_count": 0,
+                    "start_at": None,
+                    "end_at": None,
+                },
+                {
+                    "id": "chunk_2",
+                    "file_id": file_id,
+                    "chunk_index": 2,
+                    "source_text": "第二段原文",
+                    "keywords": ["报告"],
+                    "status": "generated",
+                    "message_count": 0,
+                    "start_at": None,
+                    "end_at": None,
+                },
+            ]
+
+        def upsert_knowledge_chunk(self, row, vector, *, embedding_model, embedding_dimensions):
+            calls.append(("knowledge_chunk", row, vector, embedding_model, embedding_dimensions))
+            return {**row, "embedding_status": "ready"}
+
+    class FakeEmbedding:
+        model = "fake-embedding"
+        dimensions = 3
+
+        def embed(self, text):
+            calls.append(("embed", text))
+            return [0.1, 0.2, 0.3]
+
+    app = AdminApp(
+        SimpleNamespace(database_url="postgresql://unused"),
+        db=FakeDatabase(),
+        embeddings=FakeEmbedding(),
+    )
+
+    result = app.embed_import_file("imp_1")
+
+    assert result["count"] == 2
+    assert calls[0] == ("file", "imp_1")
+    assert calls[1] == ("chunks", "imp_1")
+    assert ("embed", "第一段原文") in calls
+    chunk_calls = [call for call in calls if call[0] == "knowledge_chunk"]
+    assert chunk_calls[0][1]["source_type"] == "document"
+    assert chunk_calls[0][1]["source_id"] == "imp_1"
+    assert chunk_calls[0][1]["source_chunk_id"] == "chunk_1"
+    assert chunk_calls[0][1]["status"] == "usable"
+    assert chunk_calls[0][2] == [0.1, 0.2, 0.3]
 
 
 def test_admin_app_list_import_file_candidates_delegates_to_database():
@@ -877,15 +978,21 @@ def test_admin_app_iter_assistant_chat_events_streams_basic_rag_trace():
             return [0.1, 0.2, 0.3]
 
     class FakeDatabase:
-        def search(self, query_embedding, *, top_k, min_score):
+        def search_knowledge(self, query_embedding, *, top_k, min_score):
             assert query_embedding == [0.1, 0.2, 0.3]
             assert top_k == 3
             assert min_score == 0.4
             return [
-                RetrievedDocument(
+                SimpleNamespace(
                     id="faq_1",
+                    source_type="faq",
+                    source_id="faq_1",
+                    source_chunk_id=None,
+                    source_title="报告没有生成怎么办？",
+                    content="问题：报告没有生成怎么办？\n答案：请等待 10 分钟后刷新。",
+                    metadata={"category": "报告", "source_date": "2026-05"},
                     question="报告没有生成怎么办？",
-                    answer="请等待 10 分钟后刷新。",
+                    answer="问题：报告没有生成怎么办？\n答案：请等待 10 分钟后刷新。",
                     category="报告",
                     tags=["报告", "刷新"],
                     source_date="2026-05",
@@ -931,5 +1038,6 @@ def test_admin_app_iter_assistant_chat_events_streams_basic_rag_trace():
     assert events[3]["step_id"] == "vector_search"
     assert events[3]["status"] == "completed"
     assert events[3]["documents"][0]["id"] == "faq_1"
+    assert events[3]["documents"][0]["source_type"] == "faq"
     assert events[-1]["answer_draft"] == "请等待 10 分钟后刷新。"
     assert events[-1]["documents"][0]["score"] == 0.88

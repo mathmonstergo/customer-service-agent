@@ -15,7 +15,12 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from customer_service_agent.ai_assist import AiAssistant, AiSuggestionError
 from customer_service_agent.config import Settings
-from customer_service_agent.db import Database, build_import_candidate_faq_row
+from customer_service_agent.db import (
+    Database,
+    build_document_knowledge_chunk_row,
+    build_faq_knowledge_chunk_row,
+    build_import_candidate_faq_row,
+)
 from customer_service_agent.document_parser import (
     MINERU_BATCH_FILE_URL,
     MINERU_BATCH_RESULT_URL_TEMPLATE,
@@ -263,6 +268,12 @@ def assistant_document_payload(doc: Any) -> dict[str, Any]:
     """把检索命中文档转换成智能问答调试抽屉使用的来源结构。"""
     return {
         "id": doc.id,
+        "source_type": getattr(doc, "source_type", "faq"),
+        "source_id": getattr(doc, "source_id", doc.id),
+        "source_chunk_id": getattr(doc, "source_chunk_id", None),
+        "source_title": getattr(doc, "source_title", getattr(doc, "question", "")),
+        "content": getattr(doc, "content", getattr(doc, "answer", "")),
+        "metadata": getattr(doc, "metadata", {}),
         "score": doc.score,
         "question": doc.question,
         "answer": doc.answer,
@@ -406,16 +417,24 @@ class AdminApp:
         return {"count": len(rows), "items": rows}
 
     def embed_faq(self, faq_id: str) -> dict[str, Any]:
+        """为 FAQ 生成向量，并同步投影到统一知识单元表。"""
         row = self.get_faq(faq_id)
         try:
             embedding_client = self.embedding_client()
             vector = embedding_client.embed(row["embedding_text"])
-            return self.database().update_faq_embedding(
+            updated = self.database().update_faq_embedding(
                 faq_id,
                 vector,
                 embedding_model=embedding_client.model,
                 embedding_dimensions=embedding_client.dimensions,
             )
+            self.database().upsert_knowledge_chunk(
+                build_faq_knowledge_chunk_row(updated),
+                vector,
+                embedding_model=embedding_client.model,
+                embedding_dimensions=embedding_client.dimensions,
+            )
+            return updated
         except Exception as exc:
             return self.database().mark_embedding_failed(faq_id, str(exc))
 
@@ -693,6 +712,35 @@ class AdminApp:
         """返回某个导入文件的时间切块列表。"""
         return {"items": self.database().list_import_chunks(file_id)}
 
+    def embed_import_file(self, file_id: str) -> dict[str, Any]:
+        """把解析完成的文档切片生成向量并写入统一知识单元表。"""
+        record = self.database().get_import_file(file_id)
+        if record is None:
+            raise AdminNotFoundError(f"Import file not found: {file_id}")
+        if record.get("status") not in {"needs_review", "completed"}:
+            raise AdminValidationError("document must be parsed before embedding")
+        chunks = self.database().list_import_chunks(file_id)
+        if not chunks:
+            raise AdminValidationError("parsed document has no chunks")
+
+        embedding_client = self.embedding_client()
+        rows = []
+        for chunk in chunks:
+            chunk_row = build_document_knowledge_chunk_row(
+                {**chunk, "retrieval_status": "usable"},
+                record,
+            )
+            vector = embedding_client.embed(chunk_row["embedding_text"])
+            rows.append(
+                self.database().upsert_knowledge_chunk(
+                    chunk_row,
+                    vector,
+                    embedding_model=embedding_client.model,
+                    embedding_dimensions=embedding_client.dimensions,
+                )
+            )
+        return {"file_id": file_id, "count": len(rows), "items": rows}
+
     def get_import_file_for_download(self, file_id: str) -> tuple[dict[str, Any], Path]:
         """返回可下载的原件路径，关键约束是必须来自已登记导入文件。"""
         record = self.database().get_import_file(file_id)
@@ -909,14 +957,14 @@ class AdminApp:
         search_started = time.perf_counter()
         top_k = getattr(self.settings, "rag_top_k", 5)
         min_score = getattr(self.settings, "rag_min_score", 0.35)
-        docs = self.database().search(query_embedding, top_k=top_k, min_score=min_score)
+        docs = self.database().search_knowledge(query_embedding, top_k=top_k, min_score=min_score)
         documents = [assistant_document_payload(doc) for doc in docs]
         yield assistant_step_event(
             "vector_search",
             "向量检索",
             "completed",
             search_started,
-            summary=f"命中 {len(documents)} 条 FAQ",
+            summary=f"命中 {len(documents)} 条知识单元",
             top_k=top_k,
             min_score=min_score,
             documents=documents,
@@ -1050,6 +1098,10 @@ def make_handler(app: AdminApp):
                 if parsed.path.startswith("/api/import/files/") and parsed.path.endswith("/parse-jobs"):
                     file_id = parsed.path.removeprefix("/api/import/files/").removesuffix("/parse-jobs")
                     self.send_json(app.start_import_parse_job(file_id, payload))
+                    return
+                if parsed.path.startswith("/api/import/files/") and parsed.path.endswith("/embed"):
+                    file_id = parsed.path.removeprefix("/api/import/files/").removesuffix("/embed")
+                    self.send_json(app.embed_import_file(file_id))
                     return
                 if parsed.path == "/api/faqs":
                     self.send_json(app.save_faq(payload))

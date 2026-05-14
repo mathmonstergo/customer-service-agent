@@ -65,6 +65,50 @@ CREATE INDEX IF NOT EXISTS faq_documents_category_idx
 CREATE INDEX IF NOT EXISTS faq_documents_embedding_idx
     ON faq_documents USING hnsw (embedding vector_cosine_ops);
 
+CREATE TABLE IF NOT EXISTS knowledge_chunks (
+    id TEXT PRIMARY KEY,
+    source_type TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    source_chunk_id TEXT,
+    source_title TEXT,
+    chunk_index INTEGER NOT NULL DEFAULT 0,
+    content TEXT NOT NULL,
+    embedding_text TEXT NOT NULL,
+    search_text TEXT NOT NULL,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    tags JSONB NOT NULL DEFAULT '[]'::jsonb,
+    confidence TEXT,
+    status TEXT NOT NULL DEFAULT 'needs_review',
+    embedding vector(1024),
+    embedding_status TEXT NOT NULL DEFAULT 'pending',
+    embedding_model TEXT,
+    embedding_dimensions INTEGER,
+    embedding_updated_at TIMESTAMPTZ,
+    embedding_error TEXT,
+    content_hash TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (source_type, source_id, chunk_index)
+);
+
+CREATE INDEX IF NOT EXISTS knowledge_chunks_source_idx
+    ON knowledge_chunks (source_type, source_id);
+
+CREATE INDEX IF NOT EXISTS knowledge_chunks_status_source_idx
+    ON knowledge_chunks (status, source_type);
+
+CREATE INDEX IF NOT EXISTS knowledge_chunks_embedding_status_idx
+    ON knowledge_chunks (embedding_status);
+
+CREATE INDEX IF NOT EXISTS knowledge_chunks_embedding_idx
+    ON knowledge_chunks USING hnsw (embedding vector_cosine_ops);
+
+CREATE INDEX IF NOT EXISTS knowledge_chunks_metadata_idx
+    ON knowledge_chunks USING gin (metadata);
+
+CREATE INDEX IF NOT EXISTS knowledge_chunks_search_idx
+    ON knowledge_chunks USING gin (to_tsvector('simple', search_text));
+
 CREATE TABLE IF NOT EXISTS import_files (
     id TEXT PRIMARY KEY,
     original_name TEXT NOT NULL,

@@ -24,6 +24,7 @@ const state = {
   documentChunks: [],
   currentDocumentChunkIndex: 0,
   documentParsePollTimer: null,
+  documentEmbeddingInFlight: false,
   currentImportFile: null,
   importChunks: [],
   selectedImportChunks: new Set(),
@@ -313,6 +314,11 @@ function documentFileVisual(item = {}) {
   return { label: type.slice(0, 3).toUpperCase() || "DOC", className: "word" };
 }
 
+function isParsedDocumentFile(file) {
+  // 只有完成解析且已经产生切片的文档，才允许生成文档切片 embedding。
+  return ["needs_review", "completed"].includes(file?.status);
+}
+
 async function loadDocumentFiles() {
   // 文档管理复用导入文件记录，但只表达文档生命周期，不承担 FAQ 生成审核。
   const params = new URLSearchParams({ limit: "100" });
@@ -411,6 +417,8 @@ function renderDocumentDrawer(file = state.currentDocumentFile) {
   $("parseDocumentButton").textContent =
     chunkCount || file?.status === "failed" ? "重新解析" : isParsing ? "解析中" : "开始解析";
   $("parseDocumentButton").disabled = !hasFile || file.status === "unsupported" || isParsing;
+  $("embedDocumentButton").disabled = !isParsedDocumentFile(file) || chunkCount === 0;
+  $("embedDocumentButton").textContent = state.documentEmbeddingInFlight ? "生成中" : "生成 embedding";
   $("sendDocumentToFaqButton").disabled = !hasFile || chunkCount === 0;
   $("downloadDocumentButton").disabled = !hasFile;
   $("deleteDocumentButton").disabled = !hasFile;
@@ -541,6 +549,29 @@ function downloadCurrentDocumentFile() {
   const file = state.currentDocumentFile;
   if (!file) return;
   window.location.href = `/api/import/files/${encodeURIComponent(file.id)}/download`;
+}
+
+async function embedCurrentDocumentFile() {
+  // 为当前已解析文档的所有切片生成向量，写入统一知识单元表。
+  const file = state.currentDocumentFile;
+  if (!file || !isParsedDocumentFile(file)) {
+    showToast("请先完成文档解析");
+    return;
+  }
+  state.documentEmbeddingInFlight = true;
+  renderDocumentDrawer(file);
+  try {
+    const result = await requestJson(`/api/import/files/${encodeURIComponent(file.id)}/embed`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    showToast(`已生成 ${result.count || 0} 个切片 embedding`);
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    state.documentEmbeddingInFlight = false;
+    renderDocumentDrawer(state.currentDocumentFile);
+  }
 }
 
 async function deleteCurrentDocumentFile(fileId = state.currentDocumentFile?.id) {
@@ -3125,6 +3156,10 @@ function bindEvents() {
       const fileId = documentParseButton.dataset.parseDocumentId;
       await openDocumentDrawer(fileId);
       await parseCurrentDocumentFile();
+      return;
+    }
+    if (event.target.id === "embedDocumentButton") {
+      await embedCurrentDocumentFile();
       return;
     }
     if (documentChunkButton) {
