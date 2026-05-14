@@ -101,6 +101,7 @@ def test_knowledge_home_uses_lightweight_entry_cards() -> None:
     assert 'data-knowledge-entry="faq"' in html
     assert 'data-knowledge-entry="documents"' in html
     assert 'data-knowledge-entry="assistant"' in html
+    assert 'data-knowledge-entry="retrieval"' in html
     assert "候选 FAQ 待审核" in html
     assert "FAQ 未生成向量" in html
     assert "大屏" not in html
@@ -122,8 +123,8 @@ def test_knowledge_entry_click_expands_then_enters_workspace() -> None:
     assert "function renderKnowledgeEntryState" in js
 
 
-def test_assistant_workspace_uses_three_column_streaming_chat_layout() -> None:
-    """智能问答入口应使用历史、聊天、流程调试三栏，并默认流式请求。"""
+def test_assistant_workspace_uses_overlay_debug_drawer_and_streaming_chat_layout() -> None:
+    """智能问答入口应使用历史、聊天和覆盖式流程调试抽屉，并默认流式请求。"""
     html = read_static_file("admin.html")
     css = read_static_file("admin.css")
     js = read_static_file("admin.js")
@@ -140,13 +141,76 @@ def test_assistant_workspace_uses_three_column_streaming_chat_layout() -> None:
     assert "流程调试" in html
     assert "assistant-placeholder" not in html
     assert ".assistant-shell" in css
-    assert "grid-template-columns: 260px minmax(0, 1fr) 360px;" in css
+    assert "grid-template-columns: 260px minmax(0, 1fr);" in css
+    assert ".assistant-debug-drawer" in css
+    assert "position: absolute;" in css
     assert ".assistant-debug-drawer.collapsed" in css
     assert "function sendAssistantMessage" in js
     assert 'fetch("/api/assistant/chat-stream"' in js
     assert "response.body.getReader()" in js
     assert "function parseAssistantSseBlock" in js
     assert "localStorage" in js
+
+
+def test_assistant_conversation_settings_modal_supports_per_chat_system_prompt() -> None:
+    """新建和编辑会话都应支持会话名与独立系统提示词。"""
+    html = read_static_file("admin.html")
+    css = read_static_file("admin.css")
+    js = read_static_file("admin.js")
+
+    assert 'id="assistantSettingsOverlay"' in html
+    assert 'id="assistantConversationName"' in html
+    assert 'id="assistantConversationSystemPrompt"' in html
+    assert 'id="saveAssistantSettings"' in html
+    assert 'data-assistant-settings' in js
+    assert "function openAssistantSettingsModal" in js
+    assert "function saveAssistantSettings" in js
+    assert "system_prompt" in js
+    assert "assistant-conversation-edit" in css
+    assert "backdrop-filter: blur(14px);" in css
+
+
+def test_retrieval_workspace_exposes_eval_cases_and_aliases() -> None:
+    """检索工作台需要接上评测用例、运行评测和别名词典接口。"""
+    html = read_static_file("admin.html")
+    css = read_static_file("admin.css")
+    js = read_static_file("admin.js")
+
+    assert 'data-target-workspace="retrieval"' in html
+    assert 'id="retrievalWorkspace"' in html
+    assert 'id="retrievalEvalRows"' in html
+    assert 'id="retrievalEvalQuestion"' in html
+    assert 'id="retrievalExpectedChunks"' in html
+    assert 'id="retrievalAliasRows"' in html
+    assert 'id="retrievalAliasCanonical"' in html
+    assert "运行评测" in html
+    assert "别名词典" in html
+    assert ".retrieval-shell" in css
+    assert ".retrieval-layout" in css
+    assert "function loadRetrievalEvalCases" in js
+    assert "function createRetrievalEvalCase" in js
+    assert "function runRetrievalEvalCase" in js
+    assert "function loadRetrievalAliases" in js
+    assert "function saveRetrievalAlias" in js
+    assert '"/api/retrieval/eval-cases"' in js
+    assert '"/api/retrieval/aliases"' in js
+    assert "/api/retrieval/eval-cases/${encodeURIComponent(caseId)}/run" in js
+
+
+def test_assistant_debug_renders_hybrid_retrieval_details() -> None:
+    """智能问答调试抽屉应展示意图、query terms 和混合召回通道分数。"""
+    js = read_static_file("admin.js")
+    css = read_static_file("admin.css")
+
+    assert "function renderAssistantTraceDetails" in js
+    assert "step.analysis" in js
+    assert "step.query_terms" in js
+    assert "retrieval_channels" in js
+    assert "fused_score" in js
+    assert "vector_score" in js
+    assert "keyword_score" in js
+    assert ".assistant-trace-detail" in css
+    assert ".assistant-source-channel" in css
 
 
 def test_document_management_workspace_uses_overlay_drawer_for_file_details() -> None:

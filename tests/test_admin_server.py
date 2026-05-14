@@ -70,6 +70,137 @@ def test_admin_app_batch_update_status_calls_database():
     assert calls == [(["faq_1"], "disabled")]
 
 
+def test_admin_app_create_retrieval_eval_case_stores_expected_hits():
+    """检索评测用例接口应保存问题、意图和期望命中口径。"""
+    calls = []
+
+    class FakeDatabase:
+        def create_retrieval_eval_case(self, row):
+            calls.append(row)
+            return row
+
+    app = AdminApp(SimpleNamespace(database_url="postgresql://unused"), db=FakeDatabase())
+
+    result = app.create_retrieval_eval_case(
+        {
+            "question": "报告没有生成怎么办？",
+            "intent": "troubleshooting",
+            "expected_source_ids": ["faq_1"],
+            "expected_chunk_ids": ["kc_faq_1"],
+            "tags": "报告,失败",
+            "note": "真实客服高频问题",
+        }
+    )
+
+    assert result["id"].startswith("eval_")
+    assert calls[0]["question"] == "报告没有生成怎么办？"
+    assert calls[0]["intent"] == "troubleshooting"
+    assert calls[0]["expected_source_ids"] == ["faq_1"]
+    assert calls[0]["expected_chunk_ids"] == ["kc_faq_1"]
+    assert calls[0]["tags"] == ["报告", "失败"]
+    assert calls[0]["status"] == "active"
+
+
+def test_admin_app_create_retrieval_eval_case_requires_question():
+    """检索评测用例必须有问题，避免沉淀不可执行样本。"""
+    app = AdminApp(SimpleNamespace(database_url="postgresql://unused"))
+
+    with pytest.raises(AdminValidationError, match="question"):
+        app.create_retrieval_eval_case({"question": ""})
+
+
+def test_admin_app_list_retrieval_eval_cases_passes_filters():
+    """检索评测列表接口应把分页和状态筛选交给数据库。"""
+    calls = []
+
+    class FakeDatabase:
+        def list_retrieval_eval_cases(self, *, status, limit, offset):
+            calls.append((status, limit, offset))
+            return {"items": [], "total": 0}
+
+    app = AdminApp(SimpleNamespace(database_url="postgresql://unused"), db=FakeDatabase())
+
+    assert app.list_retrieval_eval_cases({"status": ["active"], "limit": ["20"], "offset": ["5"]}) == {
+        "items": [],
+        "total": 0,
+    }
+    assert calls == [("active", 20, 5)]
+
+
+def test_admin_app_run_retrieval_eval_case_records_hybrid_result():
+    """运行单条检索评测时应保存意图、候选、指标和命中结果。"""
+    calls = []
+
+    class FakeEmbedding:
+        def embed(self, text):
+            calls.append(("embed", text))
+            return [0.1, 0.2, 0.3]
+
+    class FakeChat:
+        def complete(self, system_prompt, user_prompt):
+            return '{"intent":"faq_exact","confidence":"medium","query_rewrite":"报告导出失败","preferred_sources":["faq","document"]}'
+
+    class FakeDatabase:
+        def get_retrieval_eval_case(self, case_id):
+            assert case_id == "eval_1"
+            return {
+                "id": "eval_1",
+                "question": "报告导出失败怎么办？",
+                "expected_chunk_ids": ["kc_faq_1"],
+                "expected_source_ids": [],
+            }
+
+        def list_retrieval_aliases(self, status="active"):
+            return [{"canonical": "报告", "aliases": ["团体报告"]}]
+
+        def search_knowledge(self, query_embedding, *, top_k, min_score):
+            assert query_embedding == [0.1, 0.2, 0.3]
+            assert top_k == 6
+            assert min_score == 0.4
+            return [
+                SimpleNamespace(
+                    id="kc_noise",
+                    source_id="faq_noise",
+                    source_type="faq",
+                    score=0.91,
+                )
+            ]
+
+        def search_knowledge_text(self, query_text, *, top_k, query_terms):
+            assert query_text == "报告导出失败怎么办？"
+            assert top_k == 6
+            assert "报告" in query_terms
+            assert "导出" in query_terms
+            return [
+                SimpleNamespace(
+                    id="kc_faq_1",
+                    source_id="faq_1",
+                    source_type="faq",
+                    score=0.8,
+                )
+            ]
+
+        def record_retrieval_eval_run(self, row):
+            calls.append(("run", row))
+            return {**row, "id": "eval_run_1"}
+
+    app = AdminApp(
+        SimpleNamespace(database_url="postgresql://unused", rag_top_k=3, rag_min_score=0.4),
+        db=FakeDatabase(),
+        embeddings=FakeEmbedding(),
+        chat=FakeChat(),
+    )
+
+    result = app.run_retrieval_eval_case("eval_1")
+
+    assert result["id"] == "eval_run_1"
+    assert result["metrics"]["recall_at_k"] == 1.0
+    assert "kc_faq_1" in [item["id"] for item in result["retrieved_items"]]
+    assert result["analysis"]["intent"] == "troubleshooting"
+    assert calls[0] == ("embed", "报告导出失败怎么办？")
+    assert calls[-1][0] == "run"
+
+
 def test_admin_app_settings_snapshot_exposes_runtime_config_for_local_modal(tmp_path):
     """设置中心读取当前运行配置，密钥只经本地管理接口返回给弹窗。"""
     app = AdminApp(
@@ -1020,8 +1151,8 @@ def test_parse_sse_event_round_trips_named_json_event():
     assert parsed == {"event": "delta", "data": {"type": "delta", "text": "回答片段"}}
 
 
-def test_admin_app_iter_assistant_chat_events_streams_basic_rag_trace():
-    """智能问答默认按基础 RAG 流式输出，并附带可视化流程节点和来源。"""
+def test_admin_app_iter_assistant_chat_events_streams_hybrid_retrieval_trace():
+    """智能问答应展示意图识别、混合召回和来源融合信息。"""
 
     class FakeEmbedding:
         def embed(self, text):
@@ -1031,7 +1162,7 @@ def test_admin_app_iter_assistant_chat_events_streams_basic_rag_trace():
     class FakeDatabase:
         def search_knowledge(self, query_embedding, *, top_k, min_score):
             assert query_embedding == [0.1, 0.2, 0.3]
-            assert top_k == 3
+            assert top_k == 6
             assert min_score == 0.4
             return [
                 SimpleNamespace(
@@ -1050,6 +1181,30 @@ def test_admin_app_iter_assistant_chat_events_streams_basic_rag_trace():
                     confidence="high",
                     status="usable",
                     score=0.88,
+                )
+            ]
+
+        def search_knowledge_text(self, query_text, *, top_k, query_terms):
+            assert query_text == "报告没有生成怎么办？"
+            assert top_k == 6
+            assert "报告" in query_terms
+            return [
+                SimpleNamespace(
+                    id="faq_1",
+                    source_type="faq",
+                    source_id="faq_1",
+                    source_chunk_id=None,
+                    source_title="报告没有生成怎么办？",
+                    content="问题：报告没有生成怎么办？\n答案：请等待 10 分钟后刷新。",
+                    metadata={"category": "报告", "source_date": "2026-05"},
+                    question="报告没有生成怎么办？",
+                    answer="问题：报告没有生成怎么办？\n答案：请等待 10 分钟后刷新。",
+                    category="报告",
+                    tags=["报告", "刷新"],
+                    source_date="2026-05",
+                    confidence="high",
+                    status="usable",
+                    score=0.77,
                 )
             ]
 
@@ -1078,6 +1233,7 @@ def test_admin_app_iter_assistant_chat_events_streams_basic_rag_trace():
         "step",
         "step",
         "step",
+        "step",
         "delta",
         "delta",
         "step",
@@ -1086,10 +1242,70 @@ def test_admin_app_iter_assistant_chat_events_streams_basic_rag_trace():
     assert events[0]["flow_id"] == "basic_rag"
     assert events[0]["stream"] is True
     assert "intent_detection" in events[0]["available_nodes"]
-    assert events[3]["step_id"] == "vector_search"
-    assert events[3]["status"] == "completed"
-    assert events[3]["documents"][0]["id"] == "faq_1"
-    assert events[3]["documents"][0]["source_type"] == "faq"
-    assert events[4]["title"] == "命中来源"
+    assert "intent_detection" in events[0]["enabled_nodes"]
+    assert "keyword_search" in events[0]["enabled_nodes"]
+    assert events[2]["step_id"] == "intent_detection"
+    assert events[2]["analysis"]["intent"] == "troubleshooting"
+    assert events[4]["step_id"] == "hybrid_retrieval"
+    assert events[4]["status"] == "completed"
+    assert events[4]["documents"][0]["id"] == "faq_1"
+    assert events[4]["documents"][0]["retrieval_channels"] == ["vector", "keyword"]
+    assert events[5]["title"] == "命中来源"
     assert events[-1]["answer_draft"] == "请等待 10 分钟后刷新。"
     assert events[-1]["documents"][0]["score"] == 0.88
+
+
+def test_admin_app_iter_assistant_chat_events_uses_conversation_system_prompt():
+    """会话级系统提示词应覆盖默认提示词，但不改变检索链路。"""
+
+    class FakeEmbedding:
+        def embed(self, text):
+            return [0.1]
+
+    class FakeDatabase:
+        def search_knowledge(self, query_embedding, *, top_k, min_score):
+            return []
+
+        def search_knowledge_text(self, query_text, *, top_k, query_terms):
+            return []
+
+    class FakeChat:
+        def __init__(self):
+            self.calls = []
+
+        def stream_complete(self, system_prompt, user_prompt):
+            self.calls.append((system_prompt, user_prompt))
+            yield "会话提示已生效"
+
+    chat = FakeChat()
+    app = AdminApp(
+        SimpleNamespace(database_url="postgresql://unused", rag_top_k=3, rag_min_score=0.4),
+        db=FakeDatabase(),
+        embeddings=FakeEmbedding(),
+        chat=chat,
+    )
+
+    events = list(
+        app.iter_assistant_chat_events(
+            {
+                "question": "开票需要什么资料？",
+                "system_prompt": "你是财务客服助手，只回答开票相关问题。",
+            }
+        )
+    )
+
+    assert chat.calls[0][0] == "你是财务客服助手，只回答开票相关问题。"
+    assert events[-1]["answer_draft"] == "会话提示已生效"
+
+
+def test_admin_app_assistant_system_prompt_has_no_code_default(monkeypatch):
+    """智能问答没有会话提示词和本地文件时，不再注入代码硬编码默认提示。"""
+    app = AdminApp(SimpleNamespace(database_url="postgresql://unused"))
+
+    def missing_system_prompt():
+        raise FileNotFoundError
+
+    monkeypatch.setattr("customer_service_agent.admin_server.load_system_prompt", missing_system_prompt)
+
+    assert app.assistant_system_prompt() == ""
+    assert app.assistant_system_prompt_from_payload({"system_prompt": ""}) == ""

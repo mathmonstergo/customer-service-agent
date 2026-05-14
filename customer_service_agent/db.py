@@ -1318,6 +1318,139 @@ class Database:
             },
         }
 
+    def create_retrieval_eval_case(self, row: dict[str, Any]) -> dict[str, Any]:
+        """创建或更新检索评测用例，关键约束是期望命中字段统一保存为 JSONB。"""
+        payload = {
+            "id": row["id"],
+            "question": row["question"],
+            "intent": row.get("intent"),
+            "expected_source_ids": json.dumps(
+                _clean_list(row.get("expected_source_ids")),
+                ensure_ascii=False,
+            ),
+            "expected_chunk_ids": json.dumps(
+                _clean_list(row.get("expected_chunk_ids")),
+                ensure_ascii=False,
+            ),
+            "tags": json.dumps(_clean_list(row.get("tags")), ensure_ascii=False),
+            "note": row.get("note"),
+            "status": row.get("status", "active"),
+        }
+        sql = """
+        INSERT INTO retrieval_eval_cases (
+            id, question, intent, expected_source_ids, expected_chunk_ids,
+            tags, note, status
+        )
+        VALUES (
+            %(id)s, %(question)s, %(intent)s, %(expected_source_ids)s::jsonb,
+            %(expected_chunk_ids)s::jsonb, %(tags)s::jsonb, %(note)s, %(status)s
+        )
+        ON CONFLICT (id) DO UPDATE SET
+            question = EXCLUDED.question,
+            intent = EXCLUDED.intent,
+            expected_source_ids = EXCLUDED.expected_source_ids,
+            expected_chunk_ids = EXCLUDED.expected_chunk_ids,
+            tags = EXCLUDED.tags,
+            note = EXCLUDED.note,
+            status = EXCLUDED.status,
+            updated_at = now()
+        RETURNING *
+        """
+        with self.connect() as conn:
+            return conn.execute(sql, payload).fetchone()
+
+    def list_retrieval_eval_cases(
+        self,
+        *,
+        status: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """列出检索评测用例，供后端接口和后续评测页面复用。"""
+        clauses = []
+        params: dict[str, Any] = {"limit": limit, "offset": offset}
+        if status:
+            params["status"] = status
+            clauses.append("status = %(status)s")
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        rows_sql = f"""
+        SELECT *
+        FROM retrieval_eval_cases
+        {where}
+        ORDER BY updated_at DESC, id DESC
+        LIMIT %(limit)s OFFSET %(offset)s
+        """
+        count_sql = f"SELECT count(*) AS total FROM retrieval_eval_cases {where}"
+        with self.connect() as conn:
+            rows = conn.execute(rows_sql, params).fetchall()
+            total = conn.execute(count_sql, params).fetchone()["total"]
+        return {"items": rows, "total": total}
+
+    def record_retrieval_eval_run(self, row: dict[str, Any]) -> dict[str, Any]:
+        """保存单次检索评测运行结果，关键约束是完整保留候选和指标用于回放。"""
+        payload = {
+            "id": row.get("id") or f"eval_run_{uuid.uuid4().hex[:12]}",
+            "case_id": row["case_id"],
+            "strategy": row.get("strategy", "hybrid_v1"),
+            "retrieved_items": json.dumps(row.get("retrieved_items", []), ensure_ascii=False),
+            "metrics": json.dumps(row.get("metrics", {}), ensure_ascii=False),
+            "analysis": json.dumps(row.get("analysis", {}), ensure_ascii=False),
+        }
+        sql = """
+        INSERT INTO retrieval_eval_runs (
+            id, case_id, strategy, retrieved_items, metrics, analysis
+        )
+        VALUES (
+            %(id)s, %(case_id)s, %(strategy)s, %(retrieved_items)s::jsonb,
+            %(metrics)s::jsonb, %(analysis)s::jsonb
+        )
+        RETURNING *
+        """
+        with self.connect() as conn:
+            return conn.execute(sql, payload).fetchone()
+
+    def get_retrieval_eval_case(self, case_id: str) -> dict[str, Any] | None:
+        """按 id 读取检索评测用例，供单条评测运行使用。"""
+        sql = "SELECT * FROM retrieval_eval_cases WHERE id = %(id)s"
+        with self.connect() as conn:
+            return conn.execute(sql, {"id": case_id}).fetchone()
+
+    def list_retrieval_aliases(self, status: str = "active") -> list[dict[str, Any]]:
+        """列出检索别名词典，第一版只读取启用词条用于关键词扩展。"""
+        sql = """
+        SELECT *
+        FROM retrieval_aliases
+        WHERE status = %(status)s
+        ORDER BY updated_at DESC, id DESC
+        """
+        with self.connect() as conn:
+            return conn.execute(sql, {"status": status}).fetchall()
+
+    def upsert_retrieval_alias(self, row: dict[str, Any]) -> dict[str, Any]:
+        """写入检索别名词典，关键约束是标准词和别名都由人工维护。"""
+        payload = {
+            "id": row.get("id") or f"alias_{uuid.uuid4().hex[:12]}",
+            "canonical": str(row.get("canonical", "")).strip(),
+            "aliases": json.dumps(_clean_list(row.get("aliases")), ensure_ascii=False),
+            "tags": json.dumps(_clean_list(row.get("tags")), ensure_ascii=False),
+            "status": row.get("status", "active"),
+        }
+        sql = """
+        INSERT INTO retrieval_aliases (id, canonical, aliases, tags, status)
+        VALUES (
+            %(id)s, %(canonical)s, %(aliases)s::jsonb, %(tags)s::jsonb, %(status)s
+        )
+        ON CONFLICT (id) DO UPDATE SET
+            canonical = EXCLUDED.canonical,
+            aliases = EXCLUDED.aliases,
+            tags = EXCLUDED.tags,
+            status = EXCLUDED.status,
+            updated_at = now()
+        RETURNING *
+        """
+        with self.connect() as conn:
+            return conn.execute(sql, payload).fetchone()
+
     def list_embedding_candidates(self, *, limit: int = 50) -> list[dict[str, Any]]:
         sql = """
         SELECT *
@@ -1409,6 +1542,44 @@ class Database:
             for row in rows
         ]
 
+    def search_knowledge_text(
+        self,
+        query_text: str,
+        *,
+        top_k: int,
+        query_terms: list[str] | None = None,
+        status: str = "usable",
+    ) -> list[RetrievedKnowledgeChunk]:
+        """从统一知识单元表做关键词召回，关键约束是只返回正式可检索内容。"""
+        normalized = str(query_text or "").strip()
+        if not normalized:
+            return []
+        terms = _clean_list(query_terms) or [normalized]
+        params = {
+            "query_like": f"%{normalized}%",
+            "query_terms": terms,
+            "status": status,
+            "top_k": top_k,
+        }
+        with self.connect() as conn:
+            rows = conn.execute(self._search_knowledge_text_sql(), params).fetchall()
+        return [
+            RetrievedKnowledgeChunk(
+                id=row["id"],
+                source_type=row["source_type"],
+                source_id=row["source_id"],
+                source_chunk_id=row["source_chunk_id"],
+                source_title=row["source_title"],
+                content=row["content"],
+                metadata=row["metadata"] or {},
+                tags=row["tags"] or [],
+                confidence=row["confidence"],
+                status=row["status"],
+                score=float(row["score"]),
+            )
+            for row in rows
+        ]
+
     @staticmethod
     def _search_knowledge_sql() -> str:
         """集中维护统一知识单元向量检索 SQL，后续混合检索会复用同一候选表。"""
@@ -1423,5 +1594,43 @@ class Database:
           AND embedding IS NOT NULL
           AND (embedding <=> %(embedding)s::vector) <= %(max_distance)s
         ORDER BY embedding <=> %(embedding)s::vector
+        LIMIT %(top_k)s
+        """
+
+    @staticmethod
+    def _search_knowledge_text_sql() -> str:
+        """集中维护统一知识单元关键词检索 SQL，作为混合召回的第二路候选。"""
+        return """
+        SELECT
+            id, source_type, source_id, source_chunk_id, source_title, content,
+            metadata, tags, confidence, status,
+            (
+                CASE WHEN source_title ILIKE %(query_like)s THEN 0.45 ELSE 0 END
+                + CASE WHEN search_text ILIKE %(query_like)s THEN 0.35 ELSE 0 END
+                + CASE WHEN content ILIKE %(query_like)s THEN 0.20 ELSE 0 END
+                + COALESCE((
+                    SELECT sum(
+                        CASE WHEN source_title ILIKE ('%%' || term || '%%') THEN 0.18 ELSE 0 END
+                        + CASE WHEN search_text ILIKE ('%%' || term || '%%') THEN 0.12 ELSE 0 END
+                        + CASE WHEN content ILIKE ('%%' || term || '%%') THEN 0.06 ELSE 0 END
+                    )
+                    FROM unnest(%(query_terms)s::text[]) AS term
+                ), 0)
+            ) AS score
+        FROM knowledge_chunks
+        WHERE status = %(status)s
+          AND (
+              source_title ILIKE %(query_like)s
+              OR content ILIKE %(query_like)s
+              OR search_text ILIKE %(query_like)s
+              OR EXISTS (
+                  SELECT 1
+                  FROM unnest(%(query_terms)s::text[]) AS term
+                  WHERE source_title ILIKE ('%%' || term || '%%')
+                     OR content ILIKE ('%%' || term || '%%')
+                     OR search_text ILIKE ('%%' || term || '%%')
+              )
+          )
+        ORDER BY score DESC, updated_at DESC, id ASC
         LIMIT %(top_k)s
         """

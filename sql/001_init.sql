@@ -212,3 +212,45 @@ CREATE INDEX IF NOT EXISTS import_candidates_chunk_idx
 
 CREATE INDEX IF NOT EXISTS import_generation_job_items_chunk_status_idx
     ON import_generation_job_items (chunk_id, status);
+
+CREATE TABLE IF NOT EXISTS retrieval_eval_cases (
+    id TEXT PRIMARY KEY,
+    question TEXT NOT NULL,
+    intent TEXT,
+    expected_source_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+    expected_chunk_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+    tags JSONB NOT NULL DEFAULT '[]'::jsonb,
+    note TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS retrieval_eval_runs (
+    id TEXT PRIMARY KEY,
+    case_id TEXT NOT NULL REFERENCES retrieval_eval_cases(id) ON DELETE CASCADE,
+    strategy TEXT NOT NULL,
+    retrieved_items JSONB NOT NULL DEFAULT '[]'::jsonb,
+    metrics JSONB NOT NULL DEFAULT '{}'::jsonb,
+    analysis JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS retrieval_eval_cases_status_idx
+    ON retrieval_eval_cases (status, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS retrieval_eval_runs_case_idx
+    ON retrieval_eval_runs (case_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS retrieval_aliases (
+    id TEXT PRIMARY KEY,
+    canonical TEXT NOT NULL,
+    aliases JSONB NOT NULL DEFAULT '[]'::jsonb,
+    tags JSONB NOT NULL DEFAULT '[]'::jsonb,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS retrieval_aliases_status_idx
+    ON retrieval_aliases (status, updated_at DESC);

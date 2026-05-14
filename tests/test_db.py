@@ -182,6 +182,48 @@ def test_search_knowledge_sql_reads_unified_chunks_without_confidence_filter():
     assert "confidence = %(confidence)s" not in sql
 
 
+def test_search_knowledge_text_sql_reads_keyword_fields():
+    """关键词召回应读取统一知识单元的 search_text、标题和正文。"""
+    sql = Database._search_knowledge_text_sql()
+
+    assert "FROM knowledge_chunks" in sql
+    assert "unnest(%(query_terms)s::text[])" in sql
+    assert "source_title ILIKE %(query_like)s" in sql
+    assert "content ILIKE %(query_like)s" in sql
+    assert "search_text ILIKE %(query_like)s" in sql
+    assert "source_title ILIKE ('%%' || term || '%%')" in sql
+    assert "ORDER BY score DESC" in sql
+
+
+def test_search_knowledge_text_sql_escapes_percent_literals_for_psycopg():
+    """关键词 SQL 里的 LIKE 百分号必须转义，避免 psycopg 误判为占位符。"""
+    sql = Database._search_knowledge_text_sql()
+
+    assert "('%%' || term || '%%')" in sql
+    assert "('%' || term || '%')" not in sql
+
+
+def test_retrieval_alias_schema_records_canonical_terms_and_aliases():
+    """检索别名词典需要记录标准词、别名和启用状态。"""
+    schema = Path("sql/001_init.sql").read_text(encoding="utf-8")
+
+    assert "CREATE TABLE IF NOT EXISTS retrieval_aliases" in schema
+    assert "canonical TEXT NOT NULL" in schema
+    assert "aliases JSONB NOT NULL DEFAULT '[]'::jsonb" in schema
+    assert "retrieval_aliases_status_idx" in schema
+
+
+def test_retrieval_eval_schema_records_expected_hits_and_runs():
+    """检索评测表需要保存测试问题、期望命中和每次运行结果。"""
+    schema = Path("sql/001_init.sql").read_text(encoding="utf-8")
+
+    assert "CREATE TABLE IF NOT EXISTS retrieval_eval_cases" in schema
+    assert "expected_source_ids JSONB NOT NULL DEFAULT '[]'::jsonb" in schema
+    assert "expected_chunk_ids JSONB NOT NULL DEFAULT '[]'::jsonb" in schema
+    assert "CREATE TABLE IF NOT EXISTS retrieval_eval_runs" in schema
+    assert "metrics JSONB NOT NULL DEFAULT '{}'::jsonb" in schema
+
+
 def test_import_file_embedding_summaries_sql_counts_document_chunks():
     """文档列表需要按文件汇总切片向量状态，区分完成、部分、过期和失败。"""
     sql = Database._import_file_embedding_summaries_sql()

@@ -30,6 +30,10 @@
         <circle cx="11" cy="11" r="7"></circle>
         <path d="m20 20-3.5-3.5"></path>
       </symbol>
+      <symbol id="icon-pencil" viewBox="0 0 24 24">
+        <path d="M12 20h9"></path>
+        <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
+      </symbol>
       <symbol id="icon-chevron-right" viewBox="0 0 24 24">
         <path d="m9 18 6-6-6-6"></path>
       </symbol>
@@ -187,7 +191,7 @@
             <div class="knowledge-popover-row">
               <span class="task-icon muted"><svg aria-hidden="true"><use href="#icon-search"></use></svg></span>
               <span>检索测试入口</span>
-              <strong>待接入</strong>
+              <strong>已接入</strong>
               <i class="task-dot gray"></i>
             </div>
             <div class="knowledge-popover-row">
@@ -200,6 +204,41 @@
               <span class="task-icon warning"><svg aria-hidden="true"><use href="#icon-database"></use></svg></span>
               <span>RAG 配置状态</span>
               <strong>设置中心</strong>
+              <i class="task-dot orange"></i>
+            </div>
+            <p><span>ⓘ</span> 展开后再次点击卡片进入页面</p>
+          </div>
+        </article>
+
+        <article class="knowledge-entry" data-knowledge-entry="retrieval">
+          <button class="knowledge-card" type="button" data-knowledge-entry="retrieval" data-target-workspace="retrieval">
+            <span class="knowledge-card-icon">
+              <svg aria-hidden="true"><use href="#icon-search"></use></svg>
+            </span>
+            <span class="knowledge-card-copy">
+              <strong>检索工作台</strong>
+              <small>维护评测用例、运行召回测试、管理关键词别名。</small>
+            </span>
+            <svg class="knowledge-card-arrow" aria-hidden="true"><use href="#icon-chevron-right"></use></svg>
+          </button>
+          <div class="knowledge-popover" role="status">
+            <div class="knowledge-popover-arrow" aria-hidden="true"></div>
+            <div class="knowledge-popover-row">
+              <span class="task-icon success"><svg aria-hidden="true"><use href="#icon-check-circle"></use></svg></span>
+              <span>混合召回</span>
+              <strong>已启用</strong>
+              <i class="task-dot green"></i>
+            </div>
+            <div class="knowledge-popover-row">
+              <span class="task-icon muted"><svg aria-hidden="true"><use href="#icon-database"></use></svg></span>
+              <span>评测用例</span>
+              <strong>可维护</strong>
+              <i class="task-dot gray"></i>
+            </div>
+            <div class="knowledge-popover-row">
+              <span class="task-icon warning"><svg aria-hidden="true"><use href="#icon-search"></use></svg></span>
+              <span>别名词典</span>
+              <strong>可维护</strong>
               <i class="task-dot orange"></i>
             </div>
             <p><span>ⓘ</span> 展开后再次点击卡片进入页面</p>
@@ -316,6 +355,118 @@
           <section class="document-failed-chunks hidden" id="documentFailedChunks"></section>
         </div>
       </aside>
+    </main>
+
+    <main class="retrieval-shell hidden" id="retrievalWorkspace">
+      <section class="retrieval-header">
+        <div>
+          <h1>检索工作台</h1>
+          <p>评测混合召回、沉淀失败样本、维护关键词别名</p>
+        </div>
+        <button class="cancel-button" type="button" id="refreshRetrievalEvalButton">刷新评测集</button>
+      </section>
+
+      <section class="retrieval-layout">
+        <section class="retrieval-panel retrieval-eval-panel">
+          <div class="retrieval-section-head">
+            <div>
+              <h2>评测用例</h2>
+              <p>录入真实客服问题和期望命中，运行后保存 Recall / MRR 指标</p>
+            </div>
+            <span id="retrievalEvalMeta">0 条</span>
+          </div>
+
+          <form class="retrieval-form" id="retrievalEvalForm">
+            <label>
+              <span>问题</span>
+              <input id="retrievalEvalQuestion" type="text" placeholder="例如：报告导出失败怎么办？" />
+            </label>
+            <div class="retrieval-form-grid">
+              <label>
+                <span>意图</span>
+                <select id="retrievalEvalIntent">
+                  <option value="">自动识别</option>
+                  <option value="faq_exact">FAQ 精准问答</option>
+                  <option value="procedure">操作流程</option>
+                  <option value="troubleshooting">故障排查</option>
+                  <option value="realtime_status">实时状态</option>
+                  <option value="sensitive_or_forbidden">敏感问题</option>
+                </select>
+              </label>
+              <label>
+                <span>标签</span>
+                <input id="retrievalEvalTags" type="text" placeholder="报告,导出,失败" />
+              </label>
+            </div>
+            <div class="retrieval-form-grid">
+              <label>
+                <span>期望 chunk id</span>
+                <input id="retrievalExpectedChunks" type="text" placeholder="kc_faq_xxx, kc_document_xxx" />
+              </label>
+              <label>
+                <span>期望 source id</span>
+                <input id="retrievalExpectedSources" type="text" placeholder="faq_xxx 或 file_xxx" />
+              </label>
+            </div>
+            <label>
+              <span>备注</span>
+              <input id="retrievalEvalNote" type="text" placeholder="样本来源、失败原因或观察点" />
+            </label>
+            <button class="save-button" type="submit">新增用例</button>
+          </form>
+
+          <div class="retrieval-result" id="retrievalRunResult">运行评测后显示最近一次候选和指标</div>
+
+          <table class="retrieval-table">
+            <thead>
+              <tr>
+                <th>问题</th>
+                <th>期望命中</th>
+                <th>标签</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="retrievalEvalRows"></tbody>
+          </table>
+        </section>
+
+        <section class="retrieval-panel retrieval-alias-panel">
+          <div class="retrieval-section-head">
+            <div>
+              <h2>别名词典</h2>
+              <p>标准词和常见叫法会参与关键词召回扩展</p>
+            </div>
+            <button class="cancel-button" type="button" id="refreshRetrievalAliasButton">刷新</button>
+          </div>
+
+          <form class="retrieval-form" id="retrievalAliasForm">
+            <label>
+              <span>标准词</span>
+              <input id="retrievalAliasCanonical" type="text" placeholder="报告" />
+            </label>
+            <label>
+              <span>别名</span>
+              <input id="retrievalAliasValues" type="text" placeholder="团体报告,测评报告" />
+            </label>
+            <label>
+              <span>标签</span>
+              <input id="retrievalAliasTags" type="text" placeholder="报告,业务术语" />
+            </label>
+            <button class="save-button" type="submit">保存别名</button>
+          </form>
+
+          <table class="retrieval-table">
+            <thead>
+              <tr>
+                <th>标准词</th>
+                <th>别名</th>
+                <th>标签</th>
+              </tr>
+            </thead>
+            <tbody id="retrievalAliasRows"></tbody>
+          </table>
+        </section>
+      </section>
     </main>
 
     <div class="app-shell hidden" id="faqWorkspace">
@@ -941,6 +1092,40 @@
         </div>
       </aside>
     </main>
+
+    <div class="settings-overlay assistant-settings-overlay hidden" id="assistantSettingsOverlay" aria-hidden="true">
+      <section class="assistant-settings-modal" role="dialog" aria-modal="true" aria-labelledby="assistantSettingsTitle">
+        <form class="assistant-settings-form" id="assistantSettingsForm">
+          <header class="assistant-settings-header">
+            <div>
+              <h2 id="assistantSettingsTitle">会话设置</h2>
+              <p id="assistantSettingsSubtitle">为当前会话设置名称和独立系统提示词</p>
+            </div>
+            <button class="icon-button" type="button" id="closeAssistantSettings" aria-label="关闭会话设置">
+              <svg aria-hidden="true"><use href="#icon-x"></use></svg>
+            </button>
+          </header>
+          <div class="assistant-settings-body">
+            <label>
+              <span>会话名称</span>
+              <input id="assistantConversationName" type="text" maxlength="80" placeholder="不填写则按首个问题自动命名" />
+            </label>
+            <label>
+              <span>系统提示词</span>
+              <textarea
+                id="assistantConversationSystemPrompt"
+                rows="7"
+                placeholder="不填写则使用全局系统提示词"
+              ></textarea>
+            </label>
+          </div>
+          <footer class="assistant-settings-footer">
+            <button class="cancel-button" type="button" id="cancelAssistantSettings">取消</button>
+            <button class="save-button" type="submit" id="saveAssistantSettings">保存</button>
+          </footer>
+        </form>
+      </section>
+    </div>
 
     <div class="settings-overlay hidden" id="settingsOverlay" aria-hidden="true">
       <section class="settings-modal" id="settingsModal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">

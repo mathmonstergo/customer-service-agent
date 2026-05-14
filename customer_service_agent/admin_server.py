@@ -35,6 +35,13 @@ from customer_service_agent.import_models import detect_file_type
 from customer_service_agent.llm import ChatClient, EmbeddingClient
 from customer_service_agent.markdown_import import chunk_messages, parse_wechat_messages
 from customer_service_agent.rag import build_user_prompt, load_system_prompt
+from customer_service_agent.retrieval import (
+    EvalCaseResult,
+    analyze_query,
+    build_keyword_terms,
+    compute_retrieval_metrics,
+    fuse_retrieval_candidates,
+)
 
 
 class AdminValidationError(ValueError):
@@ -109,6 +116,38 @@ def normalize_import_parse_options(payload: dict[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError) as exc:
         raise AdminValidationError("chunk_days must be an integer") from exc
     return {"parse_mode": parse_mode, "chunk_days": min(max(chunk_days, 1), 7)}
+
+
+def normalize_retrieval_eval_case_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """规范化检索评测用例，关键约束是问题和期望命中口径必须可执行。"""
+    question = str(payload.get("question", "")).strip()
+    if not question:
+        raise AdminValidationError("question is required")
+    case_id = str(payload.get("id", "")).strip() or f"eval_{uuid.uuid4().hex[:12]}"
+    return {
+        "id": case_id,
+        "question": question,
+        "intent": str(payload.get("intent", "") or "").strip() or None,
+        "expected_source_ids": split_text_list(payload.get("expected_source_ids")),
+        "expected_chunk_ids": split_text_list(payload.get("expected_chunk_ids")),
+        "tags": split_text_list(payload.get("tags")),
+        "note": str(payload.get("note", "") or "").strip() or None,
+        "status": str(payload.get("status", "active") or "active").strip() or "active",
+    }
+
+
+def normalize_retrieval_alias_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """规范化检索别名词条，关键约束是标准词不能为空。"""
+    canonical = str(payload.get("canonical", "")).strip()
+    if not canonical:
+        raise AdminValidationError("canonical is required")
+    return {
+        "id": str(payload.get("id", "")).strip() or f"alias_{uuid.uuid4().hex[:12]}",
+        "canonical": canonical,
+        "aliases": split_text_list(payload.get("aliases")),
+        "tags": split_text_list(payload.get("tags")),
+        "status": str(payload.get("status", "active") or "active").strip() or "active",
+    }
 
 
 def _normalize_parse_progress(value: Any) -> dict[str, Any]:
@@ -285,6 +324,20 @@ def assistant_document_payload(doc: Any) -> dict[str, Any]:
     }
 
 
+def retrieval_eval_item_payload(candidate: Any) -> dict[str, Any]:
+    """把融合候选转换为评测运行可回放的精简结构。"""
+    doc = candidate.document
+    return {
+        "id": getattr(doc, "id", ""),
+        "source_id": getattr(doc, "source_id", ""),
+        "source_type": getattr(doc, "source_type", ""),
+        "channels": list(candidate.channels),
+        "fused_score": candidate.fused_score,
+        "vector_score": candidate.vector_score,
+        "keyword_score": candidate.keyword_score,
+    }
+
+
 def assistant_step_event(
     step_id: str,
     title: str,
@@ -331,11 +384,16 @@ class AdminApp:
         return self.chat
 
     def assistant_system_prompt(self) -> str:
-        """读取智能问答系统提示词；本地未配置时使用保守默认提示。"""
+        """读取智能问答系统提示词；未配置时返回空值，不再注入代码硬编码提示。"""
         try:
             return load_system_prompt()
         except FileNotFoundError:
-            return "你是内部知识库问答助手。只能基于检索到的知识库内容回答，不确定时说明需要转人工确认。"
+            return ""
+
+    def assistant_system_prompt_from_payload(self, payload: dict[str, Any]) -> str:
+        """读取会话级系统提示词；为空时只回退到本地配置文件，不使用代码默认值。"""
+        system_prompt = str(payload.get("system_prompt", "") or "").strip()
+        return system_prompt or self.assistant_system_prompt()
 
     def settings_snapshot(self) -> dict[str, Any]:
         """给本地设置弹窗返回当前运行配置，密钥只在本机管理页显式查看时使用。"""
@@ -387,6 +445,98 @@ class AdminApp:
         data["page"] = page
         data["page_size"] = page_size
         return data
+
+    def list_retrieval_eval_cases(self, params: dict[str, list[str]]) -> dict[str, Any]:
+        """列出检索评测用例，第一版供接口和脚本手工维护样本集。"""
+        return self.database().list_retrieval_eval_cases(
+            status=params.get("status", [""])[0] or None,
+            limit=min(max(int(params.get("limit", ["50"])[0]), 1), 100),
+            offset=max(int(params.get("offset", ["0"])[0]), 0),
+        )
+
+    def create_retrieval_eval_case(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """创建检索评测用例，真实客服问题先作为人工样本沉淀。"""
+        row = normalize_retrieval_eval_case_payload(payload)
+        return self.database().create_retrieval_eval_case(row)
+
+    def list_retrieval_aliases(self) -> dict[str, Any]:
+        """列出启用检索别名，供接口和关键词扩展复用。"""
+        rows = self._retrieval_aliases()
+        return {"items": rows, "total": len(rows)}
+
+    def save_retrieval_alias(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """保存检索别名词条，第一版只提供最小后端接口。"""
+        row = normalize_retrieval_alias_payload(payload)
+        return self.database().upsert_retrieval_alias(row)
+
+    def run_retrieval_eval_case(self, case_id: str) -> dict[str, Any]:
+        """运行单条检索评测，记录混合召回候选和指标。"""
+        case = self.database().get_retrieval_eval_case(case_id)
+        if case is None:
+            raise AdminNotFoundError(f"Retrieval eval case not found: {case_id}")
+
+        question = str(case["question"]).strip()
+        analysis = analyze_query(question, self.chat_client())
+        query = analysis.query_rewrite or question
+        top_k = getattr(self.settings, "rag_top_k", 5)
+        min_score = getattr(self.settings, "rag_min_score", 0.35)
+        candidate_limit = max(top_k * 2, top_k)
+        aliases = self._retrieval_aliases()
+        query_terms = build_keyword_terms(query, aliases)
+        query_embedding = self.embedding_client().embed(query)
+        vector_docs = self.database().search_knowledge(
+            query_embedding,
+            top_k=candidate_limit,
+            min_score=min_score,
+        )
+        keyword_docs = self.database().search_knowledge_text(
+            query,
+            top_k=candidate_limit,
+            query_terms=query_terms,
+        )
+        fused = fuse_retrieval_candidates(
+            vector_docs=vector_docs,
+            keyword_docs=keyword_docs,
+            top_k=top_k,
+        )
+        retrieved_items = [retrieval_eval_item_payload(candidate) for candidate in fused]
+        expected_ids = split_text_list(case.get("expected_chunk_ids")) or split_text_list(
+            case.get("expected_source_ids")
+        )
+        retrieved_ids = [
+            item["id"] if split_text_list(case.get("expected_chunk_ids")) else item["source_id"]
+            for item in retrieved_items
+        ]
+        metrics = compute_retrieval_metrics(
+            [
+                EvalCaseResult(
+                    question=question,
+                    expected_ids=expected_ids,
+                    retrieved_ids=retrieved_ids,
+                )
+            ],
+            k=top_k,
+        )
+        row = {
+            "case_id": case_id,
+            "strategy": "hybrid_v1",
+            "retrieved_items": retrieved_items,
+            "metrics": metrics,
+            "analysis": {
+                **analysis.to_dict(),
+                "query_terms": query_terms,
+                "vector_count": len(vector_docs),
+                "keyword_count": len(keyword_docs),
+            },
+        }
+        return self.database().record_retrieval_eval_run(row)
+
+    def _retrieval_aliases(self) -> list[dict[str, Any]]:
+        """读取启用别名词典；测试替身未实现该方法时返回空列表。"""
+        list_aliases = getattr(self.database(), "list_retrieval_aliases", None)
+        if list_aliases is None:
+            return []
+        return list_aliases()
 
     def get_faq(self, faq_id: str) -> dict[str, Any]:
         row = self.database().get_faq(faq_id)
@@ -915,7 +1065,7 @@ class AdminApp:
         return self.database().mark_import_candidate_ignored(candidate_id)
 
     def iter_assistant_chat_events(self, payload: dict[str, Any]):
-        """执行基础 RAG 问答并产出默认流式 SSE 事件，预留后续编排节点。"""
+        """执行基础 RAG 问答并产出流式事件，当前链路包含意图识别和混合召回。"""
         question = str(payload.get("question", "")).strip()
         if not question:
             raise AdminValidationError("question is required")
@@ -929,6 +1079,7 @@ class AdminApp:
             "intent_detection",
             "vector_search",
             "keyword_search",
+            "hybrid_retrieval",
             "kg_query",
             "rerank",
             "source_context",
@@ -943,8 +1094,11 @@ class AdminApp:
             "available_nodes": available_nodes,
             "enabled_nodes": [
                 "input_question",
+                "intent_detection",
                 "query_embedding",
                 "vector_search",
+                "keyword_search",
+                "hybrid_retrieval",
                 "source_context",
                 "answer_generation",
             ],
@@ -959,8 +1113,20 @@ class AdminApp:
             summary=question,
         )
 
+        intent_started = time.perf_counter()
+        analysis = analyze_query(question, self.chat_client())
+        yield assistant_step_event(
+            "intent_detection",
+            "意图识别",
+            "completed",
+            intent_started,
+            summary=f"{analysis.intent} / {analysis.confidence}",
+            analysis=analysis.to_dict(),
+        )
+
         embedding_started = time.perf_counter()
-        query_embedding = self.embedding_client().embed(question)
+        retrieval_query = analysis.query_rewrite or question
+        query_embedding = self.embedding_client().embed(retrieval_query)
         yield assistant_step_event(
             "query_embedding",
             "向量化",
@@ -968,21 +1134,54 @@ class AdminApp:
             embedding_started,
             summary=f"{len(query_embedding)} 维查询向量",
             dimensions=len(query_embedding),
+            query=retrieval_query,
         )
 
         search_started = time.perf_counter()
         top_k = getattr(self.settings, "rag_top_k", 5)
         min_score = getattr(self.settings, "rag_min_score", 0.35)
-        docs = self.database().search_knowledge(query_embedding, top_k=top_k, min_score=min_score)
-        documents = [assistant_document_payload(doc) for doc in docs]
+        candidate_limit = max(top_k * 2, top_k)
+        query_terms = build_keyword_terms(retrieval_query, self._retrieval_aliases())
+        vector_docs = self.database().search_knowledge(
+            query_embedding,
+            top_k=candidate_limit,
+            min_score=min_score,
+        )
+        keyword_docs = self.database().search_knowledge_text(
+            retrieval_query,
+            top_k=candidate_limit,
+            query_terms=query_terms,
+        )
+        fused = fuse_retrieval_candidates(
+            vector_docs=vector_docs,
+            keyword_docs=keyword_docs,
+            top_k=top_k,
+        )
+        docs = [candidate.document for candidate in fused]
+        documents = []
+        for candidate in fused:
+            payload_doc = assistant_document_payload(candidate.document)
+            payload_doc.update(
+                {
+                    "retrieval_channels": list(candidate.channels),
+                    "fused_score": candidate.fused_score,
+                    "vector_score": candidate.vector_score,
+                    "keyword_score": candidate.keyword_score,
+                }
+            )
+            documents.append(payload_doc)
         yield assistant_step_event(
-            "vector_search",
-            "向量检索",
+            "hybrid_retrieval",
+            "混合召回",
             "completed",
             search_started,
-            summary=f"命中 {len(documents)} 条知识单元",
+            summary=f"向量 {len(vector_docs)} 条，关键词 {len(keyword_docs)} 条，融合后 {len(documents)} 条",
             top_k=top_k,
             min_score=min_score,
+            candidate_limit=candidate_limit,
+            vector_count=len(vector_docs),
+            keyword_count=len(keyword_docs),
+            query_terms=query_terms,
             documents=documents,
         )
 
@@ -1007,7 +1206,8 @@ class AdminApp:
         )
         prompt = build_user_prompt(question, docs)
         answer_parts: list[str] = []
-        for text in self.chat_client().stream_complete(self.assistant_system_prompt(), prompt):
+        system_prompt = self.assistant_system_prompt_from_payload(payload)
+        for text in self.chat_client().stream_complete(system_prompt, prompt):
             answer_parts.append(text)
             yield {"type": "delta", "text": text}
 
@@ -1055,6 +1255,12 @@ def make_handler(app: AdminApp):
                     return
                 if parsed.path == "/api/settings":
                     self.send_json(app.settings_snapshot())
+                    return
+                if parsed.path == "/api/retrieval/eval-cases":
+                    self.send_json(app.list_retrieval_eval_cases(parse_qs(parsed.query)))
+                    return
+                if parsed.path == "/api/retrieval/aliases":
+                    self.send_json(app.list_retrieval_aliases())
                     return
                 if parsed.path == "/api/import/files":
                     self.send_json(app.list_import_files(parse_qs(parsed.query)))
@@ -1106,6 +1312,16 @@ def make_handler(app: AdminApp):
                 payload = self.read_json()
                 if parsed.path == "/api/settings":
                     self.send_json(app.update_settings(payload))
+                    return
+                if parsed.path == "/api/retrieval/eval-cases":
+                    self.send_json(app.create_retrieval_eval_case(payload))
+                    return
+                if parsed.path.startswith("/api/retrieval/eval-cases/") and parsed.path.endswith("/run"):
+                    case_id = parsed.path.removeprefix("/api/retrieval/eval-cases/").removesuffix("/run")
+                    self.send_json(app.run_retrieval_eval_case(case_id))
+                    return
+                if parsed.path == "/api/retrieval/aliases":
+                    self.send_json(app.save_retrieval_alias(payload))
                     return
                 if parsed.path.startswith("/api/import/files/") and parsed.path.endswith("/reparse"):
                     file_id = parsed.path.removeprefix("/api/import/files/").removesuffix("/reparse")

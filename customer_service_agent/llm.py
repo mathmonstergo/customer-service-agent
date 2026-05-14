@@ -43,14 +43,20 @@ class ChatClient:
         client = build_openai_client(settings.chat_base_url, settings.chat_api_key)
         return cls(client, model=settings.chat_model)
 
+    @staticmethod
+    def _messages(system_prompt: str, user_prompt: str) -> list[dict[str, str]]:
+        """构造 Chat messages；系统提示词为空时不发送空 system 消息。"""
+        messages: list[dict[str, str]] = []
+        if str(system_prompt or "").strip():
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": user_prompt})
+        return messages
+
     def complete(self, system_prompt: str, user_prompt: str) -> str:
         """同步生成完整回答，用于非流式内部任务。"""
         response = self.client.chat.completions.create(
             model=self.model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
+            messages=self._messages(system_prompt, user_prompt),
             temperature=0.2,
         )
         return response.choices[0].message.content or ""
@@ -59,10 +65,7 @@ class ChatClient:
         """流式生成回答片段，关键约束是只产出非空 delta 文本。"""
         response = self.client.chat.completions.create(
             model=self.model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
+            messages=self._messages(system_prompt, user_prompt),
             temperature=0.2,
             stream=True,
         )

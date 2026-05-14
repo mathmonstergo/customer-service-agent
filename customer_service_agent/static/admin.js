@@ -62,6 +62,10 @@ const state = {
   assistantSources: [],
   assistantStreaming: false,
   assistantDebugCollapsed: false,
+  assistantSettingsConversationId: null,
+  retrievalEvalCases: [],
+  retrievalAliases: [],
+  retrievalLastRun: null,
 };
 
 const statusOptions = ["usable", "needs_review", "disabled"];
@@ -73,6 +77,7 @@ const workspaceLabels = {
   documents: "文档管理",
   import: "FAQ 管理",
   assistant: "智能问答",
+  retrieval: "检索工作台",
 };
 const faqSubviewOrder = ["list", "generate", "review"];
 const ASSISTANT_STORAGE_KEY = "customerServiceAgent.assistantConversations";
@@ -826,12 +831,16 @@ function assistantConversationTitle(text) {
   return title.length > 24 ? `${title.slice(0, 24)}...` : title;
 }
 
-function createAssistantConversation(question = "") {
-  // 新建本地调试会话，首版不写数据库，避免混入正式知识库数据。
+function createAssistantConversation(options = "") {
+  // 新建本地调试会话，支持会话级系统提示词但不写入后端数据库。
   const now = new Date().toISOString();
+  const config = typeof options === "object" && options !== null ? options : { question: options };
+  const customTitle = Boolean(String(config.title || "").trim());
   return {
     id: `conv_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
-    title: assistantConversationTitle(question),
+    title: customTitle ? String(config.title).trim() : assistantConversationTitle(config.question || ""),
+    customTitle,
+    systemPrompt: String(config.systemPrompt || "").trim(),
     updatedAt: now,
     messages: [],
     trace: [],
@@ -839,11 +848,33 @@ function createAssistantConversation(question = "") {
   };
 }
 
+function normalizeAssistantConversation(conversation = {}) {
+  // 兼容旧版 localStorage 会话，补齐系统提示词和标题来源标记。
+  const fallback = createAssistantConversation();
+  const messages = Array.isArray(conversation.messages) ? conversation.messages : [];
+  const firstQuestion = messages.find((message) => message?.role === "user")?.content || "";
+  const title = String(conversation.title || "").trim() || assistantConversationTitle(firstQuestion || "新对话");
+  return {
+    ...fallback,
+    ...conversation,
+    id: String(conversation.id || fallback.id),
+    title,
+    customTitle: Boolean(conversation.customTitle),
+    systemPrompt: String(conversation.systemPrompt || "").trim(),
+    updatedAt: conversation.updatedAt || fallback.updatedAt,
+    messages,
+    trace: Array.isArray(conversation.trace) ? conversation.trace : [],
+    sources: Array.isArray(conversation.sources) ? conversation.sources : [],
+  };
+}
+
 function loadAssistantConversations() {
   // 从浏览器本地恢复智能问答历史，解析失败时回到空列表。
   try {
     const stored = JSON.parse(localStorage.getItem(ASSISTANT_STORAGE_KEY) || "[]");
-    state.assistantConversations = Array.isArray(stored) ? stored : [];
+    state.assistantConversations = Array.isArray(stored)
+      ? stored.map((conversation) => normalizeAssistantConversation(conversation))
+      : [];
   } catch {
     state.assistantConversations = [];
   }
@@ -876,13 +907,8 @@ function currentAssistantConversation() {
 }
 
 function startAssistantConversation() {
-  // 手动新建对话并刷新左侧历史栏。
-  const conversation = createAssistantConversation();
-  state.assistantConversations.unshift(conversation);
-  state.currentAssistantConversationId = conversation.id;
-  saveAssistantConversations();
-  renderAssistantWorkspace();
-  $("assistantInput")?.focus();
+  // 新建对话前先打开设置弹窗，允许用户输入会话名和系统提示词。
+  openAssistantSettingsModal();
 }
 
 function selectAssistantConversation(conversationId) {
@@ -912,10 +938,15 @@ function renderAssistantConversations() {
       const active = conversation.id === state.currentAssistantConversationId ? "active" : "";
       const last = (conversation.messages || []).at(-1)?.content || "等待提问";
       return `
-        <button class="assistant-conversation-item ${active}" type="button" data-assistant-conversation="${escapeHtml(conversation.id)}">
-          <strong>${escapeHtml(conversation.title || "新对话")}</strong>
-          <span>${escapeHtml(last)}</span>
-        </button>
+        <div class="assistant-conversation-item ${active}">
+          <button class="assistant-conversation-main" type="button" data-assistant-conversation="${escapeHtml(conversation.id)}">
+            <strong>${escapeHtml(conversation.title || "新对话")}</strong>
+            <span>${escapeHtml(last)}</span>
+          </button>
+          <button class="assistant-conversation-edit" type="button" data-assistant-settings="${escapeHtml(conversation.id)}" aria-label="编辑会话设置" title="会话设置">
+            <svg aria-hidden="true"><use href="#icon-pencil"></use></svg>
+          </button>
+        </div>
       `;
     })
     .join("");
@@ -941,8 +972,43 @@ function renderAssistantMessages() {
   panel.scrollTop = panel.scrollHeight;
 }
 
+function formatDebugScore(value) {
+  // 调试面板分数只做展示，缺失时保持短横线避免误读。
+  if (value === null || value === undefined || value === "") return "-";
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toFixed(3) : String(value);
+}
+
+function renderAssistantTraceDetails(step) {
+  // 展示意图识别和混合召回的关键调试字段，不干扰普通节点阅读。
+  const rows = [];
+  if (step.analysis) {
+    rows.push(["意图", step.analysis.intent || "-"]);
+    rows.push(["置信度", step.analysis.confidence || "-"]);
+    if (step.analysis.query_rewrite) rows.push(["改写", step.analysis.query_rewrite]);
+    if (step.analysis.reason) rows.push(["原因", step.analysis.reason]);
+  }
+  if (Array.isArray(step.query_terms) && step.query_terms.length) {
+    rows.push(["Query terms", step.query_terms.join(" / ")]);
+  }
+  if (step.vector_count !== undefined || step.keyword_count !== undefined) {
+    rows.push(["候选", `向量 ${step.vector_count || 0} · 关键词 ${step.keyword_count || 0}`]);
+  }
+  if (!rows.length) return "";
+  return `
+    <dl class="assistant-trace-detail">
+      ${rows.map(([label, value]) => `
+        <div>
+          <dt>${escapeHtml(label)}</dt>
+          <dd>${escapeHtml(value)}</dd>
+        </div>
+      `).join("")}
+    </dl>
+  `;
+}
+
 function renderAssistantTrace() {
-  // 渲染右侧流程调试抽屉，当前只展示基础 RAG 节点。
+  // 渲染右侧流程调试抽屉，展示意图识别、混合召回和命中来源。
   const tracePanel = $("assistantTraceSteps");
   const sourcePanel = $("assistantSources");
   const conversation = currentAssistantConversation();
@@ -964,6 +1030,7 @@ function renderAssistantTrace() {
               <strong>${escapeHtml(step.title || step.step_id)}</strong>
               <p>${escapeHtml(step.summary || "")}</p>
               <div class="assistant-trace-meta">${escapeHtml(step.duration_ms ?? 0)}ms · ${escapeHtml(step.status || "pending")}</div>
+              ${renderAssistantTraceDetails(step)}
             </div>
           </article>
         `).join("")
@@ -979,6 +1046,16 @@ function renderAssistantTrace() {
               <span>score ${escapeHtml(doc.score ?? "-")}</span>
               <span>${escapeHtml(doc.category || "未分类")}</span>
             </div>
+            <div class="assistant-source-channels">
+              ${(doc.retrieval_channels || []).map((channel) => `
+                <span class="assistant-source-channel">${escapeHtml(channel)}</span>
+              `).join("")}
+            </div>
+            <div class="assistant-source-score-grid">
+              <span>fusion ${escapeHtml(formatDebugScore(doc.fused_score))}</span>
+              <span>vector ${escapeHtml(formatDebugScore(doc.vector_score))}</span>
+              <span>keyword ${escapeHtml(formatDebugScore(doc.keyword_score))}</span>
+            </div>
           </article>
         `).join("")
       : '<div class="assistant-mini-empty">暂无命中来源</div>';
@@ -986,12 +1063,250 @@ function renderAssistantTrace() {
 }
 
 function renderAssistantWorkspace() {
-  // 同步智能问答三栏视图。
+  // 同步智能问答历史、聊天区和覆盖式流程调试抽屉。
   renderAssistantConversations();
   renderAssistantMessages();
   renderAssistantTrace();
   $("assistantWorkspace")?.classList.toggle("debug-collapsed", state.assistantDebugCollapsed);
   $("assistantDebugDrawer")?.classList.toggle("collapsed", state.assistantDebugCollapsed);
+}
+
+function assistantFallbackTitle(conversation) {
+  // 未设置会话名时，用首个用户问题生成默认标题。
+  const firstQuestion = (conversation.messages || []).find((message) => message.role === "user")?.content || "";
+  return assistantConversationTitle(firstQuestion || "新对话");
+}
+
+function openAssistantSettingsModal(conversationId = null) {
+  // 打开会话设置弹窗；conversationId 为空时表示新建会话。
+  const conversation = conversationId
+    ? state.assistantConversations.find((item) => item.id === conversationId)
+    : null;
+  state.assistantSettingsConversationId = conversation?.id || null;
+  if ($("assistantSettingsTitle")) {
+    $("assistantSettingsTitle").textContent = conversation ? "会话设置" : "新建对话";
+  }
+  if ($("assistantSettingsSubtitle")) {
+    $("assistantSettingsSubtitle").textContent = conversation
+      ? "修改当前会话名称和独立系统提示词"
+      : "创建一个带独立系统提示词的问答会话";
+  }
+  if ($("assistantConversationName")) {
+    $("assistantConversationName").value = conversation ? conversation.title || "" : "";
+  }
+  if ($("assistantConversationSystemPrompt")) {
+    $("assistantConversationSystemPrompt").value = conversation?.systemPrompt || "";
+  }
+  $("assistantSettingsOverlay")?.classList.remove("hidden");
+  $("assistantSettingsOverlay")?.setAttribute("aria-hidden", "false");
+  $("assistantConversationName")?.focus();
+}
+
+function closeAssistantSettingsModal() {
+  // 关闭会话设置弹窗并清空临时编辑目标。
+  state.assistantSettingsConversationId = null;
+  $("assistantSettingsOverlay")?.classList.add("hidden");
+  $("assistantSettingsOverlay")?.setAttribute("aria-hidden", "true");
+  $("assistantSettingsForm")?.reset();
+}
+
+function saveAssistantSettings(event) {
+  // 保存会话设置；新建时立即切换到该会话，编辑时只更新当前本地记录。
+  event?.preventDefault();
+  const title = $("assistantConversationName")?.value.trim() || "";
+  const systemPrompt = $("assistantConversationSystemPrompt")?.value.trim() || "";
+  const now = new Date().toISOString();
+  if (state.assistantSettingsConversationId) {
+    const conversation = state.assistantConversations.find(
+      (item) => item.id === state.assistantSettingsConversationId,
+    );
+    if (!conversation) {
+      closeAssistantSettingsModal();
+      return;
+    }
+    conversation.customTitle = Boolean(title);
+    conversation.title = title || assistantFallbackTitle(conversation);
+    conversation.systemPrompt = systemPrompt;
+    conversation.updatedAt = now;
+  } else {
+    const conversation = createAssistantConversation({ title, systemPrompt });
+    conversation.updatedAt = now;
+    state.assistantConversations.unshift(conversation);
+    state.currentAssistantConversationId = conversation.id;
+  }
+  saveAssistantConversations();
+  renderAssistantWorkspace();
+  closeAssistantSettingsModal();
+  $("assistantInput")?.focus();
+}
+
+function renderRetrievalRunResult() {
+  // 展示最近一次单条评测运行结果，供调试召回策略时快速判断命中。
+  const panel = $("retrievalRunResult");
+  if (!panel) return;
+  const run = state.retrievalLastRun;
+  if (!run) {
+    panel.textContent = "运行评测后显示最近一次候选和指标";
+    return;
+  }
+  const metrics = run.metrics || {};
+  const analysis = run.analysis || {};
+  const items = run.retrieved_items || [];
+  panel.innerHTML = `
+    <div class="retrieval-result-main">
+      <span>Recall@K <strong>${escapeHtml(formatDebugScore(metrics.recall_at_k))}</strong></span>
+      <span>MRR <strong>${escapeHtml(formatDebugScore(metrics.mrr))}</strong></span>
+      <span>Top1 <strong>${escapeHtml(formatDebugScore(metrics.hit_rate_at_1))}</strong></span>
+    </div>
+    <p>${escapeHtml(analysis.intent || "-")} · ${(analysis.query_terms || []).map(escapeHtml).join(" / ")}</p>
+    <ol>
+      ${items.slice(0, 5).map((item) => `
+        <li>
+          <b>${escapeHtml(item.id || item.source_id || "-")}</b>
+          <span>${escapeHtml((item.channels || []).join("+") || "-")}</span>
+          <em>${escapeHtml(formatDebugScore(item.fused_score))}</em>
+        </li>
+      `).join("")}
+    </ol>
+  `;
+}
+
+function renderRetrievalEvalCases() {
+  // 渲染检索评测样本列表，单条运行保持在行内操作。
+  const body = $("retrievalEvalRows");
+  if (!body) return;
+  if ($("retrievalEvalMeta")) $("retrievalEvalMeta").textContent = `${state.retrievalEvalCases.length} 条`;
+  if (!state.retrievalEvalCases.length) {
+    body.innerHTML = '<tr><td colspan="4" class="empty-cell">暂无评测用例</td></tr>';
+    renderRetrievalRunResult();
+    return;
+  }
+  body.innerHTML = state.retrievalEvalCases
+    .map((item) => {
+      const expected = [
+        ...(item.expected_chunk_ids || []),
+        ...(item.expected_source_ids || []),
+      ].join("、") || "-";
+      return `
+        <tr>
+          <td>
+            <strong>${escapeHtml(item.question)}</strong>
+            <small>${escapeHtml(item.intent || "自动识别")}</small>
+          </td>
+          <td>${escapeHtml(expected)}</td>
+          <td>${escapeHtml((item.tags || []).join("、") || "-")}</td>
+          <td><button class="mini-button" type="button" data-retrieval-eval-run="${escapeHtml(item.id)}">运行评测</button></td>
+        </tr>
+      `;
+    })
+    .join("");
+  renderRetrievalRunResult();
+}
+
+function renderRetrievalAliases() {
+  // 渲染关键词别名词典，保持表格密度方便批量检查。
+  const body = $("retrievalAliasRows");
+  if (!body) return;
+  if (!state.retrievalAliases.length) {
+    body.innerHTML = '<tr><td colspan="3" class="empty-cell">暂无别名词条</td></tr>';
+    return;
+  }
+  body.innerHTML = state.retrievalAliases
+    .map((item) => `
+      <tr>
+        <td><strong>${escapeHtml(item.canonical || "-")}</strong></td>
+        <td>${escapeHtml((item.aliases || []).join("、") || "-")}</td>
+        <td>${escapeHtml((item.tags || []).join("、") || "-")}</td>
+      </tr>
+    `)
+    .join("");
+}
+
+async function loadRetrievalEvalCases() {
+  // 拉取评测用例列表，后续评测 UI 和批量运行复用该数据源。
+  const data = await requestJson("/api/retrieval/eval-cases?status=active&limit=100");
+  state.retrievalEvalCases = data.items || [];
+  renderRetrievalEvalCases();
+}
+
+async function createRetrievalEvalCase(event) {
+  // 保存人工录入的真实客服问题和期望命中，作为召回评测资产。
+  event?.preventDefault();
+  const question = $("retrievalEvalQuestion").value.trim();
+  if (!question) {
+    showToast("请填写评测问题");
+    return;
+  }
+  try {
+    await requestJson("/api/retrieval/eval-cases", {
+      method: "POST",
+      body: JSON.stringify({
+        question,
+        intent: $("retrievalEvalIntent").value,
+        expected_chunk_ids: $("retrievalExpectedChunks").value,
+        expected_source_ids: $("retrievalExpectedSources").value,
+        tags: $("retrievalEvalTags").value,
+        note: $("retrievalEvalNote").value,
+      }),
+    });
+    $("retrievalEvalForm").reset();
+    showToast("已新增评测用例");
+    await loadRetrievalEvalCases();
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+async function runRetrievalEvalCase(caseId) {
+  // 运行单条评测并展示最新候选与指标。
+  try {
+    const result = await requestJson(`/api/retrieval/eval-cases/${encodeURIComponent(caseId)}/run`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    state.retrievalLastRun = result;
+    renderRetrievalRunResult();
+    showToast("评测已运行");
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+async function loadRetrievalAliases() {
+  // 拉取启用别名词典，供检索工作台展示和智能问答关键词扩展。
+  const data = await requestJson("/api/retrieval/aliases");
+  state.retrievalAliases = data.items || [];
+  renderRetrievalAliases();
+}
+
+async function saveRetrievalAlias(event) {
+  // 保存标准词和别名，别名会参与关键词召回扩展。
+  event?.preventDefault();
+  const canonical = $("retrievalAliasCanonical").value.trim();
+  if (!canonical) {
+    showToast("请填写标准词");
+    return;
+  }
+  try {
+    await requestJson("/api/retrieval/aliases", {
+      method: "POST",
+      body: JSON.stringify({
+        canonical,
+        aliases: $("retrievalAliasValues").value,
+        tags: $("retrievalAliasTags").value,
+      }),
+    });
+    $("retrievalAliasForm").reset();
+    showToast("已保存别名");
+    await loadRetrievalAliases();
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+async function loadRetrievalWorkspace() {
+  // 检索工作台进入时同时刷新评测用例和别名词典。
+  await Promise.all([loadRetrievalEvalCases(), loadRetrievalAliases()]);
 }
 
 function parseAssistantSseBlock(block) {
@@ -1044,7 +1359,9 @@ async function sendAssistantMessage(event) {
   const question = input.value.trim();
   if (!question) return;
   const conversation = currentAssistantConversation();
-  if (!conversation.messages.length) conversation.title = assistantConversationTitle(question);
+  if (!conversation.messages.length && !conversation.customTitle) {
+    conversation.title = assistantConversationTitle(question);
+  }
   conversation.messages.push({ role: "user", content: question });
   const assistantMessage = { role: "assistant", content: "" };
   conversation.messages.push(assistantMessage);
@@ -1057,7 +1374,11 @@ async function sendAssistantMessage(event) {
     const response = await fetch("/api/assistant/chat-stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, flow_id: "basic_rag" }),
+      body: JSON.stringify({
+        question,
+        flow_id: "basic_rag",
+        system_prompt: conversation.systemPrompt || "",
+      }),
     });
     if (!response.ok || !response.body) throw new Error(`请求失败：${response.status}`);
     const reader = response.body.getReader();
@@ -1150,7 +1471,7 @@ async function switchFaqSubview(subview) {
 }
 
 function switchWorkspace(workspace, options = {}) {
-  // 切换知识库主页、FAQ 管理、文档管理和智能问答工作区。
+  // 切换知识库主页、FAQ 管理、文档管理、检索工作台和智能问答工作区。
   closeDrawer({ force: true });
   closeCandidateDrawer();
   closeDocumentDrawer();
@@ -1166,6 +1487,7 @@ function switchWorkspace(workspace, options = {}) {
   $("documentWorkspace").classList.toggle("hidden", workspace !== "documents");
   $("importWorkspace").classList.toggle("hidden", workspace !== "import");
   $("assistantWorkspace").classList.toggle("hidden", workspace !== "assistant");
+  $("retrievalWorkspace").classList.toggle("hidden", workspace !== "retrieval");
   $("workspaceTitle").textContent = workspaceLabels[workspace] || "主页";
   $("workspaceTitle").classList.toggle("hidden", workspace === "knowledge");
   $("workspaceChevron").classList.toggle("hidden", workspace === "knowledge");
@@ -1177,6 +1499,7 @@ function switchWorkspace(workspace, options = {}) {
   if (!options.skipLoad && workspace === "import") loadImportFiles();
   if (!options.skipLoad && workspace === "documents") loadDocumentFiles();
   if (!options.skipLoad && workspace === "knowledge") loadKnowledgeImportSummary();
+  if (!options.skipLoad && workspace === "retrieval") loadRetrievalWorkspace();
 }
 
 async function switchImportView(view, options = {}) {
@@ -2909,6 +3232,12 @@ function bindEvents() {
   $("settingsButton").addEventListener("click", openSettingsModal);
   $("knowledgeHomeButton").addEventListener("click", () => switchWorkspace("knowledge"));
   $("newAssistantConversation").addEventListener("click", startAssistantConversation);
+  $("assistantSettingsForm").addEventListener("submit", saveAssistantSettings);
+  $("closeAssistantSettings").addEventListener("click", closeAssistantSettingsModal);
+  $("cancelAssistantSettings").addEventListener("click", closeAssistantSettingsModal);
+  $("assistantSettingsOverlay").addEventListener("mousedown", (event) => {
+    if (event.target === $("assistantSettingsOverlay")) closeAssistantSettingsModal();
+  });
   $("assistantHistorySearch").addEventListener("input", (event) => {
     state.assistantQuery = event.target.value.trim();
     renderAssistantConversations();
@@ -2928,6 +3257,10 @@ function bindEvents() {
       runKnowledgeSearch();
     }
   });
+  $("retrievalEvalForm").addEventListener("submit", createRetrievalEvalCase);
+  $("refreshRetrievalEvalButton").addEventListener("click", loadRetrievalEvalCases);
+  $("retrievalAliasForm").addEventListener("submit", saveRetrievalAlias);
+  $("refreshRetrievalAliasButton").addEventListener("click", loadRetrievalAliases);
   document.querySelectorAll(".knowledge-card").forEach((button) => {
     button.addEventListener("click", () =>
       handleKnowledgeEntryClick(button.dataset.knowledgeEntry, button.dataset.targetWorkspace),
@@ -3181,12 +3514,17 @@ function bindEvents() {
       else if (state.workspace === "faq") $("searchInput").focus();
       else if (state.workspace === "documents") $("documentSearchInput").focus();
       else if (state.workspace === "import") $("importSearchInput").focus();
+      else if (state.workspace === "retrieval") $("retrievalEvalQuestion").focus();
       return;
     }
     if (event.key !== "Escape") return;
     if (state.workspace === "knowledge" && state.expandedKnowledgeEntry) {
       state.expandedKnowledgeEntry = null;
       renderKnowledgeEntryState();
+      return;
+    }
+    if (!$("assistantSettingsOverlay").classList.contains("hidden")) {
+      closeAssistantSettingsModal();
       return;
     }
     if ($("candidateDrawer").classList.contains("open")) {
@@ -3234,6 +3572,11 @@ function bindEvents() {
     const importChunk = event.target.closest("[data-import-chunk-id]");
     const importCandidate = event.target.closest("[data-import-candidate-index]");
     const documentDeleteButton = event.target.closest("[data-delete-document-id]");
+    const retrievalRunButton = event.target.closest("[data-retrieval-eval-run]");
+    if (retrievalRunButton) {
+      await runRetrievalEvalCase(retrievalRunButton.dataset.retrievalEvalRun);
+      return;
+    }
     if (documentDeleteButton) {
       await deleteCurrentDocumentFile(documentDeleteButton.dataset.deleteDocumentId);
       return;
@@ -3284,6 +3627,11 @@ function bindEvents() {
     }
     if (documentFile) {
       await openDocumentDrawer(documentFile.dataset.documentFileId);
+      return;
+    }
+    const assistantSettings = event.target.closest("[data-assistant-settings]");
+    if (assistantSettings) {
+      openAssistantSettingsModal(assistantSettings.dataset.assistantSettings);
       return;
     }
     const assistantConversation = event.target.closest("[data-assistant-conversation]");

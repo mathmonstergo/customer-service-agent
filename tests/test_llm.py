@@ -76,6 +76,18 @@ def test_chat_client_returns_content():
     assert call["messages"][0]["role"] == "system"
 
 
+def test_chat_client_omits_empty_system_prompt():
+    """系统提示词为空时不要发送空 system 消息，避免代码层默认提示伪装成配置。"""
+    fake = FakeClient()
+    client = ChatClient(fake, model="deepseek-chat")
+
+    result = client.complete("", "user")
+
+    assert result == "回答内容"
+    call = fake.completions.calls[0]
+    assert call["messages"] == [{"role": "user", "content": "user"}]
+
+
 def test_chat_client_streams_delta_content():
     """ChatClient 默认支持 OpenAI-compatible 流式输出，并过滤空 delta。"""
     fake = FakeClient()
@@ -87,3 +99,15 @@ def test_chat_client_streams_delta_content():
     call = fake.completions.calls[0]
     assert call["stream"] is True
     assert call["model"] == "deepseek-chat"
+
+
+def test_chat_client_stream_omits_empty_system_prompt():
+    """流式生成同样遵守空系统提示词不注入 system 消息的约束。"""
+    fake = FakeClient()
+    client = ChatClient(fake, model="deepseek-chat")
+
+    chunks = list(client.stream_complete("", "user"))
+
+    assert chunks == ["第一段", "第二段"]
+    call = fake.completions.calls[0]
+    assert call["messages"] == [{"role": "user", "content": "user"}]
