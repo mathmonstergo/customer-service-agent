@@ -882,16 +882,61 @@
     </div>
 
     <main class="assistant-shell hidden" id="assistantWorkspace">
-      <section class="assistant-placeholder">
-        <span class="knowledge-card-icon">
-          <svg aria-hidden="true"><use href="#icon-bot-cloud"></use></svg>
-        </span>
-        <div>
-          <h1>智能问答</h1>
-          <p>这里后续接入 RAG 问答测试、回答来源查看和召回内容检查。</p>
-        </div>
-        <button class="cancel-button" type="button" id="assistantBackButton">返回知识库</button>
+      <aside class="assistant-history-panel">
+        <header class="assistant-history-header">
+          <button class="new-button assistant-new-button" type="button" id="newAssistantConversation">＋ 新建对话</button>
+        </header>
+        <label class="assistant-history-search">
+          <svg aria-hidden="true"><use href="#icon-search"></use></svg>
+          <input id="assistantHistorySearch" type="search" placeholder="搜索对话" />
+        </label>
+        <div class="assistant-conversation-list" id="assistantConversationList"></div>
+      </aside>
+
+      <section class="assistant-chat-panel">
+        <header class="assistant-chat-header">
+          <div>
+            <h1>智能问答</h1>
+            <p>默认使用流式基础 RAG，可查看召回来源与执行流程。</p>
+          </div>
+          <div class="assistant-flow-pill">
+            <span>当前流程</span>
+            <strong>基础 RAG</strong>
+          </div>
+          <button class="cancel-button" type="button" id="toggleAssistantDebug">流程调试</button>
+        </header>
+        <div class="assistant-messages" id="assistantMessages" aria-live="polite"></div>
+        <form class="assistant-composer" id="assistantComposer">
+          <textarea id="assistantInput" rows="1" placeholder="询问知识库中的问题"></textarea>
+          <button class="save-button" type="submit" id="sendAssistantButton">发送</button>
+        </form>
       </section>
+
+      <aside class="assistant-debug-drawer" id="assistantDebugDrawer">
+        <header class="assistant-debug-header">
+          <div>
+            <h2>流程调试</h2>
+            <p id="assistantFlowSummary">基础 RAG · 等待提问</p>
+          </div>
+          <button class="icon-button" type="button" id="collapseAssistantDebug" title="收起">›</button>
+        </header>
+        <div class="assistant-debug-body">
+          <section class="assistant-trace-section">
+            <div class="assistant-debug-title">
+              <strong>执行链路</strong>
+              <span id="assistantTraceStatus">空闲</span>
+            </div>
+            <div class="assistant-trace-steps" id="assistantTraceSteps"></div>
+          </section>
+          <section class="assistant-source-section">
+            <div class="assistant-debug-title">
+              <strong>命中来源</strong>
+              <span id="assistantSourceCount">0 条</span>
+            </div>
+            <div class="assistant-sources" id="assistantSources"></div>
+          </section>
+        </div>
+      </aside>
     </main>
 
     <div class="settings-overlay hidden" id="settingsOverlay" aria-hidden="true">

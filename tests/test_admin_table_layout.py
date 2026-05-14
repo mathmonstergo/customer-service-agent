@@ -122,6 +122,33 @@ def test_knowledge_entry_click_expands_then_enters_workspace() -> None:
     assert "function renderKnowledgeEntryState" in js
 
 
+def test_assistant_workspace_uses_three_column_streaming_chat_layout() -> None:
+    """智能问答入口应使用历史、聊天、流程调试三栏，并默认流式请求。"""
+    html = read_static_file("admin.html")
+    css = read_static_file("admin.css")
+    js = read_static_file("admin.js")
+
+    assert 'id="assistantWorkspace"' in html
+    assert 'class="assistant-history-panel"' in html
+    assert 'id="assistantConversationList"' in html
+    assert 'id="assistantMessages"' in html
+    assert 'id="assistantComposer"' in html
+    assert 'id="assistantInput"' in html
+    assert 'id="assistantDebugDrawer"' in html
+    assert 'id="assistantTraceSteps"' in html
+    assert "基础 RAG" in html
+    assert "流程调试" in html
+    assert "assistant-placeholder" not in html
+    assert ".assistant-shell" in css
+    assert "grid-template-columns: 260px minmax(0, 1fr) 360px;" in css
+    assert ".assistant-debug-drawer.collapsed" in css
+    assert "function sendAssistantMessage" in js
+    assert 'fetch("/api/assistant/chat-stream"' in js
+    assert "response.body.getReader()" in js
+    assert "function parseAssistantSseBlock" in js
+    assert "localStorage" in js
+
+
 def test_document_management_workspace_uses_overlay_drawer_for_file_details() -> None:
     """文档管理页点击文件行后用顶层侧拉抽屉展示详情和切片，不挤压列表布局。"""
     html = read_static_file("admin.html")

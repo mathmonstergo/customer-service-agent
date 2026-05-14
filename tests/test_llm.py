@@ -22,12 +22,33 @@ class FakeChatResponse:
     choices = [FakeChatChoice()]
 
 
+class FakeStreamDelta:
+    def __init__(self, content):
+        self.content = content
+
+
+class FakeStreamChoice:
+    def __init__(self, content):
+        self.delta = FakeStreamDelta(content)
+
+
+class FakeStreamChunk:
+    def __init__(self, content):
+        self.choices = [FakeStreamChoice(content)]
+
+
 class FakeCompletions:
     def __init__(self):
         self.calls = []
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
+        if kwargs.get("stream"):
+            return iter([
+                FakeStreamChunk("第一段"),
+                FakeStreamChunk(""),
+                FakeStreamChunk("第二段"),
+            ])
         return FakeChatResponse()
 
 
@@ -53,3 +74,16 @@ def test_chat_client_returns_content():
     call = fake.completions.calls[0]
     assert call["model"] == "deepseek-chat"
     assert call["messages"][0]["role"] == "system"
+
+
+def test_chat_client_streams_delta_content():
+    """ChatClient 默认支持 OpenAI-compatible 流式输出，并过滤空 delta。"""
+    fake = FakeClient()
+    client = ChatClient(fake, model="deepseek-chat")
+
+    chunks = list(client.stream_complete("system", "user"))
+
+    assert chunks == ["第一段", "第二段"]
+    call = fake.completions.calls[0]
+    assert call["stream"] is True
+    assert call["model"] == "deepseek-chat"

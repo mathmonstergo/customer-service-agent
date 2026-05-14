@@ -44,6 +44,7 @@ class ChatClient:
         return cls(client, model=settings.chat_model)
 
     def complete(self, system_prompt: str, user_prompt: str) -> str:
+        """同步生成完整回答，用于非流式内部任务。"""
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
@@ -53,3 +54,23 @@ class ChatClient:
             temperature=0.2,
         )
         return response.choices[0].message.content or ""
+
+    def stream_complete(self, system_prompt: str, user_prompt: str):
+        """流式生成回答片段，关键约束是只产出非空 delta 文本。"""
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.2,
+            stream=True,
+        )
+        for chunk in response:
+            choices = getattr(chunk, "choices", [])
+            if not choices:
+                continue
+            delta = getattr(choices[0], "delta", None)
+            content = getattr(delta, "content", None)
+            if content:
+                yield content

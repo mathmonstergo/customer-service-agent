@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -28,6 +29,7 @@ from customer_service_agent.import_ai import ImportAiAssistant, ImportCandidateE
 from customer_service_agent.import_models import detect_file_type
 from customer_service_agent.llm import ChatClient, EmbeddingClient
 from customer_service_agent.markdown_import import chunk_messages, parse_wechat_messages
+from customer_service_agent.rag import build_user_prompt, load_system_prompt
 
 
 class AdminValidationError(ValueError):
@@ -244,6 +246,55 @@ def format_sse_event(event: dict[str, Any]) -> str:
     return f"event: {event_type}\ndata: {payload}\n\n"
 
 
+def parse_sse_event(content: str) -> dict[str, Any]:
+    """解析单个 SSE 事件块，供测试校验事件名和 JSON 数据。"""
+    event_name = "message"
+    data_lines: list[str] = []
+    for line in content.strip().splitlines():
+        if line.startswith("event:"):
+            event_name = line.removeprefix("event:").strip()
+        elif line.startswith("data:"):
+            data_lines.append(line.removeprefix("data:").strip())
+    data = json.loads("\n".join(data_lines)) if data_lines else {}
+    return {"event": event_name, "data": data}
+
+
+def assistant_document_payload(doc: Any) -> dict[str, Any]:
+    """把检索命中文档转换成智能问答调试抽屉使用的来源结构。"""
+    return {
+        "id": doc.id,
+        "score": doc.score,
+        "question": doc.question,
+        "answer": doc.answer,
+        "category": doc.category,
+        "tags": doc.tags,
+        "source_date": doc.source_date,
+        "confidence": doc.confidence,
+        "status": doc.status,
+    }
+
+
+def assistant_step_event(
+    step_id: str,
+    title: str,
+    status: str,
+    started_at: float,
+    *,
+    summary: str = "",
+    **extra: Any,
+) -> dict[str, Any]:
+    """构造流程可视化节点事件，统一节点状态、耗时和摘要字段。"""
+    return {
+        "type": "step",
+        "step_id": step_id,
+        "title": title,
+        "status": status,
+        "duration_ms": max(round((time.perf_counter() - started_at) * 1000), 0),
+        "summary": summary,
+        **extra,
+    }
+
+
 @dataclass
 class AdminApp:
     settings: Settings
@@ -267,6 +318,13 @@ class AdminApp:
         if self.chat is None:
             self.chat = ChatClient.from_settings(self.settings)
         return self.chat
+
+    def assistant_system_prompt(self) -> str:
+        """读取智能问答系统提示词；本地未配置时使用保守默认提示。"""
+        try:
+            return load_system_prompt()
+        except FileNotFoundError:
+            return "你是内部知识库问答助手。只能基于检索到的知识库内容回答，不确定时说明需要转人工确认。"
 
     def settings_snapshot(self) -> dict[str, Any]:
         """给本地设置弹窗返回当前运行配置，密钥只在本机管理页显式查看时使用。"""
@@ -792,6 +850,122 @@ class AdminApp:
         """忽略不适合沉淀为知识库的候选 FAQ。"""
         return self.database().mark_import_candidate_ignored(candidate_id)
 
+    def iter_assistant_chat_events(self, payload: dict[str, Any]):
+        """执行基础 RAG 问答并产出默认流式 SSE 事件，预留后续编排节点。"""
+        question = str(payload.get("question", "")).strip()
+        if not question:
+            raise AdminValidationError("question is required")
+        flow_id = str(payload.get("flow_id", "basic_rag")).strip() or "basic_rag"
+        if flow_id != "basic_rag":
+            raise AdminValidationError("only basic_rag flow is supported")
+
+        available_nodes = [
+            "input_question",
+            "query_embedding",
+            "intent_detection",
+            "vector_search",
+            "keyword_search",
+            "kg_query",
+            "rerank",
+            "source_context",
+            "answer_generation",
+            "quality_check",
+        ]
+        yield {
+            "type": "meta",
+            "flow_id": "basic_rag",
+            "flow_name": "基础 RAG",
+            "stream": True,
+            "available_nodes": available_nodes,
+            "enabled_nodes": [
+                "input_question",
+                "query_embedding",
+                "vector_search",
+                "source_context",
+                "answer_generation",
+            ],
+        }
+
+        started = time.perf_counter()
+        yield assistant_step_event(
+            "input_question",
+            "输入问题",
+            "completed",
+            started,
+            summary=question,
+        )
+
+        embedding_started = time.perf_counter()
+        query_embedding = self.embedding_client().embed(question)
+        yield assistant_step_event(
+            "query_embedding",
+            "向量化",
+            "completed",
+            embedding_started,
+            summary=f"{len(query_embedding)} 维查询向量",
+            dimensions=len(query_embedding),
+        )
+
+        search_started = time.perf_counter()
+        top_k = getattr(self.settings, "rag_top_k", 5)
+        min_score = getattr(self.settings, "rag_min_score", 0.35)
+        docs = self.database().search(query_embedding, top_k=top_k, min_score=min_score)
+        documents = [assistant_document_payload(doc) for doc in docs]
+        yield assistant_step_event(
+            "vector_search",
+            "向量检索",
+            "completed",
+            search_started,
+            summary=f"命中 {len(documents)} 条 FAQ",
+            top_k=top_k,
+            min_score=min_score,
+            documents=documents,
+        )
+
+        context_started = time.perf_counter()
+        top_score = documents[0]["score"] if documents else None
+        yield assistant_step_event(
+            "source_context",
+            "命中 FAQ",
+            "completed",
+            context_started,
+            summary=f"最高分 {top_score:.2f}" if top_score is not None else "未检索到可用来源",
+            documents=documents,
+        )
+
+        answer_started = time.perf_counter()
+        yield assistant_step_event(
+            "answer_generation",
+            "生成回答",
+            "running",
+            answer_started,
+            summary="模型正在流式生成回答",
+        )
+        prompt = build_user_prompt(question, docs)
+        answer_parts: list[str] = []
+        for text in self.chat_client().stream_complete(self.assistant_system_prompt(), prompt):
+            answer_parts.append(text)
+            yield {"type": "delta", "text": text}
+
+        answer_draft = "".join(answer_parts).strip()
+        if not answer_draft:
+            answer_draft = "模型服务暂时没有返回有效内容，请稍后重试或转人工处理。"
+            yield {"type": "delta", "text": answer_draft}
+        yield assistant_step_event(
+            "answer_generation",
+            "生成回答",
+            "completed",
+            answer_started,
+            summary=f"输出 {len(answer_draft)} 个字符",
+        )
+        yield {
+            "type": "done",
+            "flow_id": "basic_rag",
+            "question": question,
+            "answer_draft": answer_draft,
+            "documents": documents,
+        }
+
 
 def static_path(path: str) -> Path:
     """把允许访问的管理页静态路径映射到本地文件。"""
@@ -889,6 +1063,9 @@ def make_handler(app: AdminApp):
                     return
                 if parsed.path == "/api/ai/optimize":
                     self.send_json(app.optimize(payload))
+                    return
+                if parsed.path == "/api/assistant/chat-stream":
+                    self.send_sse(app.iter_assistant_chat_events(payload))
                     return
                 if parsed.path == "/api/import/generation-jobs":
                     self.send_json(app.create_import_generation_job(payload))
@@ -1002,8 +1179,12 @@ def make_handler(app: AdminApp):
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
-            for event in events:
-                self.wfile.write(format_sse_event(event).encode("utf-8"))
+            try:
+                for event in events:
+                    self.wfile.write(format_sse_event(event).encode("utf-8"))
+                    self.wfile.flush()
+            except Exception as exc:
+                self.wfile.write(format_sse_event({"type": "error", "error": str(exc)}).encode("utf-8"))
                 self.wfile.flush()
 
         def send_error_json(self, exc: Exception) -> None:

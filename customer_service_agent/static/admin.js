@@ -53,6 +53,13 @@ const state = {
   aiRequestInFlight: false,
   settingsDirty: false,
   settingsBaseline: "",
+  assistantConversations: [],
+  currentAssistantConversationId: null,
+  assistantQuery: "",
+  assistantTrace: [],
+  assistantSources: [],
+  assistantStreaming: false,
+  assistantDebugCollapsed: false,
 };
 
 const statusOptions = ["usable", "needs_review", "disabled"];
@@ -66,6 +73,7 @@ const workspaceLabels = {
   assistant: "智能问答",
 };
 const faqSubviewOrder = ["list", "generate", "review"];
+const ASSISTANT_STORAGE_KEY = "customerServiceAgent.assistantConversations";
 
 const $ = (id) => document.getElementById(id);
 
@@ -693,6 +701,280 @@ function runKnowledgeSearch() {
   state.page = 1;
   switchWorkspace("faq");
   loadFaqs();
+}
+
+function assistantConversationTitle(text) {
+  // 对话标题取首个问题的短摘要，避免历史列表撑宽。
+  const title = String(text || "新对话").trim().replace(/\s+/g, " ");
+  return title.length > 24 ? `${title.slice(0, 24)}...` : title;
+}
+
+function createAssistantConversation(question = "") {
+  // 新建本地调试会话，首版不写数据库，避免混入正式知识库数据。
+  const now = new Date().toISOString();
+  return {
+    id: `conv_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
+    title: assistantConversationTitle(question),
+    updatedAt: now,
+    messages: [],
+    trace: [],
+    sources: [],
+  };
+}
+
+function loadAssistantConversations() {
+  // 从浏览器本地恢复智能问答历史，解析失败时回到空列表。
+  try {
+    const stored = JSON.parse(localStorage.getItem(ASSISTANT_STORAGE_KEY) || "[]");
+    state.assistantConversations = Array.isArray(stored) ? stored : [];
+  } catch {
+    state.assistantConversations = [];
+  }
+  if (!state.assistantConversations.length) {
+    state.assistantConversations = [createAssistantConversation()];
+  }
+  state.currentAssistantConversationId = state.assistantConversations[0].id;
+  renderAssistantWorkspace();
+}
+
+function saveAssistantConversations() {
+  // 只保留最近 30 条本地调试会话，控制 localStorage 体积。
+  state.assistantConversations = state.assistantConversations
+    .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
+    .slice(0, 30);
+  localStorage.setItem(ASSISTANT_STORAGE_KEY, JSON.stringify(state.assistantConversations));
+}
+
+function currentAssistantConversation() {
+  // 获取当前会话；如果被清空则自动补一个新会话。
+  let conversation = state.assistantConversations.find(
+    (item) => item.id === state.currentAssistantConversationId,
+  );
+  if (!conversation) {
+    conversation = createAssistantConversation();
+    state.assistantConversations.unshift(conversation);
+    state.currentAssistantConversationId = conversation.id;
+  }
+  return conversation;
+}
+
+function startAssistantConversation() {
+  // 手动新建对话并刷新左侧历史栏。
+  const conversation = createAssistantConversation();
+  state.assistantConversations.unshift(conversation);
+  state.currentAssistantConversationId = conversation.id;
+  saveAssistantConversations();
+  renderAssistantWorkspace();
+  $("assistantInput")?.focus();
+}
+
+function selectAssistantConversation(conversationId) {
+  // 切换历史会话时同步聊天消息和右侧调试信息。
+  state.currentAssistantConversationId = conversationId;
+  renderAssistantWorkspace();
+}
+
+function renderAssistantConversations() {
+  // 渲染左侧对话历史，并支持按标题或消息内容筛选。
+  const list = $("assistantConversationList");
+  if (!list) return;
+  const query = (state.assistantQuery || "").toLowerCase();
+  const items = state.assistantConversations.filter((conversation) => {
+    const haystack = [
+      conversation.title,
+      ...(conversation.messages || []).map((message) => message.content),
+    ].join(" ").toLowerCase();
+    return !query || haystack.includes(query);
+  });
+  if (!items.length) {
+    list.innerHTML = '<div class="assistant-mini-empty">没有匹配的对话</div>';
+    return;
+  }
+  list.innerHTML = items
+    .map((conversation) => {
+      const active = conversation.id === state.currentAssistantConversationId ? "active" : "";
+      const last = (conversation.messages || []).at(-1)?.content || "等待提问";
+      return `
+        <button class="assistant-conversation-item ${active}" type="button" data-assistant-conversation="${escapeHtml(conversation.id)}">
+          <strong>${escapeHtml(conversation.title || "新对话")}</strong>
+          <span>${escapeHtml(last)}</span>
+        </button>
+      `;
+    })
+    .join("");
+}
+
+function renderAssistantMessages() {
+  // 渲染中间聊天区，空会话展示一个克制的起始提示。
+  const panel = $("assistantMessages");
+  if (!panel) return;
+  const conversation = currentAssistantConversation();
+  if (!conversation.messages.length) {
+    panel.innerHTML = '<div class="assistant-empty">输入一个知识库问题，系统会以流式方式生成回答，并在右侧展示基础 RAG 执行过程。</div>';
+    return;
+  }
+  panel.innerHTML = conversation.messages
+    .map((message) => `
+      <article class="assistant-message ${message.role}">
+        <span class="assistant-message-label">${message.role === "user" ? "你" : "内部知识库"}</span>
+        <div class="assistant-message-bubble">${escapeHtml(message.content || "生成中...")}</div>
+      </article>
+    `)
+    .join("");
+  panel.scrollTop = panel.scrollHeight;
+}
+
+function renderAssistantTrace() {
+  // 渲染右侧流程调试抽屉，当前只展示基础 RAG 节点。
+  const tracePanel = $("assistantTraceSteps");
+  const sourcePanel = $("assistantSources");
+  const conversation = currentAssistantConversation();
+  const trace = conversation.trace || [];
+  const sources = conversation.sources || [];
+  if ($("assistantTraceStatus")) {
+    $("assistantTraceStatus").textContent = state.assistantStreaming ? "运行中" : "空闲";
+  }
+  if ($("assistantSourceCount")) $("assistantSourceCount").textContent = `${sources.length} 条`;
+  if ($("assistantFlowSummary")) {
+    $("assistantFlowSummary").textContent = state.assistantStreaming ? "基础 RAG · 流式生成中" : "基础 RAG · 就绪";
+  }
+  if (tracePanel) {
+    tracePanel.innerHTML = trace.length
+      ? trace.map((step) => `
+          <article class="assistant-trace-step ${safeCssToken(step.status || "pending")}">
+            <span class="assistant-trace-dot">${step.status === "completed" ? "✓" : "•"}</span>
+            <div class="assistant-trace-main">
+              <strong>${escapeHtml(step.title || step.step_id)}</strong>
+              <p>${escapeHtml(step.summary || "")}</p>
+              <div class="assistant-trace-meta">${escapeHtml(step.duration_ms ?? 0)}ms · ${escapeHtml(step.status || "pending")}</div>
+            </div>
+          </article>
+        `).join("")
+      : '<div class="assistant-mini-empty">发送问题后展示执行节点</div>';
+  }
+  if (sourcePanel) {
+    sourcePanel.innerHTML = sources.length
+      ? sources.map((doc) => `
+          <article class="assistant-source-item">
+            <strong>${escapeHtml(doc.question || doc.id)}</strong>
+            <p>${escapeHtml(doc.answer || "")}</p>
+            <div class="assistant-source-meta">
+              <span>score ${escapeHtml(doc.score ?? "-")}</span>
+              <span>${escapeHtml(doc.category || "未分类")}</span>
+            </div>
+          </article>
+        `).join("")
+      : '<div class="assistant-mini-empty">暂无命中来源</div>';
+  }
+}
+
+function renderAssistantWorkspace() {
+  // 同步智能问答三栏视图。
+  renderAssistantConversations();
+  renderAssistantMessages();
+  renderAssistantTrace();
+  $("assistantWorkspace")?.classList.toggle("debug-collapsed", state.assistantDebugCollapsed);
+  $("assistantDebugDrawer")?.classList.toggle("collapsed", state.assistantDebugCollapsed);
+}
+
+function parseAssistantSseBlock(block) {
+  // 解析 fetch 流里的单个 SSE 块，兼容 event 和多行 data。
+  const lines = block.trim().split(/\r?\n/);
+  let event = "message";
+  const dataLines = [];
+  lines.forEach((line) => {
+    if (line.startsWith("event:")) event = line.slice(6).trim();
+    if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+  });
+  if (!dataLines.length) return null;
+  return { event, data: JSON.parse(dataLines.join("\n")) };
+}
+
+function applyAssistantEvent(event, assistantMessage) {
+  // 将后端流式事件写入当前会话，并刷新聊天区与调试抽屉。
+  if (!event?.data) return;
+  const conversation = currentAssistantConversation();
+  const data = event.data;
+  if (data.type === "meta") {
+    conversation.flow = { id: data.flow_id, name: data.flow_name, availableNodes: data.available_nodes || [] };
+  }
+  if (data.type === "step") {
+    const index = (conversation.trace || []).findIndex((step) => step.step_id === data.step_id);
+    if (index >= 0) conversation.trace[index] = data;
+    else conversation.trace = [...(conversation.trace || []), data];
+    if (data.documents) conversation.sources = data.documents;
+  }
+  if (data.type === "delta") {
+    assistantMessage.content += data.text || "";
+  }
+  if (data.type === "done") {
+    assistantMessage.content = data.answer_draft || assistantMessage.content;
+    conversation.sources = data.documents || conversation.sources || [];
+  }
+  if (data.type === "error") {
+    assistantMessage.content += `\n\n请求失败：${data.error || "未知错误"}`;
+  }
+  conversation.updatedAt = new Date().toISOString();
+  renderAssistantMessages();
+  renderAssistantTrace();
+}
+
+async function sendAssistantMessage(event) {
+  // 默认使用流式接口发送问题，并把回答和 trace 写入当前本地会话。
+  event?.preventDefault();
+  if (state.assistantStreaming) return;
+  const input = $("assistantInput");
+  const question = input.value.trim();
+  if (!question) return;
+  const conversation = currentAssistantConversation();
+  if (!conversation.messages.length) conversation.title = assistantConversationTitle(question);
+  conversation.messages.push({ role: "user", content: question });
+  const assistantMessage = { role: "assistant", content: "" };
+  conversation.messages.push(assistantMessage);
+  conversation.trace = [];
+  conversation.sources = [];
+  input.value = "";
+  state.assistantStreaming = true;
+  renderAssistantWorkspace();
+  try {
+    const response = await fetch("/api/assistant/chat-stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, flow_id: "basic_rag" }),
+    });
+    if (!response.ok || !response.body) throw new Error(`请求失败：${response.status}`);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const blocks = buffer.split(/\n\n/);
+      buffer = blocks.pop() || "";
+      blocks.forEach((block) => {
+        const parsed = parseAssistantSseBlock(block);
+        if (parsed) applyAssistantEvent(parsed, assistantMessage);
+      });
+    }
+    if (buffer.trim()) {
+      const parsed = parseAssistantSseBlock(buffer);
+      if (parsed) applyAssistantEvent(parsed, assistantMessage);
+    }
+  } catch (error) {
+    assistantMessage.content = `请求失败：${error.message}`;
+    showToast(error.message);
+  } finally {
+    state.assistantStreaming = false;
+    saveAssistantConversations();
+    renderAssistantWorkspace();
+  }
+}
+
+function toggleAssistantDebugDrawer() {
+  // 收起或展开右侧流程调试抽屉，保持聊天区可用宽度。
+  state.assistantDebugCollapsed = !state.assistantDebugCollapsed;
+  renderAssistantWorkspace();
 }
 
 function updateFaqSubviewTabs() {
@@ -2509,7 +2791,20 @@ function bindEvents() {
   $("notificationButton").addEventListener("click", () => showToast("当前没有新的内部通知"));
   $("settingsButton").addEventListener("click", openSettingsModal);
   $("knowledgeHomeButton").addEventListener("click", () => switchWorkspace("knowledge"));
-  $("assistantBackButton").addEventListener("click", () => switchWorkspace("knowledge"));
+  $("newAssistantConversation").addEventListener("click", startAssistantConversation);
+  $("assistantHistorySearch").addEventListener("input", (event) => {
+    state.assistantQuery = event.target.value.trim();
+    renderAssistantConversations();
+  });
+  $("assistantComposer").addEventListener("submit", sendAssistantMessage);
+  $("assistantInput").addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      sendAssistantMessage(event);
+    }
+  });
+  $("toggleAssistantDebug").addEventListener("click", toggleAssistantDebugDrawer);
+  $("collapseAssistantDebug").addEventListener("click", toggleAssistantDebugDrawer);
   $("knowledgeSearchInput").addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
@@ -2866,6 +3161,11 @@ function bindEvents() {
       await openDocumentDrawer(documentFile.dataset.documentFileId);
       return;
     }
+    const assistantConversation = event.target.closest("[data-assistant-conversation]");
+    if (assistantConversation) {
+      selectAssistantConversation(assistantConversation.dataset.assistantConversation);
+      return;
+    }
     if (importFile) {
       selectImportFile(importFile.dataset.importFileId);
       return;
@@ -2935,5 +3235,6 @@ function bindEvents() {
 }
 
 bindEvents();
+loadAssistantConversations();
 loadFaqs();
 loadKnowledgeImportSummary();

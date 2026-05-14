@@ -7,9 +7,11 @@ from customer_service_agent.admin_server import (
     AdminApp,
     AdminValidationError,
     format_sse_event,
+    parse_sse_event,
     normalize_faq_payload,
     static_path,
 )
+from customer_service_agent.db import RetrievedDocument
 from customer_service_agent.config import Settings
 
 
@@ -855,3 +857,79 @@ def test_format_sse_event_outputs_named_json_event():
     assert content.startswith("event: generated\n")
     assert '"chunk_id": "chunk_1"' in content
     assert content.endswith("\n\n")
+
+
+def test_parse_sse_event_round_trips_named_json_event():
+    """测试工具需要能解析后端 SSE 文本，避免前后端事件名不一致。"""
+    content = format_sse_event({"type": "delta", "text": "回答片段"})
+
+    parsed = parse_sse_event(content)
+
+    assert parsed == {"event": "delta", "data": {"type": "delta", "text": "回答片段"}}
+
+
+def test_admin_app_iter_assistant_chat_events_streams_basic_rag_trace():
+    """智能问答默认按基础 RAG 流式输出，并附带可视化流程节点和来源。"""
+
+    class FakeEmbedding:
+        def embed(self, text):
+            assert text == "报告没有生成怎么办？"
+            return [0.1, 0.2, 0.3]
+
+    class FakeDatabase:
+        def search(self, query_embedding, *, top_k, min_score):
+            assert query_embedding == [0.1, 0.2, 0.3]
+            assert top_k == 3
+            assert min_score == 0.4
+            return [
+                RetrievedDocument(
+                    id="faq_1",
+                    question="报告没有生成怎么办？",
+                    answer="请等待 10 分钟后刷新。",
+                    category="报告",
+                    tags=["报告", "刷新"],
+                    source_date="2026-05",
+                    confidence="high",
+                    status="usable",
+                    score=0.88,
+                )
+            ]
+
+    class FakeChat:
+        def __init__(self):
+            self.calls = []
+
+        def stream_complete(self, system_prompt, user_prompt):
+            self.calls.append((system_prompt, user_prompt))
+            yield "请等待 "
+            yield "10 分钟后刷新。"
+
+    app = AdminApp(
+        SimpleNamespace(database_url="postgresql://unused", rag_top_k=3, rag_min_score=0.4),
+        db=FakeDatabase(),
+        embeddings=FakeEmbedding(),
+        chat=FakeChat(),
+    )
+
+    events = list(app.iter_assistant_chat_events({"question": "报告没有生成怎么办？"}))
+
+    assert [event["type"] for event in events] == [
+        "meta",
+        "step",
+        "step",
+        "step",
+        "step",
+        "step",
+        "delta",
+        "delta",
+        "step",
+        "done",
+    ]
+    assert events[0]["flow_id"] == "basic_rag"
+    assert events[0]["stream"] is True
+    assert "intent_detection" in events[0]["available_nodes"]
+    assert events[3]["step_id"] == "vector_search"
+    assert events[3]["status"] == "completed"
+    assert events[3]["documents"][0]["id"] == "faq_1"
+    assert events[-1]["answer_draft"] == "请等待 10 分钟后刷新。"
+    assert events[-1]["documents"][0]["score"] == 0.88
