@@ -180,3 +180,29 @@ def test_search_knowledge_sql_reads_unified_chunks_without_confidence_filter():
     assert "embedding_status = 'ready'" in sql
     assert "status = %(status)s" in sql
     assert "confidence = %(confidence)s" not in sql
+
+
+def test_import_file_embedding_summaries_sql_counts_document_chunks():
+    """文档列表需要按文件汇总切片向量状态，区分完成、部分、过期和失败。"""
+    sql = Database._import_file_embedding_summaries_sql()
+
+    assert "FROM import_chunks" in sql
+    assert "FROM knowledge_chunks" in sql
+    assert "source_type = 'document'" in sql
+    assert "ready_count" in sql
+    assert "stale_count" in sql
+    assert "failed_count" in sql
+    assert "missing_count" in sql
+
+
+def test_update_import_chunk_text_sql_marks_existing_knowledge_chunk_stale():
+    """切片原文保存后，对应统一知识单元应更新正文并标记为 stale。"""
+    update_sql = Database._update_import_chunk_text_sql()
+    stale_sql = Database._mark_document_chunk_knowledge_stale_sql()
+
+    assert "UPDATE import_chunks" in update_sql
+    assert "source_text = %(source_text)s" in update_sql
+    assert "UPDATE knowledge_chunks" in stale_sql
+    assert "source_type = 'document'" in stale_sql
+    assert "source_chunk_id = %(chunk_id)s" in stale_sql
+    assert "embedding_status = 'stale'" in stale_sql

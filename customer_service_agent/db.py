@@ -79,6 +79,20 @@ def compute_knowledge_chunk_hash(row: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def empty_import_file_embedding_summary() -> dict[str, Any]:
+    """构造文档向量空摘要，关键约束是字段稳定供前端直接渲染。"""
+    return {
+        "status": "none",
+        "total_chunks": 0,
+        "knowledge_count": 0,
+        "ready_count": 0,
+        "stale_count": 0,
+        "failed_count": 0,
+        "pending_count": 0,
+        "missing_count": 0,
+    }
+
+
 def build_faq_knowledge_chunk_row(row: dict[str, Any]) -> dict[str, Any]:
     """把正式 FAQ 映射为统一知识单元，保持一条 FAQ 对应一个 chunk。"""
     question = str(row.get("question", "")).strip()
@@ -622,11 +636,49 @@ class Database:
             rows = conn.execute(rows_sql, params).fetchall()
             total = conn.execute(count_sql, params).fetchone()["total"]
             status_counts = conn.execute(status_sql).fetchall()
+        summaries = self.list_import_file_embedding_summaries([row["id"] for row in rows])
         return {
-            "items": rows,
+            "items": [
+                {
+                    **row,
+                    "embedding_summary": summaries.get(row["id"], empty_import_file_embedding_summary()),
+                }
+                for row in rows
+            ],
             "total": total,
             "status_counts": {row["status"]: row["count"] for row in status_counts},
         }
+
+    def list_import_file_embedding_summaries(self, file_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """批量统计文档切片向量状态，避免文档列表逐行查询。"""
+        unique_ids = list(dict.fromkeys(file_ids))
+        if not unique_ids:
+            return {}
+        with self.connect() as conn:
+            rows = conn.execute(
+                self._import_file_embedding_summaries_sql(),
+                {"file_ids": unique_ids},
+            ).fetchall()
+        return {
+            row["file_id"]: {
+                "status": row["status"],
+                "total_chunks": row["total_chunks"],
+                "knowledge_count": row["knowledge_count"],
+                "ready_count": row["ready_count"],
+                "stale_count": row["stale_count"],
+                "failed_count": row["failed_count"],
+                "pending_count": row["pending_count"],
+                "missing_count": row["missing_count"],
+            }
+            for row in rows
+        }
+
+    def get_import_file_embedding_summary(self, file_id: str) -> dict[str, Any]:
+        """获取单个文档的切片向量摘要，供详情抽屉保存后刷新。"""
+        return self.list_import_file_embedding_summaries([file_id]).get(
+            file_id,
+            empty_import_file_embedding_summary(),
+        )
 
     def replace_import_chunks(
         self,
@@ -657,6 +709,21 @@ class Database:
         sql = "SELECT * FROM import_chunks WHERE id = %(id)s"
         with self.connect() as conn:
             return conn.execute(sql, {"id": chunk_id}).fetchone()
+
+    def update_import_chunk_text(self, chunk_id: str, source_text: str) -> dict[str, Any]:
+        """保存切片原文，并把已有文档知识单元标记为需要重新生成向量。"""
+        payload = {
+            "id": chunk_id,
+            "chunk_id": chunk_id,
+            "source_text": source_text,
+            "content_hash": compute_knowledge_chunk_hash({"embedding_text": source_text}),
+        }
+        with self.connect() as conn:
+            row = conn.execute(self._update_import_chunk_text_sql(), payload).fetchone()
+            if row is None:
+                raise KeyError(f"Import chunk not found: {chunk_id}")
+            conn.execute(self._mark_document_chunk_knowledge_stale_sql(), payload)
+        return row
 
     def create_import_candidates(
         self,
@@ -973,6 +1040,94 @@ class Database:
             %(status)s, %(candidate_count)s
         )
         RETURNING *
+        """
+
+    @staticmethod
+    def _import_file_embedding_summaries_sql() -> str:
+        """集中维护文档级向量摘要 SQL，确保列表和详情状态口径一致。"""
+        return """
+        WITH requested AS (
+            SELECT unnest(%(file_ids)s::text[]) AS file_id
+        ),
+        chunk_counts AS (
+            SELECT file_id, count(*) AS total_chunks
+            FROM import_chunks
+            WHERE file_id = ANY(%(file_ids)s::text[])
+            GROUP BY file_id
+        ),
+        knowledge_counts AS (
+            SELECT
+                source_id AS file_id,
+                count(*) AS knowledge_count,
+                count(*) FILTER (WHERE embedding_status = 'ready') AS ready_count,
+                count(*) FILTER (WHERE embedding_status = 'stale') AS stale_count,
+                count(*) FILTER (WHERE embedding_status = 'failed') AS failed_count,
+                count(*) FILTER (WHERE embedding_status = 'pending') AS pending_count
+            FROM knowledge_chunks
+            WHERE source_type = 'document'
+              AND source_id = ANY(%(file_ids)s::text[])
+            GROUP BY source_id
+        )
+        SELECT
+            requested.file_id,
+            COALESCE(chunk_counts.total_chunks, 0)::int AS total_chunks,
+            COALESCE(knowledge_counts.knowledge_count, 0)::int AS knowledge_count,
+            COALESCE(knowledge_counts.ready_count, 0)::int AS ready_count,
+            COALESCE(knowledge_counts.stale_count, 0)::int AS stale_count,
+            COALESCE(knowledge_counts.failed_count, 0)::int AS failed_count,
+            (
+                COALESCE(knowledge_counts.pending_count, 0)
+                + GREATEST(
+                    COALESCE(chunk_counts.total_chunks, 0)
+                    - COALESCE(knowledge_counts.knowledge_count, 0),
+                    0
+                )
+            )::int AS pending_count,
+            GREATEST(
+                COALESCE(chunk_counts.total_chunks, 0)
+                - COALESCE(knowledge_counts.knowledge_count, 0),
+                0
+            )::int AS missing_count,
+            CASE
+                WHEN COALESCE(chunk_counts.total_chunks, 0) = 0 THEN 'none'
+                WHEN COALESCE(knowledge_counts.stale_count, 0) > 0 THEN 'stale'
+                WHEN COALESCE(knowledge_counts.failed_count, 0) > 0
+                    AND COALESCE(knowledge_counts.ready_count, 0) = 0 THEN 'failed'
+                WHEN COALESCE(knowledge_counts.ready_count, 0)
+                    >= COALESCE(chunk_counts.total_chunks, 0) THEN 'ready'
+                WHEN COALESCE(knowledge_counts.ready_count, 0) = 0 THEN 'pending'
+                ELSE 'partial'
+            END AS status
+        FROM requested
+        LEFT JOIN chunk_counts ON chunk_counts.file_id = requested.file_id
+        LEFT JOIN knowledge_counts ON knowledge_counts.file_id = requested.file_id
+        """
+
+    @staticmethod
+    def _update_import_chunk_text_sql() -> str:
+        """集中维护切片正文更新 SQL，只允许改原文和更新时间。"""
+        return """
+        UPDATE import_chunks
+        SET source_text = %(source_text)s,
+            updated_at = now()
+        WHERE id = %(id)s
+        RETURNING *
+        """
+
+    @staticmethod
+    def _mark_document_chunk_knowledge_stale_sql() -> str:
+        """集中维护文档切片知识单元过期标记 SQL，避免旧向量继续命中。"""
+        return """
+        UPDATE knowledge_chunks
+        SET content = %(source_text)s,
+            embedding_text = %(source_text)s,
+            search_text = concat_ws(E'\n', source_title, tags::text, %(source_text)s),
+            embedding_status = 'stale',
+            embedding_error = NULL,
+            content_hash = %(content_hash)s,
+            updated_at = now()
+        WHERE source_type = 'document'
+          AND source_chunk_id = %(chunk_id)s
         """
 
     @staticmethod

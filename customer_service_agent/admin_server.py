@@ -712,6 +712,17 @@ class AdminApp:
         """返回某个导入文件的时间切块列表。"""
         return {"items": self.database().list_import_chunks(file_id)}
 
+    def update_import_chunk_text(self, chunk_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """保存用户编辑后的切片原文，并返回文档向量状态摘要。"""
+        source_text = str(payload.get("source_text", "")).strip()
+        if not source_text:
+            raise AdminValidationError("source_text is required")
+        item = self.database().update_import_chunk_text(chunk_id, source_text)
+        return {
+            "item": item,
+            "embedding_summary": self.database().get_import_file_embedding_summary(item["file_id"]),
+        }
+
     def embed_import_file(self, file_id: str) -> dict[str, Any]:
         """把解析完成的文档切片生成向量并写入统一知识单元表。"""
         record = self.database().get_import_file(file_id)
@@ -739,7 +750,12 @@ class AdminApp:
                     embedding_dimensions=embedding_client.dimensions,
                 )
             )
-        return {"file_id": file_id, "count": len(rows), "items": rows}
+        return {
+            "file_id": file_id,
+            "count": len(rows),
+            "items": rows,
+            "embedding_summary": self.database().get_import_file_embedding_summary(file_id),
+        }
 
     def get_import_file_for_download(self, file_id: str) -> tuple[dict[str, Any], Path]:
         """返回可下载的原件路径，关键约束是必须来自已登记导入文件。"""
@@ -974,7 +990,7 @@ class AdminApp:
         top_score = documents[0]["score"] if documents else None
         yield assistant_step_event(
             "source_context",
-            "命中 FAQ",
+            "命中来源",
             "completed",
             context_started,
             summary=f"最高分 {top_score:.2f}" if top_score is not None else "未检索到可用来源",
@@ -1126,6 +1142,11 @@ def make_handler(app: AdminApp):
                     chunk_id = parsed.path.removeprefix("/api/import/chunks/").removesuffix("/generate")
                     self.send_json(app.generate_import_candidates(chunk_id))
                     return
+                if parsed.path.startswith("/api/import/chunks/"):
+                    chunk_id = parsed.path.removeprefix("/api/import/chunks/")
+                    if "/" not in chunk_id:
+                        self.send_json(app.update_import_chunk_text(chunk_id, payload))
+                        return
                 if parsed.path.startswith("/api/import/candidates/") and parsed.path.endswith("/save"):
                     candidate_id = parsed.path.removeprefix("/api/import/candidates/").removesuffix("/save")
                     self.send_json(app.save_import_candidate(candidate_id))

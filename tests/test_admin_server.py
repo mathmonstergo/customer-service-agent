@@ -653,6 +653,10 @@ def test_admin_app_save_import_candidate_writes_needs_review_faq_and_embeds():
             calls.append(("knowledge_chunk", row, vector, embedding_model, embedding_dimensions))
             return {**row, "embedding_status": "ready"}
 
+        def get_import_file_embedding_summary(self, file_id):
+            calls.append(("summary", file_id))
+            return {"status": "ready", "total_chunks": 2, "ready_count": 2}
+
         def mark_embedding_failed(self, faq_id, error):
             calls.append(("embedding_failed", faq_id, error))
             saved = {**saved_rows[faq_id], "embedding_status": "failed", "embedding_error": error}
@@ -757,6 +761,10 @@ def test_admin_app_embed_import_file_writes_document_chunks_to_knowledge_chunks(
             calls.append(("knowledge_chunk", row, vector, embedding_model, embedding_dimensions))
             return {**row, "embedding_status": "ready"}
 
+        def get_import_file_embedding_summary(self, file_id):
+            calls.append(("summary", file_id))
+            return {"status": "ready", "total_chunks": 2, "ready_count": 2}
+
     class FakeEmbedding:
         model = "fake-embedding"
         dimensions = 3
@@ -783,6 +791,49 @@ def test_admin_app_embed_import_file_writes_document_chunks_to_knowledge_chunks(
     assert chunk_calls[0][1]["source_chunk_id"] == "chunk_1"
     assert chunk_calls[0][1]["status"] == "usable"
     assert chunk_calls[0][2] == [0.1, 0.2, 0.3]
+
+
+def test_admin_app_update_import_chunk_text_marks_embedding_stale():
+    """保存切片原文后返回更新后的切片和文档向量摘要。"""
+    calls = []
+
+    class FakeDatabase:
+        def update_import_chunk_text(self, chunk_id, source_text):
+            calls.append(("update", chunk_id, source_text))
+            return {
+                "id": chunk_id,
+                "file_id": "imp_1",
+                "chunk_index": 1,
+                "source_text": source_text,
+            }
+
+        def get_import_file_embedding_summary(self, file_id):
+            calls.append(("summary", file_id))
+            return {
+                "status": "stale",
+                "total_chunks": 2,
+                "ready_count": 1,
+                "stale_count": 1,
+            }
+
+    app = AdminApp(SimpleNamespace(database_url="postgresql://unused"), db=FakeDatabase())
+
+    result = app.update_import_chunk_text("chunk_1", {"source_text": "更新后的切片原文"})
+
+    assert calls == [
+        ("update", "chunk_1", "更新后的切片原文"),
+        ("summary", "imp_1"),
+    ]
+    assert result["item"]["source_text"] == "更新后的切片原文"
+    assert result["embedding_summary"]["status"] == "stale"
+
+
+def test_admin_app_update_import_chunk_text_rejects_blank_text():
+    """切片正文不能为空，避免保存后破坏后续 embedding 输入。"""
+    app = AdminApp(SimpleNamespace(database_url="postgresql://unused"))
+
+    with pytest.raises(AdminValidationError, match="source_text"):
+        app.update_import_chunk_text("chunk_1", {"source_text": "   "})
 
 
 def test_admin_app_list_import_file_candidates_delegates_to_database():
@@ -1039,5 +1090,6 @@ def test_admin_app_iter_assistant_chat_events_streams_basic_rag_trace():
     assert events[3]["status"] == "completed"
     assert events[3]["documents"][0]["id"] == "faq_1"
     assert events[3]["documents"][0]["source_type"] == "faq"
+    assert events[4]["title"] == "命中来源"
     assert events[-1]["answer_draft"] == "请等待 10 分钟后刷新。"
     assert events[-1]["documents"][0]["score"] == 0.88

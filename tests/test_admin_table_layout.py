@@ -194,6 +194,10 @@ def test_document_management_exposes_embedding_button_only_for_parsed_files() ->
     assert '["needs_review", "completed"].includes(file?.status)' in js
     assert '$("embedDocumentButton").disabled = !isParsedDocumentFile(file) || chunkCount === 0' in js
     assert "/api/import/files/${encodeURIComponent(file.id)}/embed" in js
+    assert "向量状态" in html
+    assert 'id="documentDetailEmbedding"' in html
+    assert "function documentEmbeddingStatusLabel" in js
+    assert "function documentEmbeddingPill" in js
 
 
 def test_document_management_workspace_polls_dynamic_mineru_progress() -> None:
@@ -557,8 +561,8 @@ def test_import_chunk_selection_shows_source_text_before_candidate_navigation() 
     assert ".chunk-preview-panel" in css
 
 
-def test_document_chunk_reader_only_renders_raw_text_with_internal_scroll() -> None:
-    """文档详情里的切片查看框只展示原文，并由查看框自身滚动。"""
+def test_document_chunk_reader_edits_raw_text_with_internal_scroll() -> None:
+    """文档详情里的切片查看框只编辑原文，并由查看框自身滚动。"""
     js = read_static_file("admin.js")
     css = read_static_file("admin.css")
 
@@ -567,11 +571,15 @@ def test_document_chunk_reader_only_renders_raw_text_with_internal_scroll() -> N
         1,
     )[0]
     assert "document-chunk-text" in render_function
+    assert "documentChunkTextInput" in render_function
+    assert "saveDocumentChunkButton" in render_function
     assert "source_text" in render_function
     assert "chunkDisplayName" not in render_function
     assert "document-chunk-tags" not in render_function
     assert "chunk-meta" not in render_function
     assert "可用于 FAQ 生成" not in render_function
+    assert "function saveCurrentDocumentChunk" in js
+    assert "/api/import/chunks/${encodeURIComponent(chunk.id)}" in js
     assert ".document-chunk-reader" in css
     assert ".document-chunk-text" in css
     assert "overflow-y: auto;" in css

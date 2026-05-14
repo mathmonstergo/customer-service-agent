@@ -25,6 +25,7 @@ const state = {
   currentDocumentChunkIndex: 0,
   documentParsePollTimer: null,
   documentEmbeddingInFlight: false,
+  documentChunkSaveInFlight: false,
   currentImportFile: null,
   importChunks: [],
   selectedImportChunks: new Set(),
@@ -286,6 +287,41 @@ function documentStatusPill(status) {
   return `<span class="status-pill ${classes[raw] || safeCssToken(raw)}">${escapeHtml(documentStatusLabel(raw))}</span>`;
 }
 
+function documentEmbeddingStatusLabel(status) {
+  // 文档向量状态按切片汇总展示，避免用户误以为解析完成就已可检索。
+  const labels = {
+    none: "无切片",
+    pending: "未生成",
+    partial: "部分完成",
+    ready: "已完成",
+    stale: "需重新生成",
+    failed: "生成失败",
+  };
+  return labels[status || "pending"] || status || "未生成";
+}
+
+function documentEmbeddingPill(summary = {}) {
+  // 列表里用短标签显示向量状态，详情里再展示具体数量。
+  const status = summary.status || "pending";
+  const classes = {
+    none: "pending",
+    pending: "pending",
+    partial: "processing",
+    ready: "ready",
+    stale: "stale",
+    failed: "failed",
+  };
+  return `<span class="status-pill ${classes[status] || safeCssToken(status)}">${escapeHtml(documentEmbeddingStatusLabel(status))}</span>`;
+}
+
+function documentEmbeddingDetail(summary = {}, fallbackTotal = 0) {
+  // 详情抽屉展示向量进度，突出已完成和总切片数。
+  const total = Number(summary.total_chunks ?? fallbackTotal ?? 0);
+  const ready = Number(summary.ready_count || 0);
+  const label = documentEmbeddingStatusLabel(summary.status || (total ? "pending" : "none"));
+  return total ? `${label} ${ready}/${total}` : label;
+}
+
 function renderDocumentSummary(data = {}) {
   // 刷新文档管理页顶部轻量状态，不做复杂统计面板。
   const counts = data.status_counts || {};
@@ -345,7 +381,7 @@ function renderDocumentRows(items) {
   // 渲染文档列表，行点击打开顶层侧拉详情，删除按钮只在 hover 时出现。
   if (!items.length) {
     $("documentRows").innerHTML =
-      '<tr><td colspan="6" class="document-empty">暂无文档，点击右上角上传文档。</td></tr>';
+      '<tr><td colspan="7" class="document-empty">暂无文档，点击右上角上传文档。</td></tr>';
     return;
   }
   $("documentRows").innerHTML = items
@@ -365,6 +401,7 @@ function renderDocumentRows(items) {
         <td>${formatDate(item.created_at)}</td>
         <td>${documentStatusPill(item.status)}</td>
         <td>${item.chunk_count || 0}</td>
+        <td>${documentEmbeddingPill(item.embedding_summary)}</td>
         <td>${formatDate(item.updated_at || item.created_at)}</td>
         <td>
           <span class="document-row-actions">
@@ -414,6 +451,7 @@ function renderDocumentDrawer(file = state.currentDocumentFile) {
   $("documentDetailParser").textContent = file?.parser || "-";
   $("documentDetailParsedAt").textContent = hasFile ? formatDate(file.updated_at || file.created_at) : "-";
   $("documentDetailChunks").textContent = String(chunkCount);
+  $("documentDetailEmbedding").textContent = documentEmbeddingDetail(file?.embedding_summary, chunkCount);
   $("parseDocumentButton").textContent =
     chunkCount || file?.status === "failed" ? "重新解析" : isParsing ? "解析中" : "开始解析";
   $("parseDocumentButton").disabled = !hasFile || file.status === "unsupported" || isParsing;
@@ -464,13 +502,17 @@ function renderDocumentChunks(chunks = state.documentChunks) {
 }
 
 function renderDocumentChunkContent(chunk) {
-  // 右侧查看框只显示切片原文，所有辅助信息留在列表和标题区。
+  // 右侧查看框只编辑切片原文，所有辅助信息留在列表和标题区。
   if (!chunk) {
     $("documentChunkContent").innerHTML = '<div class="document-empty">当前文档还没有切片。</div>';
     return;
   }
   $("documentChunkContent").innerHTML = `
-    <div class="document-chunk-text">${escapeHtml(chunk.source_text || "当前切片没有可展示内容")}</div>
+    <textarea class="document-chunk-text" id="documentChunkTextInput" spellcheck="false">${escapeHtml(chunk.source_text || "")}</textarea>
+    <div class="document-chunk-editor-actions">
+      <span>保存后需要重新生成 embedding</span>
+      <button class="document-row-action" type="button" id="saveDocumentChunkButton" ${state.documentChunkSaveInFlight ? "disabled" : ""}>保存切片</button>
+    </div>
   `;
 }
 
@@ -565,12 +607,56 @@ async function embedCurrentDocumentFile() {
       method: "POST",
       body: JSON.stringify({}),
     });
+    if (result.embedding_summary && state.currentDocumentFile) {
+      state.currentDocumentFile.embedding_summary = result.embedding_summary;
+    }
     showToast(`已生成 ${result.count || 0} 个切片 embedding`);
+    await loadDocumentFiles();
+    state.currentDocumentFile =
+      state.documentFiles.find((item) => item.id === file.id) || state.currentDocumentFile;
   } catch (error) {
     showToast(error.message);
   } finally {
     state.documentEmbeddingInFlight = false;
     renderDocumentDrawer(state.currentDocumentFile);
+  }
+}
+
+async function saveCurrentDocumentChunk() {
+  // 保存当前切片原文，成功后刷新本地切片和文档向量状态。
+  const chunk = state.documentChunks[state.currentDocumentChunkIndex];
+  if (!chunk) return;
+  const input = $("documentChunkTextInput");
+  const sourceText = input ? input.value.trim() : "";
+  if (!sourceText) {
+    showToast("切片内容不能为空");
+    return;
+  }
+  const previousText = chunk.source_text;
+  chunk.source_text = sourceText;
+  state.documentChunkSaveInFlight = true;
+  renderDocumentChunkContent(chunk);
+  try {
+    const result = await requestJson(`/api/import/chunks/${encodeURIComponent(chunk.id)}`, {
+      method: "POST",
+      body: JSON.stringify({ source_text: sourceText }),
+    });
+    state.documentChunks[state.currentDocumentChunkIndex] = result.item;
+    if (state.currentDocumentFile && result.embedding_summary) {
+      state.currentDocumentFile.embedding_summary = result.embedding_summary;
+      const listedFile = state.documentFiles.find((item) => item.id === state.currentDocumentFile.id);
+      if (listedFile) listedFile.embedding_summary = result.embedding_summary;
+    }
+    renderDocumentRows(state.documentFiles);
+    renderDocumentChunks(state.documentChunks);
+    renderDocumentDrawer(state.currentDocumentFile);
+    showToast("切片已保存");
+  } catch (error) {
+    chunk.source_text = previousText;
+    showToast(error.message);
+  } finally {
+    state.documentChunkSaveInFlight = false;
+    renderDocumentChunkContent(state.documentChunks[state.currentDocumentChunkIndex]);
   }
 }
 
@@ -3160,6 +3246,10 @@ function bindEvents() {
     }
     if (event.target.id === "embedDocumentButton") {
       await embedCurrentDocumentFile();
+      return;
+    }
+    if (event.target.id === "saveDocumentChunkButton") {
+      await saveCurrentDocumentChunk();
       return;
     }
     if (documentChunkButton) {
