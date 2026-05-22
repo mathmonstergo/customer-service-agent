@@ -9,6 +9,8 @@ from customer_service_agent.admin_server import (
     format_sse_event,
     parse_sse_event,
     normalize_faq_payload,
+    settings_payload_to_env,
+    settings_to_tenant_settings,
     static_path,
 )
 from customer_service_agent.config import Settings
@@ -221,6 +223,16 @@ def test_admin_app_settings_snapshot_exposes_runtime_config_for_local_modal(tmp_
             mineru_api_token="mineru-secret",
             mineru_parse_timeout_seconds=600,
             mineru_use_kb_packager=True,
+            document_chunk_token_num=512,
+            document_chunk_delimiter="\n。；！？",
+            document_chunk_overlap_percent=0,
+            document_children_delimiter="",
+            document_table_context_size=0,
+            document_image_context_size=0,
+            rerank_base_url="",
+            rerank_api_key="",
+            rerank_model="",
+            rerank_input_size=50,
         )
     )
 
@@ -233,6 +245,8 @@ def test_admin_app_settings_snapshot_exposes_runtime_config_for_local_modal(tmp_
     assert "mineru_batch_file_url" not in snapshot
     assert snapshot["rag_top_k"] == 6
     assert snapshot["wechat_token_file"].endswith("token.json")
+    assert snapshot["document_chunk_token_num"] == 512
+    assert snapshot["document_chunk_delimiter"] == "\n。；！？"
 
 
 def test_admin_app_update_settings_persists_local_tenant_settings_and_refreshes_runtime_config(tmp_path):
@@ -270,6 +284,12 @@ def test_admin_app_update_settings_persists_local_tenant_settings_and_refreshes_
             "mineru_api_token": "new-mineru-token",
             "mineru_parse_timeout_seconds": "600",
             "mineru_use_kb_packager": False,
+            "document_chunk_token_num": "256",
+            "document_chunk_delimiter": "`###`",
+            "document_chunk_overlap_percent": "10",
+            "document_children_delimiter": r"\n",
+            "document_table_context_size": "128",
+            "document_image_context_size": "96",
         }
     )
 
@@ -286,7 +306,68 @@ def test_admin_app_update_settings_persists_local_tenant_settings_and_refreshes_
     assert "mineru_batch_file_url" not in saved_settings["tenants"]["default"]
     assert "mineru_batch_result_url_template" not in saved_settings["tenants"]["default"]
     assert saved_settings["tenants"]["default"]["mineru_use_kb_packager"] is False
+    assert saved_settings["tenants"]["default"]["document_chunk_token_num"] == 256
+    assert saved_settings["tenants"]["default"]["document_chunk_delimiter"] == "`###`"
+    assert saved_settings["tenants"]["default"]["document_chunk_overlap_percent"] == 10
+    assert saved_settings["tenants"]["default"]["document_children_delimiter"] == r"\n"
+    assert saved_settings["tenants"]["default"]["document_table_context_size"] == 128
+    assert saved_settings["tenants"]["default"]["document_image_context_size"] == 96
     assert (settings_file.stat().st_mode & 0o777) == 0o600
+
+
+def test_admin_app_update_settings_preserves_document_chunking_when_payload_omits_fields(tmp_path):
+    """设置页未提交文档分块字段时，应保留当前运行配置，避免无关保存覆盖自定义值。"""
+    settings_file = tmp_path / "settings.local.json"
+    settings = Settings.from_env(
+        {
+            "DATABASE_URL": "postgresql://old@127.0.0.1:5432/app",
+            "CHAT_BASE_URL": "https://old-chat.example/v1",
+            "CHAT_API_KEY": "old-chat-key",
+            "CHAT_MODEL": "old-model",
+            "EMBEDDING_BASE_URL": "https://old-embedding.example/v1",
+            "EMBEDDING_API_KEY": "old-embedding-key",
+            "EMBEDDING_MODEL": "text-embedding-v4",
+            "DOCUMENT_CHUNK_TOKEN_NUM": "384",
+            "DOCUMENT_CHUNK_DELIMITER": "`@@`",
+            "DOCUMENT_CHUNK_OVERLAP_PERCENT": "12",
+            "DOCUMENT_CHILDREN_DELIMITER": r"\n+",
+            "DOCUMENT_TABLE_CONTEXT_SIZE": "64",
+            "DOCUMENT_IMAGE_CONTEXT_SIZE": "32",
+        }
+    )
+    app = AdminApp(settings, settings_file=settings_file)
+
+    snapshot = app.update_settings(
+        {
+            "database_url": "postgresql://new@127.0.0.1:5432/app",
+            "chat_base_url": "https://new-chat.example/v1",
+            "chat_api_key": "new-chat-key",
+            "chat_model": "mimo-v2.5-pro",
+            "embedding_base_url": "https://new-embedding.example/v1",
+            "embedding_api_key": "new-embedding-key",
+            "embedding_model": "text-embedding-v4",
+            "embedding_dimensions": "1024",
+            "wechat_token_file": str(tmp_path / "token.json"),
+            "wechat_message_chunk_size": "1800",
+            "rag_top_k": "7",
+            "rag_min_score": "0.4",
+            "upload_dir": str(tmp_path / "uploads"),
+            "mineru_api_token": "new-mineru-token",
+            "mineru_parse_timeout_seconds": "600",
+            "mineru_use_kb_packager": True,
+        }
+    )
+
+    saved_settings = json.loads(settings_file.read_text(encoding="utf-8"))
+    tenant = saved_settings["tenants"]["default"]
+    assert snapshot["document_chunk_token_num"] == 384
+    assert snapshot["document_chunk_delimiter"] == "`@@`"
+    assert snapshot["document_chunk_overlap_percent"] == 12
+    assert snapshot["document_children_delimiter"] == r"\n+"
+    assert snapshot["document_table_context_size"] == 64
+    assert snapshot["document_image_context_size"] == 32
+    assert tenant["document_chunk_token_num"] == 384
+    assert tenant["document_children_delimiter"] == r"\n+"
 
 
 def test_admin_app_create_import_file_parses_markdown(tmp_path):
@@ -626,6 +707,7 @@ def test_admin_app_polling_mineru_done_downloads_result_and_replaces_chunks(tmp_
     source = tmp_path / "manual.pdf"
     source.write_bytes(b"%PDF")
     calls = []
+    asset_dirs = []
 
     class FakeDatabase:
         def get_import_file(self, file_id):
@@ -659,7 +741,7 @@ def test_admin_app_polling_mineru_done_downloads_result_and_replaces_chunks(tmp_
 
     class FakeMineruClient:
         def __init__(self, *args, **kwargs):
-            pass
+            asset_dirs.append(kwargs.get("asset_output_dir"))
 
         def get_task_status(self, batch_id, file_name):
             assert (batch_id, file_name) == ("batch_1", "manual.pdf")
@@ -713,6 +795,8 @@ def test_admin_app_polling_mineru_done_downloads_result_and_replaces_chunks(tmp_
             "error": None,
         },
     )
+    assert asset_dirs
+    assert all(asset_dir == tmp_path / "mineru-assets" / "imp_1" for asset_dir in asset_dirs)
 
 
 def test_admin_app_delete_import_file_removes_record_and_local_upload(tmp_path):
@@ -915,13 +999,246 @@ def test_admin_app_embed_import_file_writes_document_chunks_to_knowledge_chunks(
     assert result["count"] == 2
     assert calls[0] == ("file", "imp_1")
     assert calls[1] == ("chunks", "imp_1")
-    assert ("embed", "第一段原文") in calls
+    embed_inputs = [call[1] for call in calls if call[0] == "embed"]
+    assert any("文件：manual.pdf" in text and "正文：第一段原文" in text for text in embed_inputs)
     chunk_calls = [call for call in calls if call[0] == "knowledge_chunk"]
     assert chunk_calls[0][1]["source_type"] == "document"
     assert chunk_calls[0][1]["source_id"] == "imp_1"
     assert chunk_calls[0][1]["source_chunk_id"] == "chunk_1"
+    assert chunk_calls[0][1]["chunk_level"] == "parent"
     assert chunk_calls[0][1]["status"] == "usable"
     assert chunk_calls[0][2] == [0.1, 0.2, 0.3]
+
+
+def test_admin_app_embed_import_file_derives_child_chunks_from_structured_blocks():
+    """一个审核块包含多个解析块时，应写入 parent 和 child 知识单元支持精准召回。"""
+    calls = []
+
+    class FakeDatabase:
+        def get_import_file(self, file_id):
+            return {
+                "id": file_id,
+                "original_name": "manual.pdf",
+                "file_type": "pdf",
+                "parser": "mineru",
+                "status": "needs_review",
+                "chunk_count": 1,
+            }
+
+        def list_import_chunks(self, file_id):
+            return [
+                {
+                    "id": "chunk_1",
+                    "file_id": file_id,
+                    "chunk_index": 1,
+                    "source_text": "这是审核用 parent 文本，不依赖渲染分隔符派生 child。",
+                    "keywords": ["登录"],
+                    "status": "generated",
+                    "message_count": 2,
+                    "start_at": None,
+                    "end_at": None,
+                    "section_path": ["登录"],
+                    "page_start": 1,
+                    "page_end": 2,
+                    "block_type": "mixed",
+                    "source_offsets": {},
+                    "source_blocks": [
+                        {
+                            "text": "第一段",
+                            "block_type": "text",
+                            "page_number": 1,
+                            "section_title": "登录",
+                            "evidence": {"page_number": 1, "block_type": "text"},
+                        },
+                        {
+                            "text": "第二段",
+                            "block_type": "text",
+                            "page_number": 2,
+                            "section_title": "登录",
+                            "evidence": {"page_number": 2, "block_type": "text"},
+                        },
+                    ],
+                }
+            ]
+
+        def upsert_knowledge_chunk(self, row, vector, *, embedding_model, embedding_dimensions):
+            calls.append(row)
+            return {**row, "embedding_status": "ready"}
+
+        def get_import_file_embedding_summary(self, file_id):
+            return {"status": "ready", "total_chunks": 1, "ready_count": 3}
+
+    class FakeEmbedding:
+        model = "fake-embedding"
+        dimensions = 3
+
+        def embed(self, text):
+            return [0.1, 0.2, 0.3]
+
+    app = AdminApp(
+        SimpleNamespace(database_url="postgresql://unused"),
+        db=FakeDatabase(),
+        embeddings=FakeEmbedding(),
+    )
+
+    result = app.embed_import_file("imp_1")
+
+    assert result["count"] == 3
+    assert [row["chunk_level"] for row in calls] == ["parent", "child", "child"]
+    assert calls[1]["parent_chunk_id"] == calls[0]["id"]
+    assert calls[2]["parent_chunk_id"] == calls[0]["id"]
+    assert calls[1]["chunk_index"] < 0
+    assert calls[2]["chunk_index"] < 0
+    assert len({row["chunk_index"] for row in calls}) == 3
+    assert "第一段" in calls[1]["content"]
+    assert "第二段" in calls[2]["content"]
+
+
+def test_admin_app_embed_import_file_child_indexes_do_not_overlap_parent_indexes():
+    """child 知识单元应使用不和 parent 正常切片编号冲突的 chunk_index。"""
+    calls = []
+
+    class FakeDatabase:
+        def get_import_file(self, file_id):
+            return {
+                "id": file_id,
+                "original_name": "manual.pdf",
+                "file_type": "pdf",
+                "parser": "mineru",
+                "status": "needs_review",
+                "chunk_count": 2,
+            }
+
+        def list_import_chunks(self, file_id):
+            return [
+                {
+                    "id": "chunk_1",
+                    "file_id": file_id,
+                    "chunk_index": 1,
+                    "source_text": "父块一",
+                    "keywords": [],
+                    "status": "generated",
+                    "message_count": 2,
+                    "start_at": None,
+                    "end_at": None,
+                    "source_blocks": [
+                        {"text": "子块一", "block_type": "text"},
+                        {"text": "子块二", "block_type": "text"},
+                    ],
+                },
+                {
+                    "id": "chunk_1001",
+                    "file_id": file_id,
+                    "chunk_index": 1001,
+                    "source_text": "真实父块 1001",
+                    "keywords": [],
+                    "status": "generated",
+                    "message_count": 1,
+                    "start_at": None,
+                    "end_at": None,
+                    "source_blocks": [{"text": "真实父块 1001", "block_type": "text"}],
+                },
+            ]
+
+        def upsert_knowledge_chunk(self, row, vector, *, embedding_model, embedding_dimensions):
+            calls.append(row)
+            return {**row, "embedding_status": "ready"}
+
+        def get_import_file_embedding_summary(self, file_id):
+            return {"status": "ready", "total_chunks": 4, "ready_count": 4}
+
+    class FakeEmbedding:
+        model = "fake-embedding"
+        dimensions = 3
+
+        def embed(self, text):
+            return [0.1, 0.2, 0.3]
+
+    app = AdminApp(
+        SimpleNamespace(database_url="postgresql://unused"),
+        db=FakeDatabase(),
+        embeddings=FakeEmbedding(),
+    )
+
+    app.embed_import_file("imp_1")
+
+    indexes = [row["chunk_index"] for row in calls]
+    assert 1001 in indexes
+    assert all(row["chunk_index"] < 0 for row in calls if row["chunk_level"] == "child")
+    assert len(indexes) == len(set(indexes))
+
+
+def test_admin_app_embed_import_file_splits_children_with_delimiter():
+    """配置 children_delimiter 时，应按 RAGFlow split_with_pattern 从 parent 正文生成 child。"""
+    calls = []
+
+    class FakeDatabase:
+        def get_import_file(self, file_id):
+            return {
+                "id": file_id,
+                "original_name": "manual.pdf",
+                "file_type": "pdf",
+                "parser": "mineru",
+                "status": "needs_review",
+                "chunk_count": 1,
+            }
+
+        def list_import_chunks(self, file_id):
+            return [
+                {
+                    "id": "chunk_1",
+                    "file_id": file_id,
+                    "chunk_index": 1,
+                    "source_text": "第一问\n第二问",
+                    "children_delimiter": r"\n",
+                    "keywords": ["问答"],
+                    "status": "generated",
+                    "message_count": 1,
+                    "start_at": None,
+                    "end_at": None,
+                    "section_path": ["FAQ"],
+                    "page_start": 1,
+                    "page_end": 1,
+                    "block_type": "text",
+                    "source_offsets": {},
+                    "source_blocks": [
+                        {
+                            "text": "第一问\n第二问",
+                            "block_type": "text",
+                            "page_number": 1,
+                            "section_title": "FAQ",
+                            "evidence": {"page_number": 1, "block_type": "text"},
+                        }
+                    ],
+                }
+            ]
+
+        def upsert_knowledge_chunk(self, row, vector, *, embedding_model, embedding_dimensions):
+            calls.append(row)
+            return {**row, "embedding_status": "ready"}
+
+        def get_import_file_embedding_summary(self, file_id):
+            return {"status": "ready", "total_chunks": 1, "ready_count": 3}
+
+    class FakeEmbedding:
+        model = "fake-embedding"
+        dimensions = 3
+
+        def embed(self, text):
+            return [0.1, 0.2, 0.3]
+
+    app = AdminApp(
+        SimpleNamespace(database_url="postgresql://unused"),
+        db=FakeDatabase(),
+        embeddings=FakeEmbedding(),
+    )
+
+    result = app.embed_import_file("imp_1")
+
+    assert result["count"] == 3
+    assert [row["content"] for row in calls] == ["第一问\n第二问", "第一问\n", "第二问"]
+    assert calls[1]["metadata"]["parent_content"] == "第一问\n第二问"
+    assert calls[2]["metadata"]["parent_content"] == "第一问\n第二问"
 
 
 def test_admin_app_update_import_chunk_text_marks_embedding_stale():
@@ -1255,6 +1572,106 @@ def test_admin_app_iter_assistant_chat_events_streams_hybrid_retrieval_trace():
     assert events[-1]["documents"][0]["score"] == 0.88
 
 
+def test_admin_app_iter_assistant_chat_events_expands_child_hits_with_parent_context():
+    """智能问答命中文档 child 后，应把 parent 上下文追加给模型回答。"""
+
+    class FakeEmbedding:
+        def embed(self, text):
+            return [0.1, 0.2, 0.3]
+
+    child_doc = SimpleNamespace(
+        id="kc_document_chunk_1_child_1",
+        source_type="document",
+        source_id="file_1",
+        source_chunk_id="chunk_1_child_1",
+        parent_chunk_id="kc_document_chunk_1",
+        chunk_level="child",
+        source_title="manual.pdf",
+        content="点击导出。",
+        metadata={},
+        question="manual.pdf",
+        answer="点击导出。",
+        category="document",
+        tags=["导出"],
+        source_date=None,
+        confidence=None,
+        status="usable",
+        score=0.86,
+    )
+    parent_doc = SimpleNamespace(
+        id="kc_document_chunk_1",
+        source_type="document",
+        source_id="file_1",
+        source_chunk_id="chunk_1",
+        parent_chunk_id=None,
+        chunk_level="parent",
+        source_title="manual.pdf",
+        content="报告管理页面支持导出。进入报告管理后，筛选目标报告，再点击右上角导出。",
+        metadata={},
+        question="manual.pdf",
+        answer="报告管理页面支持导出。进入报告管理后，筛选目标报告，再点击右上角导出。",
+        category="document",
+        tags=["导出"],
+        source_date=None,
+        confidence=None,
+        status="usable",
+        score=1.0,
+    )
+
+    class FakeDatabase:
+        def search_knowledge(self, query_embedding, *, top_k, min_score):
+            return [child_doc]
+
+        def search_knowledge_text(self, query_text, *, top_k, query_terms):
+            return []
+
+        def list_retrieval_aliases(self, status="active"):
+            return []
+
+        def get_parent_context_chunks(self, child_ids):
+            assert child_ids == ["kc_document_chunk_1_child_1"]
+            return [parent_doc]
+
+    class FakeChat:
+        def __init__(self):
+            self.user_prompts = []
+
+        def stream_complete(self, system_prompt, user_prompt):
+            self.user_prompts.append(user_prompt)
+            yield "可以导出。"
+
+        def complete(self, system_prompt, prompt):
+            return json.dumps(
+                {
+                    "intent": "procedure",
+                    "confidence": "medium",
+                    "query_rewrite": "报告怎么导出？",
+                    "preferred_sources": ["document"],
+                    "must_not_answer_realtime": False,
+                    "safety_action": "answer_with_retrieval",
+                    "reason": "测试",
+                },
+                ensure_ascii=False,
+            )
+
+    chat = FakeChat()
+    app = AdminApp(
+        SimpleNamespace(database_url="postgresql://unused", rag_top_k=3, rag_min_score=0.4),
+        db=FakeDatabase(),
+        embeddings=FakeEmbedding(),
+        chat=chat,
+    )
+
+    events = list(app.iter_assistant_chat_events({"question": "报告怎么导出？"}))
+
+    source_event = next(event for event in events if event.get("step_id") == "source_context")
+    assert [doc["id"] for doc in source_event["documents"]] == [
+        "kc_document_chunk_1_child_1",
+        "kc_document_chunk_1",
+    ]
+    assert "筛选目标报告" in chat.user_prompts[0]
+
+
 def test_admin_app_iter_assistant_chat_events_uses_conversation_system_prompt():
     """会话级系统提示词应覆盖默认提示词，但不改变检索链路。"""
 
@@ -1309,3 +1726,297 @@ def test_admin_app_assistant_system_prompt_has_no_code_default(monkeypatch):
 
     assert app.assistant_system_prompt() == ""
     assert app.assistant_system_prompt_from_payload({"system_prompt": ""}) == ""
+
+
+def _settings_with_rerank(**overrides):
+    """构造带 rerank 字段的 Settings，给 snapshot / payload 测试复用。"""
+    base = {
+        "database_url": "postgresql://u:p@127.0.0.1:5432/db",
+        "chat_base_url": "https://newapi.example.com/v1",
+        "chat_api_key": "chat-key",
+        "chat_model": "deepseek-chat",
+        "embedding_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "embedding_api_key": "embedding-key",
+        "embedding_model": "text-embedding-v4",
+    }
+    env = {key.upper(): value for key, value in base.items()}
+    env.update(
+        {
+            "RERANK_BASE_URL": overrides.get("rerank_base_url", "https://rerank.example.com"),
+            "RERANK_API_KEY": overrides.get("rerank_api_key", "rerank-key"),
+            "RERANK_MODEL": overrides.get("rerank_model", "bge-reranker-v2-m3"),
+            "RERANK_INPUT_SIZE": str(overrides.get("rerank_input_size", 50)),
+        }
+    )
+    return Settings.from_env(env)
+
+
+def test_settings_snapshot_includes_rerank_fields():
+    """设置弹窗需要把 rerank 配置全量返回给前端。"""
+    settings = _settings_with_rerank(rerank_input_size=30)
+    app = AdminApp(settings)
+
+    snapshot = app.settings_snapshot()
+
+    assert snapshot["rerank_base_url"] == "https://rerank.example.com"
+    assert snapshot["rerank_api_key"] == "rerank-key"
+    assert snapshot["rerank_model"] == "bge-reranker-v2-m3"
+    assert snapshot["rerank_input_size"] == 30
+
+
+def test_settings_payload_to_env_passes_rerank_fields():
+    """设置页 payload 转 env 时应携带 rerank 4 个字段。"""
+    env = settings_payload_to_env(
+        {
+            "database_url": "postgresql://u:p@127.0.0.1:5432/db",
+            "chat_base_url": "https://newapi.example.com/v1",
+            "chat_api_key": "chat-key",
+            "chat_model": "deepseek-chat",
+            "embedding_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "embedding_api_key": "embedding-key",
+            "embedding_model": "text-embedding-v4",
+            "rerank_base_url": "https://rerank.example.com",
+            "rerank_api_key": "rerank-key",
+            "rerank_model": "bge-reranker-v2-m3",
+            "rerank_input_size": "40",
+        }
+    )
+
+    assert env["RERANK_BASE_URL"] == "https://rerank.example.com"
+    assert env["RERANK_API_KEY"] == "rerank-key"
+    assert env["RERANK_MODEL"] == "bge-reranker-v2-m3"
+    assert env["RERANK_INPUT_SIZE"] == "40"
+
+
+def test_settings_to_tenant_settings_includes_rerank_fields():
+    """tenant settings 持久化时需要包含 rerank 字段。"""
+    settings = _settings_with_rerank()
+    values = settings_to_tenant_settings(settings)
+
+    assert values["rerank_base_url"] == "https://rerank.example.com"
+    assert values["rerank_api_key"] == "rerank-key"
+    assert values["rerank_model"] == "bge-reranker-v2-m3"
+    assert values["rerank_input_size"] == 50
+
+
+def test_admin_app_analytics_overview_returns_hit_rate_buckets():
+    """看板概览应给出今日 / 7 日 / 30 日的命中率和总查询。"""
+
+    class FakeDatabase:
+        def __init__(self):
+            self.calls = []
+
+        def query_analytics_overview(self, *, today, last_7d, last_30d):
+            self.calls.append(("overview", today, last_7d, last_30d))
+            return {
+                "today": {"total": 12, "hit_rate": 0.83, "zero_hit": 2},
+                "last_7d": {"total": 88, "hit_rate": 0.74, "zero_hit": 14},
+                "last_30d": {"total": 350, "hit_rate": 0.71, "zero_hit": 60},
+            }
+
+    db = FakeDatabase()
+    app = AdminApp(SimpleNamespace(database_url="postgresql://unused"), db=db)
+
+    overview = app.analytics_overview()
+
+    assert overview["today"]["hit_rate"] == 0.83
+    assert overview["last_30d"]["zero_hit"] == 60
+    assert db.calls and db.calls[0][0] == "overview"
+
+
+def test_admin_app_analytics_top_queries_passes_filters():
+    """高频查询接口应按 limit 和 since 透传到 DB。"""
+    calls = []
+
+    class FakeDatabase:
+        def list_top_queries(self, *, limit, since):
+            calls.append((limit, since))
+            return [{"query": "登录失败", "count": 12}]
+
+    app = AdminApp(SimpleNamespace(database_url="postgresql://unused"), db=FakeDatabase())
+
+    result = app.list_top_queries({"limit": ["20"], "days": ["14"]})
+
+    assert result["items"][0]["query"] == "登录失败"
+    assert calls[0][0] == 20
+    # since 必须是 UTC 时间戳，并对应到 14 天前
+    assert calls[0][1] is not None
+
+
+def test_admin_app_analytics_zero_hit_returns_zero_hit_queries():
+    """零命中接口应返回 hit_count=0 的最近查询。"""
+
+    class FakeDatabase:
+        def list_zero_hit_queries(self, *, limit, since):
+            assert limit == 50
+            return [{"query": "印度站本月活动", "created_at": "2026-05-20T10:00:00Z"}]
+
+    app = AdminApp(SimpleNamespace(database_url="postgresql://unused"), db=FakeDatabase())
+
+    result = app.list_zero_hit_queries({"limit": ["50"], "days": ["7"]})
+
+    assert result["items"][0]["query"] == "印度站本月活动"
+
+
+def test_admin_app_analytics_low_score_uses_min_score_threshold():
+    """低置信查询接口默认用 rag_min_score 当阈值，可被参数覆盖。"""
+    calls = []
+
+    class FakeDatabase:
+        def list_low_score_queries(self, *, limit, since, threshold):
+            calls.append({"limit": limit, "threshold": threshold})
+            return [{"query": "TikTok Shop 黑名单", "top_score": 0.31}]
+
+    app = AdminApp(
+        SimpleNamespace(database_url="postgresql://unused", rag_min_score=0.35),
+        db=FakeDatabase(),
+    )
+
+    result = app.list_low_score_queries({"limit": ["20"], "days": ["30"]})
+
+    assert result["items"][0]["query"] == "TikTok Shop 黑名单"
+    assert calls[0]["threshold"] == 0.35
+
+
+def test_admin_app_analytics_top_chunks_returns_chunk_frequency():
+    """chunk 引用频次接口应返回 chunk_id 出现次数排序。"""
+
+    class FakeDatabase:
+        def top_referenced_chunks(self, *, limit, since):
+            return [
+                {"chunk_id": "kc_doc_1", "count": 42},
+                {"chunk_id": "kc_doc_2", "count": 18},
+            ]
+
+    app = AdminApp(SimpleNamespace(database_url="postgresql://unused"), db=FakeDatabase())
+
+    result = app.list_top_referenced_chunks({"limit": ["10"], "days": ["7"]})
+
+    assert result["items"][0]["chunk_id"] == "kc_doc_1"
+    assert result["items"][0]["count"] == 42
+
+
+def test_admin_app_cluster_zero_hit_calls_chat_and_saves_summaries():
+    """零命中聚类应取最近 N 天零命中 query，调 chat，并把 JSON 结果写入 cluster_summaries。"""
+    saved = []
+
+    class FakeDatabase:
+        def list_zero_hit_queries(self, *, limit, since):
+            return [
+                {"query": "印度站本月活动", "created_at": "2026-05-20T01:00:00Z"},
+                {"query": "印度站活动规则", "created_at": "2026-05-19T01:00:00Z"},
+                {"query": "TikTok Shop 黑名单", "created_at": "2026-05-18T01:00:00Z"},
+            ]
+
+        def save_cluster_summary(self, row):
+            saved.append(row)
+            return {**row, "id": len(saved)}
+
+    class FakeChat:
+        def __init__(self):
+            self.calls = []
+
+        def complete(self, system_prompt, user_prompt):
+            self.calls.append((system_prompt, user_prompt))
+            return json.dumps(
+                {
+                    "clusters": [
+                        {
+                            "cluster_label": "印度站活动",
+                            "suggested_content": "补充印度站本月活动规则页面",
+                            "representative_queries": ["印度站本月活动", "印度站活动规则"],
+                        },
+                        {
+                            "cluster_label": "TikTok 黑名单",
+                            "suggested_content": "补充黑名单复审 SOP",
+                            "representative_queries": ["TikTok Shop 黑名单"],
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            )
+
+    chat = FakeChat()
+    app = AdminApp(
+        SimpleNamespace(database_url="postgresql://unused", rag_top_k=5, rag_min_score=0.35),
+        db=FakeDatabase(),
+        chat=chat,
+    )
+
+    result = app.cluster_zero_hit_queries({"days": "7", "limit": "200"})
+
+    assert chat.calls, "cluster path must call chat model"
+    assert len(saved) == 2
+    assert saved[0]["cluster_label"] == "印度站活动"
+    assert "印度站本月活动" in saved[0]["sample_queries"]
+    assert saved[0]["event_count"] == 2
+    assert result["items"][0]["cluster_label"] == "印度站活动"
+
+
+def test_admin_app_iter_assistant_chat_events_records_query_event():
+    """RAG 主路径完成后应把查询写入 query_analytics_events，便于看板分析。"""
+    recorded = []
+
+    class FakeEmbedding:
+        def embed(self, text):
+            return [0.1, 0.2, 0.3]
+
+    class FakeDatabase:
+        def search_knowledge(self, query_embedding, *, top_k, min_score):
+            return [
+                SimpleNamespace(
+                    id="kc_1",
+                    source_type="faq",
+                    source_id="faq_1",
+                    source_chunk_id=None,
+                    source_title="title",
+                    content="问题：X\n答案：Y",
+                    metadata={},
+                    question="X",
+                    answer="Y",
+                    category=None,
+                    tags=[],
+                    source_date=None,
+                    confidence="high",
+                    status="usable",
+                    score=0.82,
+                )
+            ]
+
+        def search_knowledge_text(self, query_text, *, top_k, query_terms):
+            return []
+
+        def record_query_event(self, event):
+            recorded.append(event)
+
+    class FakeChat:
+        def stream_complete(self, system_prompt, user_prompt):
+            yield "答："
+            yield "ok"
+
+    app = AdminApp(
+        SimpleNamespace(database_url="postgresql://unused", rag_top_k=3, rag_min_score=0.35),
+        db=FakeDatabase(),
+        embeddings=FakeEmbedding(),
+        chat=FakeChat(),
+    )
+
+    events = list(
+        app.iter_assistant_chat_events(
+            {
+                "question": "如何处理印度站本月活动？",
+                "requester_type": "admin_ui",
+                "requester_id": "human-1",
+            }
+        )
+    )
+
+    assert events[-1]["type"] == "done"
+    assert recorded, "iter_assistant_chat_events must record query_analytics_events"
+    event = recorded[0]
+    assert event["query"] == "如何处理印度站本月活动？"
+    assert event["hit_count"] >= 1
+    assert event["top_score"] is not None
+    assert event["requester_type"] == "admin_ui"
+    assert event["requester_id"] == "human-1"
+    assert "kc_1" in event["retrieved_chunk_ids"]

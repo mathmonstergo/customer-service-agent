@@ -1,19 +1,24 @@
 from __future__ import annotations
 
 import json
+import logging
 import mimetypes
+import os
 import re
+import sys
 import time
+import traceback
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from customer_service_agent.ai_assist import AiAssistant, AiSuggestionError
+from customer_service_agent.chunking import normalize_children_delimiter, split_with_pattern
 from customer_service_agent.config import Settings
 from customer_service_agent.db import (
     Database,
@@ -32,7 +37,7 @@ from customer_service_agent.document_parser import (
 from customer_service_agent.import_dedupe import compare_candidate_duplicate
 from customer_service_agent.import_ai import ImportAiAssistant, ImportCandidateError
 from customer_service_agent.import_models import detect_file_type
-from customer_service_agent.llm import ChatClient, EmbeddingClient
+from customer_service_agent.llm import ChatClient, EmbeddingClient, RerankClient
 from customer_service_agent.markdown_import import chunk_messages, parse_wechat_messages
 from customer_service_agent.rag import build_user_prompt, load_system_prompt
 from customer_service_agent.retrieval import (
@@ -41,6 +46,7 @@ from customer_service_agent.retrieval import (
     build_keyword_terms,
     compute_retrieval_metrics,
     fuse_retrieval_candidates,
+    rerank_candidates,
 )
 
 
@@ -52,8 +58,20 @@ class AdminNotFoundError(KeyError):
     pass
 
 
+class AdminPayloadTooLargeError(ValueError):
+    """请求体超出允许大小时抛出，统一映射为 413。"""
+
+    pass
+
+
+logger = logging.getLogger(__name__)
+
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+REMOTE_ADMIN_ENV = "ALLOW_REMOTE_ADMIN"
+
 VALID_FAQ_STATUSES = {"usable", "needs_review", "disabled"}
 VALID_IMPORT_PARSE_MODES = {"by_days", "by_gap"}
+DOCUMENT_CHILD_INDEX_OFFSET = 1
 
 
 def split_text_list(value: Any) -> list[str]:
@@ -215,6 +233,18 @@ def settings_payload_to_env(payload: dict[str, Any]) -> dict[str, str]:
             payload.get("mineru_parse_timeout_seconds", "")
         ).strip(),
         "MINERU_USE_KB_PACKAGER": "true" if payload.get("mineru_use_kb_packager") else "false",
+        "DOCUMENT_CHUNK_TOKEN_NUM": str(payload.get("document_chunk_token_num", "")).strip(),
+        "DOCUMENT_CHUNK_DELIMITER": str(payload.get("document_chunk_delimiter", "")),
+        "DOCUMENT_CHUNK_OVERLAP_PERCENT": str(
+            payload.get("document_chunk_overlap_percent", "")
+        ).strip(),
+        "DOCUMENT_CHILDREN_DELIMITER": str(payload.get("document_children_delimiter", "")),
+        "DOCUMENT_TABLE_CONTEXT_SIZE": str(payload.get("document_table_context_size", "")).strip(),
+        "DOCUMENT_IMAGE_CONTEXT_SIZE": str(payload.get("document_image_context_size", "")).strip(),
+        "RERANK_BASE_URL": str(payload.get("rerank_base_url", "")).strip(),
+        "RERANK_API_KEY": str(payload.get("rerank_api_key", "")).strip(),
+        "RERANK_MODEL": str(payload.get("rerank_model", "")).strip(),
+        "RERANK_INPUT_SIZE": str(payload.get("rerank_input_size", "")).strip(),
     }
     try:
         Settings.from_env(env_values)
@@ -242,6 +272,16 @@ def settings_to_tenant_settings(settings: Settings) -> dict[str, Any]:
         "mineru_api_token": settings.mineru_api_token or "",
         "mineru_parse_timeout_seconds": settings.mineru_parse_timeout_seconds,
         "mineru_use_kb_packager": settings.mineru_use_kb_packager,
+        "document_chunk_token_num": settings.document_chunk_token_num,
+        "document_chunk_delimiter": settings.document_chunk_delimiter,
+        "document_chunk_overlap_percent": settings.document_chunk_overlap_percent,
+        "document_children_delimiter": settings.document_children_delimiter,
+        "document_table_context_size": settings.document_table_context_size,
+        "document_image_context_size": settings.document_image_context_size,
+        "rerank_base_url": settings.rerank_base_url,
+        "rerank_api_key": settings.rerank_api_key,
+        "rerank_model": settings.rerank_model,
+        "rerank_input_size": settings.rerank_input_size,
     }
 
 
@@ -267,10 +307,91 @@ def write_tenant_settings(settings_file: Path, values: dict[str, Any], tenant_id
     settings_file.chmod(0o600)
 
 
+def _isoformat(value: Any) -> str | None:
+    """容忍 None / 已经是字符串的列，给前端统一的 ISO 时间戳。"""
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
 def safe_upload_name(filename: str) -> str:
-    """清理上传文件名，只保留本地存储需要的安全字符。"""
-    name = Path(filename).name.strip() or "upload"
+    """清理上传文件名，只保留本地存储需要的安全字符。
+
+    关键约束：`.` / `..` / 空基名直接返回安全占位 `upload`，避免拼接路径时被
+    解释为上级目录或隐藏文件；其余只保留字母、数字、点、下划线、连字符和中文字符。
+    """
+    name = Path(filename).name.strip()
+    if not name or name in {".", ".."}:
+        return "upload"
     return re.sub(r"[^0-9A-Za-z._\-\u4e00-\u9fff]+", "_", name)
+
+
+def ensure_loopback_or_explicit_opt_in(host: str, env: Mapping[str, str]) -> None:
+    """启动守门：非 loopback host 必须显式 env 同意，避免误暴露无鉴权后台。
+
+    关键约束：env 值严格判等 `"1"`，避免拼写造成意外放行；命中显式同意时
+    在 stderr 打 warning 提醒当前架构无鉴权 + 无上传限额。
+    """
+    if host in LOOPBACK_HOSTS:
+        return
+    if env.get(REMOTE_ADMIN_ENV, "").strip() == "1":
+        print(
+            f"warning: admin server binding non-loopback host {host!r}; "
+            "no auth or upload limits enforced — set up reverse proxy or auth before use",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    raise RuntimeError(
+        f"non-loopback admin host {host!r} requires {REMOTE_ADMIN_ENV}=1; "
+        "default-bind to 127.0.0.1 or set the env to acknowledge the exposure risk"
+    )
+
+
+def ensure_request_size(content_length: int, max_bytes: int, kind: str) -> None:
+    """请求体大小守门，超限直接抛 AdminPayloadTooLargeError 防止读到内存。
+
+    关键约束：必须在 read body 之前调用；超限时不读 body，直接走 413 响应。
+    """
+    if content_length > max_bytes:
+        raise AdminPayloadTooLargeError(
+            f"{kind} body exceeds limit: {content_length} > {max_bytes}"
+        )
+
+
+def classify_error_response(exc: Exception) -> tuple[HTTPStatus, dict[str, Any]]:
+    """把异常分级为 HTTP 状态码 + 前端可见响应体。
+
+    关键约束：500 类异常脱敏为固定文案 `internal error`，不暴露 raw message
+    （SQL 细节、文件路径、内部 URL 等），完整堆栈走日志另写。已识别业务异常保留
+    原文案，方便前端把"必填字段缺失"这类信息直接展示给用户。
+    """
+    if isinstance(exc, AdminNotFoundError):
+        return HTTPStatus.NOT_FOUND, {"error": str(exc)}
+    if isinstance(exc, AdminPayloadTooLargeError):
+        return HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": str(exc)}
+    if isinstance(exc, AdminValidationError | AiSuggestionError | ImportCandidateError):
+        return HTTPStatus.BAD_REQUEST, {"error": str(exc)}
+    return HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal error"}
+
+
+def ensure_upload_path_within(upload_dir: Path, candidate: Path) -> Path:
+    """resolve 后必须落在 upload_dir 内，覆盖符号链接或拼接穿越攻击。
+
+    关键约束：返回 resolve 后的绝对路径供调用方使用；穿越时抛
+    AdminValidationError 走 400，避免泄漏目标路径。
+    """
+    resolved_dir = upload_dir.resolve()
+    resolved_candidate = candidate.resolve()
+    try:
+        resolved_candidate.relative_to(resolved_dir)
+    except ValueError as exc:
+        raise AdminValidationError(
+            f"upload path escapes upload_dir: {candidate.name}"
+        ) from exc
+    return resolved_candidate
 
 
 def jsonable(value: Any) -> Any:
@@ -310,6 +431,8 @@ def assistant_document_payload(doc: Any) -> dict[str, Any]:
         "source_type": getattr(doc, "source_type", "faq"),
         "source_id": getattr(doc, "source_id", doc.id),
         "source_chunk_id": getattr(doc, "source_chunk_id", None),
+        "parent_chunk_id": getattr(doc, "parent_chunk_id", None),
+        "chunk_level": getattr(doc, "chunk_level", "chunk"),
         "source_title": getattr(doc, "source_title", getattr(doc, "question", "")),
         "content": getattr(doc, "content", getattr(doc, "answer", "")),
         "metadata": getattr(doc, "metadata", {}),
@@ -324,6 +447,22 @@ def assistant_document_payload(doc: Any) -> dict[str, Any]:
     }
 
 
+def parent_context_documents(database: Any, docs: list[Any]) -> list[Any]:
+    """命中 child 文档时读取 parent 上下文，关键约束是不重复追加已有命中。"""
+    child_ids = [
+        str(getattr(doc, "id"))
+        for doc in docs
+        if getattr(doc, "parent_chunk_id", None) and getattr(doc, "chunk_level", "") != "parent"
+    ]
+    if not child_ids:
+        return []
+    getter = getattr(database, "get_parent_context_chunks", None)
+    if getter is None:
+        return []
+    existing_ids = {str(getattr(doc, "id", "")) for doc in docs}
+    return [doc for doc in getter(child_ids) if str(getattr(doc, "id", "")) not in existing_ids]
+
+
 def retrieval_eval_item_payload(candidate: Any) -> dict[str, Any]:
     """把融合候选转换为评测运行可回放的精简结构。"""
     doc = candidate.document
@@ -336,6 +475,140 @@ def retrieval_eval_item_payload(candidate: Any) -> dict[str, Any]:
         "vector_score": candidate.vector_score,
         "keyword_score": candidate.keyword_score,
     }
+
+
+def document_knowledge_rows_for_embedding(chunk: dict[str, Any], import_file: dict[str, Any]) -> list[dict[str, Any]]:
+    """把审核切片转换为 RAGFlow 风格 parent/child 知识单元。"""
+    parent_row = build_document_knowledge_chunk_row(
+        {**chunk, "retrieval_status": "usable", "chunk_level": "parent"},
+        import_file,
+    )
+    delimiter_children = delimiter_child_chunks(chunk)
+    if delimiter_children:
+        return _child_rows_from_texts(chunk, import_file, parent_row, delimiter_children)
+
+    blocks = structured_source_blocks(chunk.get("source_blocks"))
+    if len(blocks) <= 1:
+        return [parent_row]
+
+    return _child_rows_from_blocks(chunk, import_file, parent_row, blocks)
+
+
+def child_knowledge_chunk_index(parent_index: int, child_index: int) -> int:
+    """为 child 知识单元生成负数 chunk_index，关键约束是不与 parent 正编号冲突。"""
+    parent = max(int(parent_index), 0)
+    child = max(int(child_index), 0)
+    paired = (parent + child) * (parent + child + 1) // 2 + child
+    return -(paired + DOCUMENT_CHILD_INDEX_OFFSET)
+
+
+def delimiter_child_chunks(chunk: dict[str, Any]) -> list[str]:
+    """按 RAGFlow children_delimiter 规则拆分 parent 正文，单段结果不重复建 child。"""
+    pattern = normalize_children_delimiter(chunk.get("children_delimiter"))
+    if not pattern:
+        return []
+    children = split_with_pattern(str(chunk.get("source_text") or ""), pattern)
+    return children if len(children) > 1 else []
+
+
+def _child_rows_from_texts(
+    chunk: dict[str, Any],
+    import_file: dict[str, Any],
+    parent_row: dict[str, Any],
+    child_texts: list[str],
+) -> list[dict[str, Any]]:
+    """从 delimiter 子段生成 child rows，并用 parent_content 对齐 RAGFlow mom_with_weight。"""
+    rows = [parent_row]
+    parent_index = int(chunk.get("chunk_index", 0))
+    for child_index, child_text in enumerate(child_texts, start=1):
+        child_chunk = {
+            **chunk,
+            "id": f"{chunk['id']}_child_{child_index}",
+            "source_text": child_text,
+            "source_blocks": [],
+            "chunk_index": child_knowledge_chunk_index(parent_index, child_index),
+            "parent_chunk_id": parent_row["id"],
+            "chunk_level": "child",
+            "parent_content": parent_row["content"],
+            "retrieval_status": "usable",
+        }
+        rows.append(build_document_knowledge_chunk_row(child_chunk, import_file))
+    return rows
+
+
+def _child_rows_from_blocks(
+    chunk: dict[str, Any],
+    import_file: dict[str, Any],
+    parent_row: dict[str, Any],
+    blocks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """从结构化 source_blocks 生成 child rows，用于无 children_delimiter 的默认精确召回。"""
+    rows = [parent_row]
+    parent_index = int(chunk.get("chunk_index", 0))
+    for child_index, block in enumerate(blocks, start=1):
+        block_text = str(block.get("text") or "").strip()
+        if not block_text:
+            continue
+        child_meta = structured_block_metadata(block, chunk)
+        child_chunk = {
+            **chunk,
+            **child_meta,
+            "id": f"{chunk['id']}_child_{child_index}",
+            "source_text": block_text,
+            "source_blocks": [block],
+            "chunk_index": child_knowledge_chunk_index(parent_index, child_index),
+            "parent_chunk_id": parent_row["id"],
+            "chunk_level": "child",
+            "parent_content": parent_row["content"],
+            "retrieval_status": "usable",
+        }
+        rows.append(build_document_knowledge_chunk_row(child_chunk, import_file))
+    return rows
+
+
+def structured_source_blocks(value: Any) -> list[dict[str, Any]]:
+    """读取解析器来源块，关键约束是不从审核正文反向解析结构。"""
+    if isinstance(value, str) and value.strip():
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
+
+
+def structured_block_metadata(block: dict[str, Any], parent_chunk: dict[str, Any]) -> dict[str, Any]:
+    """从结构化来源块生成 child metadata，缺失字段继承 parent。"""
+    section = str(block.get("section_title") or "").strip()
+    section_path = [part.strip() for part in section.split(">") if part.strip()]
+    page_number = _optional_int(block.get("page_number"))
+    evidence = block.get("evidence") if isinstance(block.get("evidence"), dict) else {}
+    if page_number is None:
+        page_number = _optional_int(evidence.get("page_number"))
+    source_offsets = {}
+    position_tag = block.get("position_tag") or evidence.get("position_tag")
+    if position_tag:
+        source_offsets["position_tag"] = position_tag
+    if evidence:
+        source_offsets["evidence"] = dict(evidence)
+    return {
+        "section_path": section_path or parent_chunk.get("section_path") or [],
+        "page_start": page_number if page_number is not None else parent_chunk.get("page_start"),
+        "page_end": page_number if page_number is not None else parent_chunk.get("page_end"),
+        "block_type": block.get("block_type") or parent_chunk.get("block_type"),
+        "source_offsets": source_offsets or parent_chunk.get("source_offsets") or {},
+    }
+
+
+def _optional_int(value: Any) -> int | None:
+    """把结构化块里的页码转为整数，非法值保持为空。"""
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def assistant_step_event(
@@ -365,6 +638,8 @@ class AdminApp:
     db: Database | None = None
     embeddings: EmbeddingClient | None = None
     chat: ChatClient | None = None
+    rerank: RerankClient | None = None
+    rerank_resolved: bool = False
     settings_file: Path = Path("data/settings.local.json")
     tenant_id: str = "default"
 
@@ -382,6 +657,13 @@ class AdminApp:
         if self.chat is None:
             self.chat = ChatClient.from_settings(self.settings)
         return self.chat
+
+    def rerank_client(self) -> RerankClient | None:
+        """按配置返回 RerankClient；缺一项即返回 None 让上游透传。"""
+        if not self.rerank_resolved:
+            self.rerank = RerankClient.from_settings(self.settings)
+            self.rerank_resolved = True
+        return self.rerank
 
     def assistant_system_prompt(self) -> str:
         """读取智能问答系统提示词；未配置时返回空值，不再注入代码硬编码提示。"""
@@ -414,11 +696,22 @@ class AdminApp:
             "mineru_api_token": self.settings.mineru_api_token or "",
             "mineru_parse_timeout_seconds": self.settings.mineru_parse_timeout_seconds,
             "mineru_use_kb_packager": self.settings.mineru_use_kb_packager,
+            "document_chunk_token_num": self.settings.document_chunk_token_num,
+            "document_chunk_delimiter": self.settings.document_chunk_delimiter,
+            "document_chunk_overlap_percent": self.settings.document_chunk_overlap_percent,
+            "document_children_delimiter": self.settings.document_children_delimiter,
+            "document_table_context_size": self.settings.document_table_context_size,
+            "document_image_context_size": self.settings.document_image_context_size,
+            "rerank_base_url": self.settings.rerank_base_url,
+            "rerank_api_key": self.settings.rerank_api_key,
+            "rerank_model": self.settings.rerank_model,
+            "rerank_input_size": self.settings.rerank_input_size,
         }
 
     def update_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """保存设置页配置到本地租户文件，并刷新当前管理进程使用的配置对象。"""
-        env_values = settings_payload_to_env(payload)
+        """保存设置页配置到本地租户文件，关键约束是缺失字段沿用当前运行值。"""
+        merged_payload = {**settings_to_tenant_settings(self.settings), **payload}
+        env_values = settings_payload_to_env(merged_payload)
         next_settings = Settings.from_env(env_values)
         write_tenant_settings(
             self.settings_file,
@@ -428,6 +721,8 @@ class AdminApp:
         self.settings = next_settings
         self.embeddings = None
         self.chat = None
+        self.rerank = None
+        self.rerank_resolved = False
         if self.db is not None and getattr(self.db, "database_url", None) != self.settings.database_url:
             self.db = None
         return self.settings_snapshot()
@@ -538,6 +833,194 @@ class AdminApp:
             return []
         return list_aliases()
 
+    @staticmethod
+    def _utc_now() -> datetime:
+        return datetime.now(timezone.utc)
+
+    @classmethod
+    def _since_from_days(cls, days: int) -> datetime:
+        return cls._utc_now() - timedelta(days=max(int(days), 0))
+
+    @staticmethod
+    def _int_param(params: dict[str, Any], key: str, default: int) -> int:
+        raw = params.get(key)
+        if isinstance(raw, list):
+            raw = raw[0] if raw else None
+        if raw is None or raw == "":
+            return default
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _float_param(params: dict[str, Any], key: str, default: float) -> float:
+        raw = params.get(key)
+        if isinstance(raw, list):
+            raw = raw[0] if raw else None
+        if raw is None or raw == "":
+            return default
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return default
+
+    def analytics_overview(self) -> dict[str, Any]:
+        """看板概览：今日 / 7 日 / 30 日命中率。"""
+        now = self._utc_now()
+        today = now - timedelta(days=1)
+        last_7d = now - timedelta(days=7)
+        last_30d = now - timedelta(days=30)
+        return self.database().query_analytics_overview(
+            today=today, last_7d=last_7d, last_30d=last_30d
+        )
+
+    def list_top_queries(self, params: dict[str, list[str]]) -> dict[str, Any]:
+        """高频查询表。"""
+        limit = self._int_param(params, "limit", 20)
+        days = self._int_param(params, "days", 7)
+        since = self._since_from_days(days)
+        items = self.database().list_top_queries(limit=limit, since=since)
+        return {"items": items, "since": since.isoformat(), "limit": limit}
+
+    def list_zero_hit_queries(self, params: dict[str, list[str]]) -> dict[str, Any]:
+        """零命中查询表。"""
+        limit = self._int_param(params, "limit", 50)
+        days = self._int_param(params, "days", 7)
+        since = self._since_from_days(days)
+        items = self.database().list_zero_hit_queries(limit=limit, since=since)
+        return {"items": items, "since": since.isoformat(), "limit": limit}
+
+    def list_low_score_queries(self, params: dict[str, list[str]]) -> dict[str, Any]:
+        """低置信查询表。"""
+        limit = self._int_param(params, "limit", 50)
+        days = self._int_param(params, "days", 7)
+        threshold = self._float_param(
+            params, "threshold", float(getattr(self.settings, "rag_min_score", 0.35))
+        )
+        since = self._since_from_days(days)
+        items = self.database().list_low_score_queries(
+            limit=limit, since=since, threshold=threshold
+        )
+        return {
+            "items": items,
+            "since": since.isoformat(),
+            "limit": limit,
+            "threshold": threshold,
+        }
+
+    def list_top_referenced_chunks(self, params: dict[str, list[str]]) -> dict[str, Any]:
+        """chunk 引用频次表。"""
+        limit = self._int_param(params, "limit", 20)
+        days = self._int_param(params, "days", 7)
+        since = self._since_from_days(days)
+        items = self.database().top_referenced_chunks(limit=limit, since=since)
+        return {"items": items, "since": since.isoformat(), "limit": limit}
+
+    def query_hit_rate_timeseries(self, params: dict[str, list[str]]) -> dict[str, Any]:
+        """命中率时序，按日聚合。"""
+        days = self._int_param(params, "days", 7)
+        since = self._since_from_days(days)
+        rows = self.database().query_hit_rate_timeseries(since=since)
+        items = []
+        for row in rows:
+            total = int(row.get("total") or 0)
+            hits = int(row.get("hits") or 0)
+            hit_rate = (hits / total) if total else 0.0
+            bucket = row.get("bucket")
+            items.append(
+                {
+                    "bucket": bucket.isoformat() if hasattr(bucket, "isoformat") else str(bucket),
+                    "total": total,
+                    "hits": hits,
+                    "hit_rate": hit_rate,
+                }
+            )
+        return {"items": items, "since": since.isoformat()}
+
+    def list_cluster_summaries(self, params: dict[str, list[str]]) -> dict[str, Any]:
+        """读取最近的零命中聚类摘要。"""
+        limit = self._int_param(params, "limit", 20)
+        items = self.database().list_cluster_summaries(limit=limit)
+        formatted = []
+        for row in items:
+            formatted.append(
+                {
+                    **row,
+                    "created_at": _isoformat(row.get("created_at")),
+                    "period_start": _isoformat(row.get("period_start")),
+                    "period_end": _isoformat(row.get("period_end")),
+                }
+            )
+        return {"items": formatted}
+
+    def cluster_zero_hit_queries(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """触发零命中 LLM 聚类：取最近 N 天的零命中查询，让 chat 给出主题分组。"""
+        days = int(payload.get("days") or 7)
+        limit = int(payload.get("limit") or 200)
+        since = self._since_from_days(days)
+        until = self._utc_now()
+        queries = self.database().list_zero_hit_queries(limit=limit, since=since)
+        if not queries:
+            return {"items": [], "message": "no zero-hit queries in window"}
+        sample = [str(row.get("query") or "").strip() for row in queries]
+        sample = [item for item in sample if item][:limit]
+        prompt = "\n".join(
+            [
+                f"下面是过去 {days} 天 {len(sample)} 条没有命中知识库的用户查询。",
+                "请按主题聚类（不超过 10 类），每类给出：",
+                "- cluster_label（中文短语）",
+                "- suggested_content（建议补充什么内容）",
+                "- representative_queries（代表性 3-5 条原文）",
+                "只输出 JSON，结构 {\"clusters\": [...]}。",
+                "",
+                "查询列表：",
+                *[f"- {item}" for item in sample],
+            ]
+        )
+        raw = self.chat_client().complete(
+            "你是企业级知识库的内容运营助手，输出中文 JSON。",
+            prompt,
+        )
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            raise AdminValidationError(f"cluster response is not JSON: {exc}") from exc
+        clusters = parsed.get("clusters") if isinstance(parsed, dict) else None
+        if not isinstance(clusters, list):
+            raise AdminValidationError("cluster response missing 'clusters' list")
+        saved: list[dict[str, Any]] = []
+        for cluster in clusters:
+            if not isinstance(cluster, dict):
+                continue
+            label = str(cluster.get("cluster_label") or "").strip()
+            if not label:
+                continue
+            sample_queries = [
+                str(item).strip()
+                for item in (cluster.get("representative_queries") or [])
+                if str(item).strip()
+            ]
+            row = self.database().save_cluster_summary(
+                {
+                    "period_start": since,
+                    "period_end": until,
+                    "cluster_label": label,
+                    "suggested_content": cluster.get("suggested_content"),
+                    "event_count": len(sample_queries),
+                    "sample_queries": sample_queries,
+                }
+            )
+            saved.append(
+                {
+                    **row,
+                    "created_at": _isoformat(row.get("created_at")),
+                    "period_start": _isoformat(row.get("period_start")),
+                    "period_end": _isoformat(row.get("period_end")),
+                }
+            )
+        return {"items": saved, "total": len(saved), "window_days": days}
+
     def get_faq(self, faq_id: str) -> dict[str, Any]:
         row = self.database().get_faq(faq_id)
         if row is None:
@@ -623,6 +1106,7 @@ class AdminApp:
         upload_dir = Path(self.settings.upload_dir)
         upload_dir.mkdir(parents=True, exist_ok=True)
         stored_path = upload_dir / f"{file_id}_{safe_name}"
+        ensure_upload_path_within(upload_dir, stored_path)
         stored_path.write_bytes(content)
 
         status = "pending" if parser != "unsupported" else "unsupported"
@@ -689,8 +1173,8 @@ class AdminApp:
     def _parse_mineru_import(self, record: dict[str, Any], stored_path: Path) -> dict[str, Any]:
         """调用 MinerU 解析上传文件，并生成导入审核切块。"""
         try:
-            blocks = self._mineru_client().parse_file(stored_path)
-            chunk_rows = build_import_chunks_from_blocks(record["id"], blocks)
+            blocks = self._mineru_client(record["id"]).parse_file(stored_path)
+            chunk_rows = self._build_document_import_chunks(record["id"], blocks)
         except MineruParseError as exc:
             self.database().update_import_file_summary(
                 record["id"],
@@ -710,14 +1194,18 @@ class AdminApp:
         )
         return {**record, **summary}
 
-    def _mineru_client(self) -> MineruClient:
-        """创建 MinerU 客户端，集中使用项目内写死的官方批量接口。"""
+    def _mineru_client(self, import_file_id: str | None = None) -> MineruClient:
+        """创建 MinerU 客户端，关键约束是资产按导入文件隔离存储。"""
+        asset_output_dir = Path(self.settings.upload_dir) / "mineru-assets"
+        if import_file_id:
+            asset_output_dir = asset_output_dir / safe_upload_name(import_file_id)
         return MineruClient(
             api_token=getattr(self.settings, "mineru_api_token", None),
             batch_file_url=MINERU_BATCH_FILE_URL,
             batch_result_url_template=MINERU_BATCH_RESULT_URL_TEMPLATE,
             timeout_seconds=self.settings.mineru_parse_timeout_seconds,
             use_kb_packager=getattr(self.settings, "mineru_use_kb_packager", True),
+            asset_output_dir=asset_output_dir,
         )
 
     def start_import_parse_job(self, file_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -734,7 +1222,7 @@ class AdminApp:
         if not stored_path.exists():
             raise AdminValidationError("stored upload file is missing")
 
-        status = self._mineru_client().start_file(stored_path)
+        status = self._mineru_client(record["id"]).start_file(stored_path)
         progress = self._mineru_progress_payload(status)
         summary = self.database().update_import_file_summary(
             file_id,
@@ -759,7 +1247,7 @@ class AdminApp:
         if not batch_id or not file_name:
             return self._import_parse_status_payload(record)
 
-        status = self._mineru_client().get_task_status(batch_id, file_name)
+        status = self._mineru_client(record["id"]).get_task_status(batch_id, file_name)
         progress = self._mineru_progress_payload(status)
         if status.state in {"done", "finished", "success", "completed"}:
             return self._finish_mineru_parse_job(record, status, progress)
@@ -783,13 +1271,13 @@ class AdminApp:
     def _finish_mineru_parse_job(self, record: dict[str, Any], status: Any, progress: dict[str, Any]) -> dict[str, Any]:
         """处理 MinerU 完成状态，下载结果并替换文档切片。"""
         try:
-            payload = self._mineru_client().download_task_result(status)
+            payload = self._mineru_client(record["id"]).download_task_result(status)
             blocks = extract_blocks_from_mineru_payload(
                 payload,
                 source_file=record.get("original_name") or status.file_name,
                 use_kb_packager=getattr(self.settings, "mineru_use_kb_packager", True),
             )
-            chunk_rows = build_import_chunks_from_blocks(record["id"], blocks)
+            chunk_rows = self._build_document_import_chunks(record["id"], blocks)
         except MineruParseError as exc:
             summary = self.database().update_import_file_summary(
                 record["id"],
@@ -810,6 +1298,19 @@ class AdminApp:
             error=None,
         )
         return self._import_parse_status_payload({**record, **summary}, state=status.state, progress=progress)
+
+    def _build_document_import_chunks(self, file_id: str, blocks: list[Any]) -> list[dict[str, Any]]:
+        """按 RAGFlow naive chunk 配置生成文档导入审核切片。"""
+        return build_import_chunks_from_blocks(
+            file_id,
+            blocks,
+            chunk_token_num=getattr(self.settings, "document_chunk_token_num", 512),
+            delimiter=getattr(self.settings, "document_chunk_delimiter", "\n。；！？"),
+            overlapped_percent=getattr(self.settings, "document_chunk_overlap_percent", 0),
+            children_delimiter=getattr(self.settings, "document_children_delimiter", ""),
+            table_context_size=getattr(self.settings, "document_table_context_size", 0),
+            image_context_size=getattr(self.settings, "document_image_context_size", 0),
+        )
 
     def _mineru_progress_payload(self, status: Any) -> dict[str, Any]:
         """把 MinerU 原始进度整理成前端可直接消费的 JSON。"""
@@ -887,19 +1388,16 @@ class AdminApp:
         embedding_client = self.embedding_client()
         rows = []
         for chunk in chunks:
-            chunk_row = build_document_knowledge_chunk_row(
-                {**chunk, "retrieval_status": "usable"},
-                record,
-            )
-            vector = embedding_client.embed(chunk_row["embedding_text"])
-            rows.append(
-                self.database().upsert_knowledge_chunk(
-                    chunk_row,
-                    vector,
-                    embedding_model=embedding_client.model,
-                    embedding_dimensions=embedding_client.dimensions,
+            for chunk_row in document_knowledge_rows_for_embedding(chunk, record):
+                vector = embedding_client.embed(chunk_row["embedding_text"])
+                rows.append(
+                    self.database().upsert_knowledge_chunk(
+                        chunk_row,
+                        vector,
+                        embedding_model=embedding_client.model,
+                        embedding_dimensions=embedding_client.dimensions,
+                    )
                 )
-            )
         return {
             "file_id": file_id,
             "count": len(rows),
@@ -1140,7 +1638,9 @@ class AdminApp:
         search_started = time.perf_counter()
         top_k = getattr(self.settings, "rag_top_k", 5)
         min_score = getattr(self.settings, "rag_min_score", 0.35)
-        candidate_limit = max(top_k * 2, top_k)
+        rerank_client = self.rerank_client()
+        rerank_input_size = int(getattr(rerank_client, "input_size", 0) or 0)
+        candidate_limit = max(top_k * 2, top_k, rerank_input_size)
         query_terms = build_keyword_terms(retrieval_query, self._retrieval_aliases())
         vector_docs = self.database().search_knowledge(
             query_embedding,
@@ -1155,8 +1655,25 @@ class AdminApp:
         fused = fuse_retrieval_candidates(
             vector_docs=vector_docs,
             keyword_docs=keyword_docs,
-            top_k=top_k,
+            top_k=candidate_limit,
         )
+        rerank_used = False
+        if rerank_client is not None and len(fused) > top_k:
+            rerank_started = time.perf_counter()
+            fused = rerank_candidates(retrieval_query, fused, client=rerank_client, top_k=top_k)
+            rerank_used = True
+            yield assistant_step_event(
+                "rerank",
+                "重排",
+                "completed",
+                rerank_started,
+                summary=f"rerank 输入 {min(len(vector_docs) + len(keyword_docs), rerank_input_size or len(fused))} 候选，截取 top {top_k}",
+                top_k=top_k,
+                input_size=rerank_input_size,
+                model=getattr(rerank_client, "model", None),
+            )
+        else:
+            fused = fused[:top_k]
         docs = [candidate.document for candidate in fused]
         documents = []
         for candidate in fused:
@@ -1170,6 +1687,20 @@ class AdminApp:
                 }
             )
             documents.append(payload_doc)
+        parent_docs = parent_context_documents(self.database(), docs)
+        if parent_docs:
+            docs.extend(parent_docs)
+            for parent_doc in parent_docs:
+                payload_doc = assistant_document_payload(parent_doc)
+                payload_doc.update(
+                    {
+                        "retrieval_channels": ["parent_context"],
+                        "fused_score": None,
+                        "vector_score": None,
+                        "keyword_score": None,
+                    }
+                )
+                documents.append(payload_doc)
         yield assistant_step_event(
             "hybrid_retrieval",
             "混合召回",
@@ -1229,6 +1760,53 @@ class AdminApp:
             "answer_draft": answer_draft,
             "documents": documents,
         }
+        self._record_assistant_chat_event(
+            question=question,
+            analysis=analysis,
+            documents=documents,
+            payload=payload,
+            started=started,
+            rerank_used=rerank_used,
+        )
+
+    def _record_assistant_chat_event(
+        self,
+        *,
+        question: str,
+        analysis: Any,
+        documents: list[dict[str, Any]],
+        payload: dict[str, Any],
+        started: float,
+        rerank_used: bool,
+    ) -> None:
+        """把 RAG 主路径的一次查询写入 query_analytics_events，失败不影响主流程。"""
+        record = getattr(self.database(), "record_query_event", None)
+        if record is None:
+            return
+        hit_count = len(documents)
+        top_score = documents[0].get("score") if documents else None
+        chunk_ids = [str(doc.get("id") or "") for doc in documents if doc.get("id")]
+        requester_type = str(payload.get("requester_type") or "unknown").strip() or "unknown"
+        requester_id_raw = payload.get("requester_id")
+        requester_id = str(requester_id_raw).strip() if requester_id_raw else None
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        intent = getattr(analysis, "intent", None)
+        event = {
+            "query": question,
+            "intent": intent,
+            "retrieved_chunk_ids": chunk_ids,
+            "top_score": top_score,
+            "hit_count": hit_count,
+            "rerank_used": bool(rerank_used),
+            "latency_ms": latency_ms,
+            "requester_type": requester_type,
+            "requester_id": requester_id,
+            "metadata": {"flow": "basic_rag"},
+        }
+        try:
+            record(event)
+        except Exception as exc:
+            logger.warning("query analytics record failed: %s", exc, exc_info=True)
 
 
 def static_path(path: str) -> Path:
@@ -1297,6 +1875,27 @@ def make_handler(app: AdminApp):
                 if parsed.path == "/api/faqs":
                     self.send_json(app.list_faqs(parse_qs(parsed.query)))
                     return
+                if parsed.path == "/api/analytics/overview":
+                    self.send_json(app.analytics_overview())
+                    return
+                if parsed.path == "/api/analytics/top-queries":
+                    self.send_json(app.list_top_queries(parse_qs(parsed.query)))
+                    return
+                if parsed.path == "/api/analytics/zero-hit":
+                    self.send_json(app.list_zero_hit_queries(parse_qs(parsed.query)))
+                    return
+                if parsed.path == "/api/analytics/low-score":
+                    self.send_json(app.list_low_score_queries(parse_qs(parsed.query)))
+                    return
+                if parsed.path == "/api/analytics/top-chunks":
+                    self.send_json(app.list_top_referenced_chunks(parse_qs(parsed.query)))
+                    return
+                if parsed.path == "/api/analytics/hit-rate":
+                    self.send_json(app.query_hit_rate_timeseries(parse_qs(parsed.query)))
+                    return
+                if parsed.path == "/api/analytics/cluster-summaries":
+                    self.send_json(app.list_cluster_summaries(parse_qs(parsed.query)))
+                    return
                 self.send_static(static_path(parsed.path))
             except Exception as exc:
                 self.send_error_json(exc)
@@ -1349,7 +1948,16 @@ def make_handler(app: AdminApp):
                     self.send_json(app.optimize(payload))
                     return
                 if parsed.path == "/api/assistant/chat-stream":
+                    requester_type = self.headers.get("X-Requester-Type")
+                    requester_id = self.headers.get("X-Requester-Id")
+                    if requester_type and not payload.get("requester_type"):
+                        payload["requester_type"] = requester_type
+                    if requester_id and not payload.get("requester_id"):
+                        payload["requester_id"] = requester_id
                     self.send_sse(app.iter_assistant_chat_events(payload))
+                    return
+                if parsed.path == "/api/analytics/cluster-zero-hit":
+                    self.send_json(app.cluster_zero_hit_queries(payload))
                     return
                 if parsed.path == "/api/import/generation-jobs":
                     self.send_json(app.create_import_generation_job(payload))
@@ -1398,6 +2006,7 @@ def make_handler(app: AdminApp):
             length = int(self.headers.get("Content-Length", "0"))
             if length == 0:
                 return {}
+            ensure_request_size(length, app.settings.admin_max_json_bytes, "json")
             raw = self.rfile.read(length).decode("utf-8")
             try:
                 payload = json.loads(raw)
@@ -1408,13 +2017,18 @@ def make_handler(app: AdminApp):
             return payload
 
         def read_multipart_file(self) -> tuple[str, bytes]:
-            """读取单文件上传表单，当前只接受字段名 file。"""
+            """读取单文件上传表单，当前只接受字段名 file。
+
+            关键约束：在读 body 之前先按 admin_max_request_bytes 守门，避免恶意
+            Content-Length 把 GB 级请求体灌进内存。
+            """
             content_type = self.headers.get("Content-Type", "")
             boundary_match = re.search(r"boundary=(.+)", content_type)
             if not boundary_match:
                 raise AdminValidationError("multipart boundary is required")
             boundary = boundary_match.group(1).strip('"').encode("utf-8")
             length = int(self.headers.get("Content-Length", "0"))
+            ensure_request_size(length, app.settings.admin_max_request_bytes, "upload")
             body = self.rfile.read(length)
             for part in body.split(b"--" + boundary):
                 if b'name="file"' not in part:
@@ -1473,17 +2087,21 @@ def make_handler(app: AdminApp):
                     self.wfile.write(format_sse_event(event).encode("utf-8"))
                     self.wfile.flush()
             except Exception as exc:
-                self.wfile.write(format_sse_event({"type": "error", "error": str(exc)}).encode("utf-8"))
+                _, sanitized_body = classify_error_response(exc)
+                if sanitized_body["error"] == "internal error":
+                    logger.warning("sse stream failed: %s", exc, exc_info=True)
+                error_event = {"type": "error", "error": sanitized_body["error"]}
+                self.wfile.write(format_sse_event(error_event).encode("utf-8"))
                 self.wfile.flush()
 
         def send_error_json(self, exc: Exception) -> None:
-            if isinstance(exc, AdminNotFoundError):
-                status = HTTPStatus.NOT_FOUND
-            elif isinstance(exc, AdminValidationError | AiSuggestionError | ImportCandidateError):
-                status = HTTPStatus.BAD_REQUEST
-            else:
-                status = HTTPStatus.INTERNAL_SERVER_ERROR
-            self.send_json({"error": str(exc)}, status=status)
+            """统一响应错误；500 类异常写完整堆栈到日志，前端只看到固定文案。"""
+            status, body = classify_error_response(exc)
+            if status == HTTPStatus.INTERNAL_SERVER_ERROR:
+                logger.error(
+                    "admin handler internal error: %s\n%s", exc, traceback.format_exc()
+                )
+            self.send_json(body, status=status)
 
         def log_message(self, format: str, *args: Any) -> None:
             return
@@ -1492,6 +2110,8 @@ def make_handler(app: AdminApp):
 
 
 def run_admin_server(settings: Settings, *, host: str, port: int) -> None:
+    """启动本地后台 HTTP 服务；非 loopback host 必须显式 env 同意，避免误暴露。"""
+    ensure_loopback_or_explicit_opt_in(host, os.environ)
     app = AdminApp(settings)
     app.database().init_schema()
     server = HTTPServer((host, port), make_handler(app))

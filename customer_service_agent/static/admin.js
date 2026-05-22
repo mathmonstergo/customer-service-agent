@@ -78,6 +78,7 @@ const workspaceLabels = {
   import: "FAQ 管理",
   assistant: "智能问答",
   retrieval: "检索工作台",
+  analytics: "查询分析",
 };
 const faqSubviewOrder = ["list", "generate", "review"];
 const ASSISTANT_STORAGE_KEY = "customerServiceAgent.assistantConversations";
@@ -1488,6 +1489,9 @@ function switchWorkspace(workspace, options = {}) {
   $("importWorkspace").classList.toggle("hidden", workspace !== "import");
   $("assistantWorkspace").classList.toggle("hidden", workspace !== "assistant");
   $("retrievalWorkspace").classList.toggle("hidden", workspace !== "retrieval");
+  if ($("analyticsWorkspace")) {
+    $("analyticsWorkspace").classList.toggle("hidden", workspace !== "analytics");
+  }
   $("workspaceTitle").textContent = workspaceLabels[workspace] || "主页";
   $("workspaceTitle").classList.toggle("hidden", workspace === "knowledge");
   $("workspaceChevron").classList.toggle("hidden", workspace === "knowledge");
@@ -1500,6 +1504,7 @@ function switchWorkspace(workspace, options = {}) {
   if (!options.skipLoad && workspace === "documents") loadDocumentFiles();
   if (!options.skipLoad && workspace === "knowledge") loadKnowledgeImportSummary();
   if (!options.skipLoad && workspace === "retrieval") loadRetrievalWorkspace();
+  if (!options.skipLoad && workspace === "analytics") loadAnalyticsWorkspace();
 }
 
 async function switchImportView(view, options = {}) {
@@ -3042,6 +3047,10 @@ function applySettingsValues(settings) {
   setInputValue("wechatTokenFile", settings.wechat_token_file);
   setInputValue("wechatMessageChunkSize", settings.wechat_message_chunk_size);
   setSecretValue("databaseUrl", settings.database_url);
+  setInputValue("rerankBaseUrl", settings.rerank_base_url);
+  setSecretValue("rerankApiKey", settings.rerank_api_key);
+  setInputValue("rerankModel", settings.rerank_model);
+  setInputValue("rerankInputSize", settings.rerank_input_size);
   resetSecretVisibility();
 }
 
@@ -3086,6 +3095,10 @@ function collectSettingsPayload() {
     mineru_api_token: readSecretValue($("mineruApiToken")),
     mineru_parse_timeout_seconds: $("mineruTimeout").value.trim(),
     mineru_use_kb_packager: $("mineruKbPackager").checked,
+    rerank_base_url: $("rerankBaseUrl") ? $("rerankBaseUrl").value.trim() : "",
+    rerank_api_key: $("rerankApiKey") ? readSecretValue($("rerankApiKey")) : "",
+    rerank_model: $("rerankModel") ? $("rerankModel").value.trim() : "",
+    rerank_input_size: $("rerankInputSize") ? $("rerankInputSize").value.trim() : "50",
   };
 }
 
@@ -3711,3 +3724,235 @@ bindEvents();
 loadAssistantConversations();
 loadFaqs();
 loadKnowledgeImportSummary();
+
+// --- 查询分析（Query Analytics）---
+
+const analyticsState = {
+  windowDays: 7,
+  activeTab: "top",
+  overview: null,
+  loading: false,
+};
+
+function getAnalyticsWindowDays() {
+  const input = $("analyticsWindowDays");
+  if (!input) return analyticsState.windowDays;
+  const value = parseInt(input.value, 10);
+  if (!Number.isFinite(value) || value <= 0) return analyticsState.windowDays;
+  return Math.min(Math.max(value, 1), 90);
+}
+
+async function loadAnalyticsWorkspace() {
+  if (analyticsState.loading) return;
+  analyticsState.loading = true;
+  analyticsState.windowDays = getAnalyticsWindowDays();
+  try {
+    await Promise.all([
+      loadAnalyticsOverview(),
+      loadAnalyticsHitRate(),
+      loadAnalyticsTab(analyticsState.activeTab),
+    ]);
+  } catch (error) {
+    showToast(`查询分析加载失败：${error.message}`);
+  } finally {
+    analyticsState.loading = false;
+  }
+}
+
+async function loadAnalyticsOverview() {
+  const overview = await requestJson("/api/analytics/overview");
+  analyticsState.overview = overview;
+  renderAnalyticsOverview(overview);
+  // 顶部知识库主页卡片复用 7 日数据
+  const seven = overview.last_7d || {};
+  if ($("homeAnalyticsHitRate")) {
+    $("homeAnalyticsHitRate").textContent = formatHitRate(seven.hit_rate);
+  }
+  if ($("homeAnalyticsTotal")) $("homeAnalyticsTotal").textContent = seven.total || 0;
+  if ($("homeAnalyticsZeroHit")) $("homeAnalyticsZeroHit").textContent = seven.zero_hit || 0;
+}
+
+function renderAnalyticsOverview(overview) {
+  const setBucket = (key, prefix) => {
+    const bucket = overview[key] || {};
+    if ($(`${prefix}HitRate`)) $(`${prefix}HitRate`).textContent = formatHitRate(bucket.hit_rate);
+    if ($(`${prefix}Total`)) $(`${prefix}Total`).textContent = bucket.total || 0;
+    if ($(`${prefix}ZeroHit`)) $(`${prefix}ZeroHit`).textContent = bucket.zero_hit || 0;
+  };
+  setBucket("today", "analyticsToday");
+  setBucket("last_7d", "analytics7d");
+  setBucket("last_30d", "analytics30d");
+}
+
+function formatHitRate(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
+  return `${(Number(value) * 100).toFixed(1)}%`;
+}
+
+async function loadAnalyticsHitRate() {
+  const days = analyticsState.windowDays;
+  const data = await requestJson(`/api/analytics/hit-rate?days=${days}`);
+  renderHitRateChart(data.items || []);
+}
+
+function renderHitRateChart(items) {
+  const container = $("analyticsHitRateChart");
+  if (!container) return;
+  if (!items.length) {
+    container.innerHTML = '<p class="analytics-empty">暂无数据</p>';
+    return;
+  }
+  const width = 720;
+  const height = 180;
+  const pad = { top: 16, right: 16, bottom: 28, left: 36 };
+  const innerWidth = width - pad.left - pad.right;
+  const innerHeight = height - pad.top - pad.bottom;
+  const points = items.map((row, index) => {
+    const x = items.length === 1 ? innerWidth / 2 : (index / (items.length - 1)) * innerWidth;
+    const y = innerHeight - (Number(row.hit_rate) || 0) * innerHeight;
+    return { x, y, bucket: row.bucket, total: row.total, hit_rate: row.hit_rate };
+  });
+  const pathD = points
+    .map((point, index) => `${index === 0 ? "M" : "L"} ${(pad.left + point.x).toFixed(1)} ${(pad.top + point.y).toFixed(1)}`)
+    .join(" ");
+  const yTicks = [0, 0.25, 0.5, 0.75, 1];
+  const ticksMarkup = yTicks
+    .map((tick) => {
+      const y = pad.top + innerHeight - tick * innerHeight;
+      return `<line x1="${pad.left}" x2="${pad.left + innerWidth}" y1="${y}" y2="${y}" stroke="#eee" /><text x="${pad.left - 6}" y="${y + 4}" text-anchor="end" font-size="10" fill="#888">${Math.round(tick * 100)}%</text>`;
+    })
+    .join("");
+  const dots = points
+    .map((point) => `<circle cx="${(pad.left + point.x).toFixed(1)}" cy="${(pad.top + point.y).toFixed(1)}" r="3" fill="#3b82f6"><title>${escapeHtml(point.bucket || "")} · 命中率 ${formatHitRate(point.hit_rate)} · 查询 ${point.total}</title></circle>`)
+    .join("");
+  container.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="命中率折线图">${ticksMarkup}<path d="${pathD}" fill="none" stroke="#3b82f6" stroke-width="2" />${dots}</svg>`;
+}
+
+async function loadAnalyticsTab(tab) {
+  analyticsState.activeTab = tab;
+  document.querySelectorAll(".analytics-tab-button").forEach((button) => {
+    button.classList.toggle("active", button.dataset.analyticsTab === tab);
+  });
+  document.querySelectorAll(".analytics-tab-panel").forEach((panel) => {
+    panel.classList.toggle("active", panel.dataset.analyticsPanel === tab);
+  });
+  if (tab === "top") return loadAnalyticsTopQueries();
+  if (tab === "zero") return loadAnalyticsZeroHit();
+  if (tab === "low") return loadAnalyticsLowScore();
+  if (tab === "chunks") return loadAnalyticsTopChunks();
+  if (tab === "clusters") return loadAnalyticsClusterSummaries();
+}
+
+async function loadAnalyticsTopQueries() {
+  const days = analyticsState.windowDays;
+  const data = await requestJson(`/api/analytics/top-queries?days=${days}&limit=20`);
+  const body = $("analyticsTopQueriesBody");
+  if (!body) return;
+  body.innerHTML = (data.items || [])
+    .map(
+      (row) => `<tr>
+        <td>${escapeHtml(row.query || "")}</td>
+        <td>${row.count || 0}</td>
+        <td>${formatHitRate(row.hit_rate)}</td>
+        <td>${escapeHtml(row.last_seen || "")}</td>
+      </tr>`,
+    )
+    .join("");
+}
+
+async function loadAnalyticsZeroHit() {
+  const days = analyticsState.windowDays;
+  const data = await requestJson(`/api/analytics/zero-hit?days=${days}&limit=100`);
+  const body = $("analyticsZeroHitBody");
+  if (!body) return;
+  body.innerHTML = (data.items || [])
+    .map(
+      (row) => `<tr>
+        <td>${escapeHtml(row.query || "")}</td>
+        <td>${escapeHtml(row.intent || "")}</td>
+        <td>${escapeHtml(row.requester_type || "")}</td>
+        <td>${escapeHtml(row.created_at || "")}</td>
+      </tr>`,
+    )
+    .join("");
+}
+
+async function loadAnalyticsLowScore() {
+  const days = analyticsState.windowDays;
+  const data = await requestJson(`/api/analytics/low-score?days=${days}&limit=100`);
+  const body = $("analyticsLowScoreBody");
+  if (!body) return;
+  body.innerHTML = (data.items || [])
+    .map(
+      (row) => `<tr>
+        <td>${escapeHtml(row.query || "")}</td>
+        <td>${row.top_score == null ? "--" : Number(row.top_score).toFixed(2)}</td>
+        <td>${escapeHtml(row.intent || "")}</td>
+        <td>${escapeHtml(row.created_at || "")}</td>
+      </tr>`,
+    )
+    .join("");
+}
+
+async function loadAnalyticsTopChunks() {
+  const days = analyticsState.windowDays;
+  const data = await requestJson(`/api/analytics/top-chunks?days=${days}&limit=30`);
+  const body = $("analyticsTopChunksBody");
+  if (!body) return;
+  body.innerHTML = (data.items || [])
+    .map((row) => `<tr><td>${escapeHtml(row.chunk_id || "")}</td><td>${row.count || 0}</td></tr>`)
+    .join("");
+}
+
+async function loadAnalyticsClusterSummaries() {
+  const data = await requestJson("/api/analytics/cluster-summaries?limit=20");
+  const body = $("analyticsClusterSummariesBody");
+  if (!body) return;
+  if (!(data.items || []).length) {
+    body.innerHTML = '<p class="analytics-empty">暂无聚类记录，点击「用 LLM 聚类零命中」生成。</p>';
+    return;
+  }
+  body.innerHTML = data.items
+    .map(
+      (row) => `<article class="analytics-cluster-card">
+        <header><strong>${escapeHtml(row.cluster_label || "未命名")}</strong><small>${escapeHtml(row.created_at || "")}</small></header>
+        <p>${escapeHtml(row.suggested_content || "（无建议）")}</p>
+        <ul>${(row.sample_queries || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+      </article>`,
+    )
+    .join("");
+}
+
+async function triggerZeroHitClustering() {
+  const button = $("analyticsClusterButton");
+  const hint = $("analyticsClusterHint");
+  if (!button) return;
+  button.disabled = true;
+  if (hint) hint.textContent = "正在调用 LLM 聚类，可能需要 10-30 秒…";
+  try {
+    const data = await requestJson("/api/analytics/cluster-zero-hit", {
+      method: "POST",
+      body: JSON.stringify({ days: analyticsState.windowDays, limit: 200 }),
+      headers: { "Content-Type": "application/json" },
+    });
+    if (hint) hint.textContent = `已生成 ${data.total || 0} 个聚类。`;
+    await loadAnalyticsClusterSummaries();
+    loadAnalyticsTab("clusters");
+  } catch (error) {
+    if (hint) hint.textContent = `聚类失败：${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function bindAnalyticsEvents() {
+  const refresh = $("analyticsRefreshButton");
+  if (refresh) refresh.addEventListener("click", () => loadAnalyticsWorkspace());
+  document.querySelectorAll(".analytics-tab-button").forEach((button) => {
+    button.addEventListener("click", () => loadAnalyticsTab(button.dataset.analyticsTab));
+  });
+  const cluster = $("analyticsClusterButton");
+  if (cluster) cluster.addEventListener("click", () => triggerZeroHitClustering());
+}
+
+bindAnalyticsEvents();

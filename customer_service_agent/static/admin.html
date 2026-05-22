@@ -244,6 +244,128 @@
             <p><span>ⓘ</span> 展开后再次点击卡片进入页面</p>
           </div>
         </article>
+
+        <article class="knowledge-entry" data-knowledge-entry="analytics">
+          <button class="knowledge-card" type="button" data-knowledge-entry="analytics" data-target-workspace="analytics">
+            <span class="knowledge-card-icon">
+              <svg aria-hidden="true"><use href="#icon-search"></use></svg>
+            </span>
+            <span class="knowledge-card-copy">
+              <strong>查询分析</strong>
+              <small>看板：高频 / 零命中 / 低置信查询、chunk 引用频次、LLM 聚类。</small>
+            </span>
+            <svg class="knowledge-card-arrow" aria-hidden="true"><use href="#icon-chevron-right"></use></svg>
+          </button>
+          <div class="knowledge-popover" role="status">
+            <div class="knowledge-popover-arrow" aria-hidden="true"></div>
+            <div class="knowledge-popover-row">
+              <span class="task-icon muted"><svg aria-hidden="true"><use href="#icon-database"></use></svg></span>
+              <span>命中率</span>
+              <strong id="homeAnalyticsHitRate">--</strong>
+              <i class="task-dot gray"></i>
+            </div>
+            <div class="knowledge-popover-row">
+              <span class="task-icon warning"><svg aria-hidden="true"><use href="#icon-hourglass"></use></svg></span>
+              <span>零命中（7 日）</span>
+              <strong id="homeAnalyticsZeroHit">0</strong>
+              <i class="task-dot orange"></i>
+            </div>
+            <div class="knowledge-popover-row">
+              <span class="task-icon success"><svg aria-hidden="true"><use href="#icon-check-circle"></use></svg></span>
+              <span>近 7 日查询</span>
+              <strong id="homeAnalyticsTotal">0</strong>
+              <i class="task-dot green"></i>
+            </div>
+            <p><span>ⓘ</span> 展开后再次点击卡片进入页面</p>
+          </div>
+        </article>
+      </section>
+    </main>
+
+    <main class="analytics-shell hidden" id="analyticsWorkspace">
+      <section class="analytics-board">
+        <header class="document-header">
+          <div>
+            <h1>查询分析</h1>
+            <p>看高频问题 / 零命中查询 / 低置信查询 / chunk 引用频次，可一键 LLM 聚类零命中。</p>
+          </div>
+          <div class="analytics-controls">
+            <label class="settings-field" style="min-width:140px;">
+              <span>时间窗口（天）</span>
+              <input id="analyticsWindowDays" type="number" min="1" max="90" value="7" />
+            </label>
+            <button class="apply-button" type="button" id="analyticsRefreshButton">刷新</button>
+          </div>
+        </header>
+
+        <section class="analytics-summary-cards" aria-label="查询概览">
+          <div class="summary-card">
+            <h4>今日</h4>
+            <div class="summary-card-value" id="analyticsTodayHitRate">--</div>
+            <div class="summary-card-meta"><span id="analyticsTodayTotal">0</span> 次查询 · 零命中 <span id="analyticsTodayZeroHit">0</span></div>
+          </div>
+          <div class="summary-card">
+            <h4>7 日</h4>
+            <div class="summary-card-value" id="analytics7dHitRate">--</div>
+            <div class="summary-card-meta"><span id="analytics7dTotal">0</span> 次查询 · 零命中 <span id="analytics7dZeroHit">0</span></div>
+          </div>
+          <div class="summary-card">
+            <h4>30 日</h4>
+            <div class="summary-card-value" id="analytics30dHitRate">--</div>
+            <div class="summary-card-meta"><span id="analytics30dTotal">0</span> 次查询 · 零命中 <span id="analytics30dZeroHit">0</span></div>
+          </div>
+        </section>
+
+        <section class="analytics-chart-panel">
+          <header><h3>命中率趋势（按日）</h3></header>
+          <div id="analyticsHitRateChart" class="analytics-hit-rate-chart" aria-live="polite"></div>
+        </section>
+
+        <section class="analytics-tabs">
+          <nav class="analytics-tabs-nav" aria-label="分析维度">
+            <button class="analytics-tab-button active" type="button" data-analytics-tab="top">高频查询</button>
+            <button class="analytics-tab-button" type="button" data-analytics-tab="zero">零命中</button>
+            <button class="analytics-tab-button" type="button" data-analytics-tab="low">低置信</button>
+            <button class="analytics-tab-button" type="button" data-analytics-tab="chunks">chunk 引用</button>
+            <button class="analytics-tab-button" type="button" data-analytics-tab="clusters">LLM 聚类</button>
+          </nav>
+
+          <section class="analytics-tab-panel active" data-analytics-panel="top">
+            <table class="analytics-table">
+              <thead><tr><th>查询</th><th>次数</th><th>命中率</th><th>最近发生</th></tr></thead>
+              <tbody id="analyticsTopQueriesBody"></tbody>
+            </table>
+          </section>
+
+          <section class="analytics-tab-panel" data-analytics-panel="zero">
+            <div class="analytics-tab-actions">
+              <button class="apply-button" type="button" id="analyticsClusterButton">用 LLM 聚类零命中</button>
+              <span id="analyticsClusterHint" class="analytics-tab-hint"></span>
+            </div>
+            <table class="analytics-table">
+              <thead><tr><th>查询</th><th>意图</th><th>发起方</th><th>时间</th></tr></thead>
+              <tbody id="analyticsZeroHitBody"></tbody>
+            </table>
+          </section>
+
+          <section class="analytics-tab-panel" data-analytics-panel="low">
+            <table class="analytics-table">
+              <thead><tr><th>查询</th><th>top_score</th><th>意图</th><th>时间</th></tr></thead>
+              <tbody id="analyticsLowScoreBody"></tbody>
+            </table>
+          </section>
+
+          <section class="analytics-tab-panel" data-analytics-panel="chunks">
+            <table class="analytics-table">
+              <thead><tr><th>chunk_id</th><th>引用次数</th></tr></thead>
+              <tbody id="analyticsTopChunksBody"></tbody>
+            </table>
+          </section>
+
+          <section class="analytics-tab-panel" data-analytics-panel="clusters">
+            <div id="analyticsClusterSummariesBody" class="analytics-cluster-list"></div>
+          </section>
+        </section>
       </section>
     </main>
 
@@ -1158,6 +1280,12 @@
               <small>维度锁定 1024</small>
               <em>已配置</em>
             </button>
+            <button class="settings-nav-item" type="button" data-settings-section="rerank">
+              <span class="settings-nav-icon">↺</span>
+              <strong>Rerank 模型</strong>
+              <small>可选 Cross Encoder</small>
+              <em class="quiet">选填</em>
+            </button>
             <button class="settings-nav-item" type="button" data-settings-section="retrieval">
               <span class="settings-nav-icon">⌕</span>
               <strong>检索策略</strong>
@@ -1326,6 +1454,47 @@
                   <span>Embedding Dimensions <strong>*</strong></span>
                   <input id="embeddingDimensions" type="number" value="1024" />
                   <small>当前数据库固定 vector(1024)，不建议修改。</small>
+                </label>
+              </div>
+            </section>
+
+            <section class="settings-panel" id="settingsPanelRerank" data-settings-panel="rerank">
+              <div class="settings-section-head">
+                <div>
+                  <h3>Rerank 模型</h3>
+                  <p>可选 Cohere /v1/rerank 兼容 API；配齐 Base URL / API Key / Model 自动启用，缺一项即回退到混合召回结果。</p>
+                </div>
+                <span class="settings-test-hint">建议 bge-reranker-v2-m3 等 cross encoder</span>
+              </div>
+              <label class="settings-field">
+                <span>Rerank Base URL</span>
+                <input id="rerankBaseUrl" placeholder="https://rerank.example.com" />
+              </label>
+              <label class="settings-field">
+                <span>Rerank API Key</span>
+                <div class="settings-secret">
+                  <input id="rerankApiKey" type="text" autocomplete="off" spellcheck="false" readonly />
+                  <button type="button" data-secret-toggle="rerankApiKey" data-secret-visible="false" aria-label="显示 Rerank API Key" title="显示或隐藏 Rerank API Key">
+                    <svg class="secret-icon secret-icon-eye" data-secret-icon="eye" aria-hidden="true"><use href="#icon-eye"></use></svg>
+                    <svg class="secret-icon secret-icon-eye-off" data-secret-icon="eye-off" aria-hidden="true"><use href="#icon-eye-off"></use></svg>
+                  </button>
+                  <button type="button" data-secret-copy="rerankApiKey" aria-label="复制 Rerank API Key" title="复制 Rerank API Key">
+                    <svg class="secret-icon" data-secret-icon="copy" aria-hidden="true"><use href="#icon-copy"></use></svg>
+                  </button>
+                  <button type="button" data-secret-clear="rerankApiKey" aria-label="清空 Rerank API Key" title="清空 Rerank API Key">
+                    <svg class="secret-icon" data-secret-icon="x" aria-hidden="true"><use href="#icon-x"></use></svg>
+                  </button>
+                </div>
+              </label>
+              <div class="settings-grid two">
+                <label class="settings-field">
+                  <span>Rerank Model</span>
+                  <input id="rerankModel" placeholder="bge-reranker-v2-m3" />
+                </label>
+                <label class="settings-field">
+                  <span>Rerank 输入候选数</span>
+                  <input id="rerankInputSize" type="number" min="5" max="200" value="50" />
+                  <small>融合后取前 N 条送 rerank；默认 50。</small>
                 </label>
               </div>
             </section>
