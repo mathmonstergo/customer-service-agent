@@ -1,8 +1,16 @@
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
 from typing import Any
 
+import requests
 from openai import OpenAI
 
 from customer_service_agent.config import Settings
+
+
+logger = logging.getLogger(__name__)
 
 
 def build_openai_client(base_url: str, api_key: str) -> OpenAI:
@@ -77,3 +85,72 @@ class ChatClient:
             content = getattr(delta, "content", None)
             if content:
                 yield content
+
+
+@dataclass(frozen=True)
+class RerankResult:
+    """归一化的 rerank 返回单元，index 指向原候选位置，relevance_score 用于排序。"""
+
+    index: int
+    relevance_score: float
+
+
+class RerankClient:
+    """Cohere /v1/rerank 兼容协议的客户端，配齐三项配置才会被实例化。"""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        input_size: int = 50,
+        timeout: float = 30.0,
+    ):
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.model = model
+        self.input_size = input_size
+        self.timeout = timeout
+
+    @classmethod
+    def from_settings(cls, settings: Settings | Any) -> "RerankClient | None":
+        base_url = str(getattr(settings, "rerank_base_url", "") or "").strip()
+        api_key = str(getattr(settings, "rerank_api_key", "") or "").strip()
+        model = str(getattr(settings, "rerank_model", "") or "").strip()
+        if not (base_url and api_key and model):
+            return None
+        input_size = int(getattr(settings, "rerank_input_size", 50) or 50)
+        return cls(base_url=base_url, api_key=api_key, model=model, input_size=input_size)
+
+    def rerank(self, query: str, documents: list[str], *, top_n: int) -> list[RerankResult]:
+        """调用 rerank API，失败时返回空列表，让上层透传原候选。"""
+        url = f"{self.base_url}/v1/rerank"
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        body = {
+            "model": self.model,
+            "query": query,
+            "documents": list(documents),
+            "top_n": top_n,
+        }
+        try:
+            response = requests.post(url, json=body, headers=headers, timeout=self.timeout)
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as exc:
+            logger.warning("rerank call failed: %s", exc, exc_info=True)
+            return []
+        results = payload.get("results") if isinstance(payload, dict) else None
+        if not isinstance(results, list):
+            return []
+        normalized: list[RerankResult] = []
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            try:
+                index = int(item["index"])
+                score = float(item["relevance_score"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            normalized.append(RerankResult(index=index, relevance_score=score))
+        return normalized

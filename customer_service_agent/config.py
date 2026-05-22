@@ -29,6 +29,18 @@ SETTINGS_ENV_FIELDS = {
     "MINERU_API_TOKEN": "mineru_api_token",
     "MINERU_PARSE_TIMEOUT_SECONDS": "mineru_parse_timeout_seconds",
     "MINERU_USE_KB_PACKAGER": "mineru_use_kb_packager",
+    "DOCUMENT_CHUNK_TOKEN_NUM": "document_chunk_token_num",
+    "DOCUMENT_CHUNK_DELIMITER": "document_chunk_delimiter",
+    "DOCUMENT_CHUNK_OVERLAP_PERCENT": "document_chunk_overlap_percent",
+    "DOCUMENT_CHILDREN_DELIMITER": "document_children_delimiter",
+    "DOCUMENT_TABLE_CONTEXT_SIZE": "document_table_context_size",
+    "DOCUMENT_IMAGE_CONTEXT_SIZE": "document_image_context_size",
+    "ADMIN_MAX_JSON_BYTES": "admin_max_json_bytes",
+    "ADMIN_MAX_REQUEST_BYTES": "admin_max_request_bytes",
+    "RERANK_BASE_URL": "rerank_base_url",
+    "RERANK_API_KEY": "rerank_api_key",
+    "RERANK_MODEL": "rerank_model",
+    "RERANK_INPUT_SIZE": "rerank_input_size",
 }
 
 
@@ -57,6 +69,18 @@ class Settings:
     )
     mineru_parse_timeout_seconds: int = 600
     mineru_use_kb_packager: bool = True
+    document_chunk_token_num: int = 512
+    document_chunk_delimiter: str = "\n。；！？"
+    document_chunk_overlap_percent: int = 0
+    document_children_delimiter: str = ""
+    document_table_context_size: int = 0
+    document_image_context_size: int = 0
+    admin_max_json_bytes: int = 10 * 1024 * 1024
+    admin_max_request_bytes: int = 200 * 1024 * 1024
+    rerank_base_url: str = ""
+    rerank_api_key: str = ""
+    rerank_model: str = ""
+    rerank_input_size: int = 50
 
     @classmethod
     def load(
@@ -130,6 +154,45 @@ class Settings:
             env, "MINERU_PARSE_TIMEOUT_SECONDS", 600
         )
         values["mineru_use_kb_packager"] = cls._bool_env(env, "MINERU_USE_KB_PACKAGER", True)
+        values["document_chunk_token_num"] = cls._integer_env(
+            env,
+            "DOCUMENT_CHUNK_TOKEN_NUM",
+            512,
+        )
+        values["document_chunk_delimiter"] = env.get(
+            "DOCUMENT_CHUNK_DELIMITER",
+            "\n。；！？",
+        )
+        values["document_chunk_overlap_percent"] = cls._integer_env(
+            env,
+            "DOCUMENT_CHUNK_OVERLAP_PERCENT",
+            0,
+        )
+        values["document_children_delimiter"] = env.get("DOCUMENT_CHILDREN_DELIMITER", "")
+        values["document_table_context_size"] = cls._integer_env(
+            env,
+            "DOCUMENT_TABLE_CONTEXT_SIZE",
+            0,
+        )
+        values["document_image_context_size"] = cls._integer_env(
+            env,
+            "DOCUMENT_IMAGE_CONTEXT_SIZE",
+            0,
+        )
+        values["admin_max_json_bytes"] = cls._integer_env(
+            env,
+            "ADMIN_MAX_JSON_BYTES",
+            10 * 1024 * 1024,
+        )
+        values["admin_max_request_bytes"] = cls._integer_env(
+            env,
+            "ADMIN_MAX_REQUEST_BYTES",
+            200 * 1024 * 1024,
+        )
+        values["rerank_base_url"] = env.get("RERANK_BASE_URL", "").strip()
+        values["rerank_api_key"] = env.get("RERANK_API_KEY", "").strip()
+        values["rerank_model"] = env.get("RERANK_MODEL", "").strip()
+        values["rerank_input_size"] = cls._integer_env(env, "RERANK_INPUT_SIZE", 50)
 
         return cls(**values)
 

@@ -8,9 +8,15 @@ import uuid
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import requests
+
+from customer_service_agent.chunking import (
+    StructuredChunk,
+    attach_media_context_to_blocks,
+    ragflow_naive_merge_blocks,
+)
 
 MINERU_BATCH_FILE_URL = "https://mineru.net/api/v4/file-urls/batch"
 MINERU_BATCH_RESULT_URL_TEMPLATE = "https://mineru.net/api/v4/extract-results/batch/{batch_id}"
@@ -29,6 +35,7 @@ class ParsedBlock:
     page_number: int | None
     section_title: str | None
     evidence: dict[str, Any]
+    position_tag: str | None = None
 
 
 @dataclass(frozen=True)
@@ -55,6 +62,7 @@ class MineruClient:
         batch_result_url_template: str = MINERU_BATCH_RESULT_URL_TEMPLATE,
         timeout_seconds: int = 600,
         use_kb_packager: bool = True,
+        asset_output_dir: str | Path | None = None,
         session: Any | None = None,
     ):
         self.api_token = api_token.strip() if api_token else None
@@ -62,6 +70,7 @@ class MineruClient:
         self.batch_result_url_template = batch_result_url_template.strip().rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.use_kb_packager = use_kb_packager
+        self.asset_output_dir = Path(asset_output_dir) if asset_output_dir else None
         self.session = session or requests.Session()
 
     def parse_file(self, path: str | Path) -> list[ParsedBlock]:
@@ -185,7 +194,7 @@ class MineruClient:
             raise MineruParseError("MinerU result zip is empty")
         try:
             with zipfile.ZipFile(io.BytesIO(content)) as archive:
-                return _payload_from_result_zip(archive)
+                return _payload_from_result_zip(archive, asset_output_dir=self.asset_output_dir)
         except zipfile.BadZipFile as exc:
             raise MineruParseError("MinerU result is not a valid zip") from exc
 
@@ -270,17 +279,27 @@ def package_mineru_payload_for_kb(payload: dict[str, Any], *, source_file: str) 
             if not text:
                 continue
 
+            position_tag = _ragflow_position_tag(block)
+            evidence = {
+                "source_file": source_file,
+                "page_number": page_number,
+                "block_type": normalized_type,
+                "layout_type": block_type,
+                "doc_type_kwd": _ragflow_doc_type(normalized_type, block),
+                "postprocess": "mineru-kb-packager",
+            }
+            if position_tag:
+                evidence["position_tag"] = position_tag
+            asset_paths = _mineru_asset_paths(block)
+            if asset_paths:
+                evidence["asset_paths"] = asset_paths
             parsed = ParsedBlock(
                 text=text,
                 block_type=normalized_type,
                 page_number=page_number,
                 section_title=current_section_title or None,
-                evidence={
-                    "source_file": source_file,
-                    "page_number": page_number,
-                    "block_type": normalized_type,
-                    "postprocess": "mineru-kb-packager",
-                },
+                evidence=evidence,
+                position_tag=position_tag,
             )
 
             if normalized_type == "text":
@@ -299,8 +318,14 @@ def build_import_chunks_from_blocks(
     blocks: list[ParsedBlock | dict[str, Any]],
     *,
     max_chars: int = 6000,
+    chunk_token_num: int | None = None,
+    delimiter: str = "\n。；！？",
+    overlapped_percent: int = 0,
+    children_delimiter: str = "",
+    table_context_size: int = 0,
+    image_context_size: int = 0,
 ) -> list[dict[str, Any]]:
-    """把解析块合并为导入审核切块，保留章节、页码和来源证据。"""
+    """按 RAGFlow naive merge 把解析块合并为导入审核切块。"""
     normalized = []
     for block in blocks:
         parsed = _ensure_block(block)
@@ -309,20 +334,26 @@ def build_import_chunks_from_blocks(
     if not normalized:
         raise MineruParseError("MinerU returned no parseable text")
 
-    rows: list[dict[str, Any]] = []
-    current: list[ParsedBlock] = []
-    current_chars = 0
-    for block in normalized:
-        rendered = _format_block(block)
-        if current and current_chars + len(rendered) > max_chars:
-            rows.append(_build_import_chunk(file_id, len(rows) + 1, current))
-            current = []
-            current_chars = 0
-        current.append(block)
-        current_chars += len(rendered)
-    if current:
-        rows.append(_build_import_chunk(file_id, len(rows) + 1, current))
-    return rows
+    source_blocks = attach_media_context_to_blocks(
+        [_source_block_payload(block) for block in normalized],
+        table_context_size=table_context_size,
+        image_context_size=image_context_size,
+    )
+    merged_chunks = ragflow_naive_merge_blocks(
+        source_blocks,
+        chunk_token_num=chunk_token_num or max_chars,
+        delimiter=delimiter,
+        overlapped_percent=overlapped_percent,
+    )
+    return [
+        _build_import_chunk(
+            file_id,
+            index,
+            chunk,
+            children_delimiter=children_delimiter,
+        )
+        for index, chunk in enumerate(merged_chunks, start=1)
+    ]
 
 
 def _check_response_status(response: Any) -> None:
@@ -426,9 +457,14 @@ def _extract_progress(result: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
-def _payload_from_result_zip(archive: zipfile.ZipFile) -> dict[str, Any]:
+def _payload_from_result_zip(
+    archive: zipfile.ZipFile,
+    *,
+    asset_output_dir: Path | None = None,
+) -> dict[str, Any]:
     """从 MinerU 结果 zip 中优先读取内容列表，缺失时读取 full.md。"""
     names = [name for name in archive.namelist() if not name.endswith("/")]
+    asset_root = _extract_mineru_zip_assets(archive, names, asset_output_dir)
     v2_names = [
         name
         for name in names
@@ -444,6 +480,8 @@ def _payload_from_result_zip(archive: zipfile.ZipFile) -> dict[str, Any]:
         name = sorted(content_names)[0]
         raw = archive.read(name).decode("utf-8")
         data = json.loads(raw)
+        if asset_root is not None:
+            _rewrite_mineru_asset_paths(data, asset_root)
         key = "content_list_v2" if "content_list_v2" in name else "content_list"
         if isinstance(data, dict):
             return data
@@ -456,6 +494,64 @@ def _payload_from_result_zip(archive: zipfile.ZipFile) -> dict[str, Any]:
         markdown = archive.read(sorted(markdown_names)[0]).decode("utf-8")
         return {"md_content": markdown}
     raise MineruParseError("MinerU result zip missing content_list.json or full.md")
+
+
+def _extract_mineru_zip_assets(
+    archive: zipfile.ZipFile,
+    names: list[str],
+    asset_output_dir: Path | None,
+) -> Path | None:
+    """把 MinerU zip 中的图片/表格资产安全解压到本地目录，JSON/Markdown 不落资产目录。"""
+    if asset_output_dir is None:
+        return None
+    asset_output_dir.mkdir(parents=True, exist_ok=True)
+    root = asset_output_dir.resolve()
+    for name in names:
+        if name.endswith((".json", ".md")):
+            continue
+        target = (root / name).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError as exc:
+            raise MineruParseError(f"Unsafe MinerU asset path: {name}") from exc
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(archive.read(name))
+    return root
+
+
+def _rewrite_mineru_asset_paths(data: Any, asset_root: Path) -> None:
+    """把 MinerU JSON 中的相对资产路径改成本地绝对路径，贴近 RAGFlow _read_output 行为。"""
+    if isinstance(data, list):
+        for item in data:
+            _rewrite_mineru_asset_paths(item, asset_root)
+        return
+    if not isinstance(data, dict):
+        return
+    for key in ("img_path", "table_img_path", "equation_img_path"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            resolved = _resolve_mineru_asset_path(asset_root, value.strip())
+            if resolved is not None:
+                data[key] = str(resolved)
+    for value in data.values():
+        if isinstance(value, (dict, list)):
+            _rewrite_mineru_asset_paths(value, asset_root)
+
+
+def _resolve_mineru_asset_path(asset_root: Path, value: str) -> Path | None:
+    """解析 MinerU 资产路径；直接路径不存在时按后缀匹配 zip 内嵌根目录。"""
+    candidate = (asset_root / value).resolve()
+    try:
+        candidate.relative_to(asset_root)
+    except ValueError:
+        return None
+    if candidate.exists():
+        return candidate
+    suffix = Path(value).as_posix().lstrip("/")
+    for path in asset_root.rglob(Path(value).name):
+        if path.as_posix().endswith(suffix):
+            return path.resolve()
+    return None
 
 
 def _unwrap_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -536,22 +632,38 @@ def _find_first_text(payload: dict[str, Any], keys: tuple[str, ...]) -> str | No
 
 
 def _blocks_from_content_list(items: list[dict[str, Any]], *, source_file: str) -> list[ParsedBlock]:
-    """把 MinerU content_list 条目转为统一块，并用标题维护章节上下文。"""
+    """把 MinerU content_list 条目转为统一块，并按 RAGFlow 方式保留位置 tag。"""
     blocks: list[ParsedBlock] = []
     current_section: str | None = None
+    layout_counters: dict[str, int] = {}
     for item in items:
+        block_type = str(item.get("type") or item.get("block_type") or "text").strip() or "text"
+        if block_type == "discarded":
+            continue
         text = _extract_item_text(item)
         if not text:
             continue
-        block_type = str(item.get("type") or item.get("block_type") or "text").strip() or "text"
         page_number = _extract_page_number(item)
+        position_tag = _ragflow_position_tag(item)
         if block_type in {"title", "header"}:
             current_section = text.splitlines()[0].strip()
+        layout_type = re.sub(r"\s+", " ", block_type)
+        layout_index = layout_counters.get(layout_type, 0)
+        layout_counters[layout_type] = layout_index + 1
+        doc_type = _ragflow_doc_type(layout_type, item)
         evidence = {
             "source_file": source_file,
             "page_number": page_number,
             "block_type": block_type,
+            "layout_type": layout_type,
+            "layoutno": f"{layout_type}-{layout_index}",
+            "doc_type_kwd": doc_type,
         }
+        if position_tag:
+            evidence["position_tag"] = position_tag
+        asset_paths = _mineru_asset_paths(item)
+        if asset_paths:
+            evidence["asset_paths"] = asset_paths
         blocks.append(
             ParsedBlock(
                 text=text,
@@ -559,6 +671,7 @@ def _blocks_from_content_list(items: list[dict[str, Any]], *, source_file: str) 
                 page_number=page_number,
                 section_title=current_section,
                 evidence=evidence,
+                position_tag=position_tag,
             )
         )
     return blocks
@@ -598,6 +711,38 @@ def _markdown_block(text: str, source_file: str, section_title: str | None) -> P
 
 def _extract_item_text(item: dict[str, Any]) -> str:
     """从 MinerU 条目中抽取可读正文，兼容 text/html/table_body 等字段。"""
+    block_type = str(item.get("type") or item.get("block_type") or "").strip()
+    if block_type == "discarded":
+        return ""
+    if block_type == "table":
+        return _extract_mineru_table_section(item)
+    if block_type == "image":
+        return "\n".join(
+            part
+            for part in (
+                _content_items_text(item.get("image_caption", [])),
+                _content_items_text(item.get("image_footnote", [])),
+            )
+            if part
+        ).strip()
+    if block_type == "equation":
+        value = item.get("text")
+        return str(value).strip() if value else ""
+    if block_type == "code":
+        return "\n".join(
+            part
+            for part in (
+                str(item.get("code_body") or "").strip(),
+                _content_items_text(item.get("code_caption", [])),
+            )
+            if part
+        ).strip()
+    if block_type == "list":
+        list_items = item.get("list_items", [])
+        if isinstance(list_items, list):
+            return "\n".join(str(value).strip() for value in list_items if str(value).strip())
+        return _content_items_text(list_items)
+
     for key in ("text", "content", "md", "html"):
         value = item.get(key)
         if isinstance(value, str) and value.strip():
@@ -606,6 +751,41 @@ def _extract_item_text(item: dict[str, Any]) -> str:
     if isinstance(table_body, str) and table_body.strip():
         return table_body.strip()
     return ""
+
+
+def _extract_mineru_table_section(item: dict[str, Any]) -> str:
+    """按 RAGFlow MinerU table 转 section 方式拼接表格正文、标题和脚注。"""
+    parts = [
+        str(item.get("table_body") or "").strip(),
+        _content_items_text(item.get("table_caption", [])),
+        _content_items_text(item.get("table_footnote", [])),
+    ]
+    text = "\n".join(part for part in parts if part).strip()
+    if not text and isinstance(item.get("text"), str):
+        text = item["text"].strip()
+    return text or "FAILED TO PARSE TABLE"
+
+
+def _mineru_asset_paths(item: dict[str, Any]) -> dict[str, str]:
+    """保留 MinerU 图片、表格、公式资产路径，供后续证据或预览使用。"""
+    assets = {}
+    for key in ("img_path", "table_img_path", "equation_img_path"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            assets[key] = value.strip()
+    return assets
+
+
+def _ragflow_doc_type(layout_type: str, item: dict[str, Any]) -> str:
+    """按 RAGFlow flow parser 的 layout_type 到 doc_type_kwd 映射。"""
+    layout = layout_type.strip().lower()
+    if layout == "table":
+        return "table"
+    if layout in {"figure", "image"}:
+        return "image"
+    if item.get("image") is not None and not layout:
+        return "image"
+    return "text"
 
 
 def _extract_kb_text(block: dict[str, Any], block_type: str) -> str:
@@ -725,13 +905,18 @@ def _merge_packager_text_buffer(buffer: list[ParsedBlock]) -> list[ParsedBlock]:
     if not text:
         return []
     first = buffer[0]
+    position_tags = [block.position_tag for block in buffer if block.position_tag]
+    evidence = dict(first.evidence)
+    if position_tags:
+        evidence["position_tags"] = position_tags
     return [
         ParsedBlock(
             text=text,
             block_type="text",
             page_number=first.page_number,
             section_title=first.section_title,
-            evidence=first.evidence,
+            evidence=evidence,
+            position_tag=position_tags[0] if position_tags else first.position_tag,
         )
     ]
 
@@ -772,6 +957,23 @@ def _extract_page_number(item: dict[str, Any]) -> int | None:
     return None
 
 
+def _ragflow_position_tag(item: dict[str, Any]) -> str | None:
+    """按 RAGFlow MinerUParser._line_tag 格式把页码和 bbox 编码成位置 tag。"""
+    bbox = item.get("bbox")
+    page_number = _extract_page_number(item)
+    if page_number is None or not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return None
+    try:
+        x0, top, x1, bottom = [float(value) for value in bbox]
+    except (TypeError, ValueError):
+        return None
+    if x0 > x1:
+        x0, x1 = x1, x0
+    if top > bottom:
+        top, bottom = bottom, top
+    return f"@@{page_number}\t{x0:.1f}\t{x1:.1f}\t{top:.1f}\t{bottom:.1f}##"
+
+
 def _ensure_block(block: ParsedBlock | dict[str, Any]) -> ParsedBlock:
     """兼容测试和调用层传入的字典块，统一转为 ParsedBlock。"""
     if isinstance(block, ParsedBlock):
@@ -782,50 +984,77 @@ def _ensure_block(block: ParsedBlock | dict[str, Any]) -> ParsedBlock:
         page_number=block.get("page_number"),
         section_title=block.get("section_title"),
         evidence=dict(block.get("evidence") or {}),
+        position_tag=block.get("position_tag"),
     )
 
 
-def _format_block(block: ParsedBlock) -> str:
-    """把单个解析块渲染为给 AI 生成候选 FAQ 的来源文本。"""
-    lines = []
-    if block.section_title:
-        lines.append(f"章节：{block.section_title}")
-    if block.page_number:
-        lines.append(f"页码：{block.page_number}")
-    lines.append(f"类型：{block.block_type}")
-    lines.append(block.text)
-    return "\n".join(lines)
-
-
-def _build_import_chunk(file_id: str, chunk_index: int, blocks: list[ParsedBlock]) -> dict[str, Any]:
+def _build_import_chunk(
+    file_id: str,
+    chunk_index: int,
+    chunk: StructuredChunk,
+    *,
+    children_delimiter: str = "",
+) -> dict[str, Any]:
     """构造 import_chunks 行，keywords 只用于审核扫描，不参与事实判断。"""
-    source_text = "\n\n---\n\n".join(_format_block(block) for block in blocks)
-    keywords = _chunk_keywords(blocks)
+    keywords = _chunk_keywords(chunk.source_blocks)
     return {
         "id": f"chunk_{uuid.uuid4().hex[:12]}",
         "file_id": file_id,
         "chunk_index": chunk_index,
+        "section_path": chunk.section_path,
+        "page_start": chunk.page_start,
+        "page_end": chunk.page_end,
+        "block_type": chunk.block_type,
+        "source_offsets": chunk.source_offsets,
+        "source_blocks": chunk.source_blocks,
+        "children_delimiter": children_delimiter,
         "start_at": None,
         "end_at": None,
-        "message_count": len(blocks),
+        "message_count": len(chunk.source_blocks),
         "keywords": json.dumps(keywords, ensure_ascii=False),
-        "source_text": source_text,
+        "source_text": chunk.text,
         "status": "pending",
         "candidate_count": 0,
     }
 
 
-def _chunk_keywords(blocks: list[ParsedBlock], limit: int = 6) -> list[str]:
+def _source_block_payload(block: ParsedBlock) -> dict[str, Any]:
+    """把 ParsedBlock 转成可落库 JSON，供后续 chunker 派生 child。"""
+    evidence = dict(block.evidence)
+    payload = {
+        "text": block.text,
+        "block_type": block.block_type,
+        "page_number": block.page_number,
+        "section_title": block.section_title,
+        "evidence": evidence,
+    }
+    if block.position_tag:
+        payload["position_tag"] = block.position_tag
+    for key in ("layout_type", "layoutno", "doc_type_kwd", "asset_paths", "pdf_positions"):
+        if key in evidence:
+            payload[key] = evidence[key]
+    return payload
+
+
+def _chunk_keywords(blocks: Iterable[ParsedBlock | dict[str, Any]], limit: int = 6) -> list[str]:
     """从来源文件、章节和块类型提取轻量关键词，帮助导入审核列表扫描。"""
     values: list[str] = []
     for block in blocks:
-        source_file = block.evidence.get("source_file")
+        if isinstance(block, ParsedBlock):
+            evidence = block.evidence
+            section_title = block.section_title
+            block_type = block.block_type
+        else:
+            evidence = block.get("evidence") if isinstance(block.get("evidence"), dict) else {}
+            section_title = block.get("section_title")
+            block_type = block.get("block_type")
+        source_file = evidence.get("source_file")
         if source_file:
             values.append(str(source_file))
-        if block.section_title:
-            values.append(block.section_title)
-        if block.block_type:
-            values.append(block.block_type)
+        if section_title:
+            values.append(str(section_title))
+        if block_type:
+            values.append(str(block_type))
     unique = []
     for value in values:
         if value not in unique:

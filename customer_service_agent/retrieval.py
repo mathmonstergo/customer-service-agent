@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+
+logger = logging.getLogger(__name__)
 
 INTENT_FAQ_EXACT = "faq_exact"
 INTENT_PROCEDURE = "procedure"
@@ -152,6 +155,59 @@ def fuse_retrieval_candidates(
         ),
         reverse=True,
     )[:top_k]
+
+
+def rerank_candidates(
+    query: str,
+    candidates: list[FusedCandidate],
+    *,
+    client: Any | None,
+    top_k: int,
+) -> list[FusedCandidate]:
+    """对融合后的候选做 cross-encoder 重排，client=None 或候选不足时透传。
+
+    关键约束：调用失败、client 缺失、候选数 ≤ top_k 时不影响主链路；
+    取前 input_size 候选送 rerank，按 relevance_score 排序后截到 top_k。
+    """
+    if not candidates:
+        return []
+    if client is None or len(candidates) <= top_k:
+        return candidates[:top_k]
+    input_size = int(getattr(client, "input_size", len(candidates)) or len(candidates))
+    payload = candidates[:input_size]
+    documents = [_extract_candidate_text(candidate) for candidate in payload]
+    try:
+        results = client.rerank(query, documents, top_n=top_k)
+    except Exception as exc:
+        logger.warning("rerank_candidates failed: %s", exc, exc_info=True)
+        return candidates[:top_k]
+    if not results:
+        return candidates[:top_k]
+    ordered: list[FusedCandidate] = []
+    seen: set[int] = set()
+    for item in results:
+        index = getattr(item, "index", None)
+        if index is None or index in seen or index < 0 or index >= len(payload):
+            continue
+        ordered.append(payload[index])
+        seen.add(index)
+        if len(ordered) >= top_k:
+            break
+    if not ordered:
+        return candidates[:top_k]
+    return ordered
+
+
+def _extract_candidate_text(candidate: FusedCandidate) -> str:
+    """从候选里提取 rerank 用的文本，优先 content，回退 question+answer。"""
+    document = candidate.document
+    content = getattr(document, "content", None)
+    if content:
+        return str(content)
+    question = getattr(document, "question", None) or ""
+    answer = getattr(document, "answer", None) or ""
+    combined = f"{question}\n{answer}".strip()
+    return combined or str(getattr(document, "id", ""))
 
 
 def build_keyword_terms(question: str, aliases: Iterable[dict[str, Any]] | None = None) -> list[str]:
@@ -327,7 +383,10 @@ def _analyze_query_with_chat(text: str, chat: Any) -> QueryAnalysis | None:
     try:
         raw = complete("你是客服知识库检索意图分类器。", prompt)
         data = json.loads(str(raw))
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "intent classifier fallback to rule-based: %s", exc, exc_info=True
+        )
         return None
     intent = str(data.get("intent") or INTENT_FAQ_EXACT)
     if intent not in {

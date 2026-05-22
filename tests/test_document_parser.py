@@ -27,33 +27,18 @@ def test_extract_blocks_from_mineru_content_list_preserves_page_and_type():
 
     blocks = extract_blocks_from_mineru_payload(payload, source_file="manual.pdf")
 
-    assert blocks == [
-        ParsedBlock(
-            text="账号登录",
-            block_type="title",
-            page_number=1,
-            section_title="账号登录",
-            evidence={"source_file": "manual.pdf", "page_number": 1, "block_type": "title"},
-        ),
-        ParsedBlock(
-            text="用户无法登录时先检查账号状态。",
-            block_type="text",
-            page_number=2,
-            section_title="账号登录",
-            evidence={"source_file": "manual.pdf", "page_number": 2, "block_type": "text"},
-        ),
-        ParsedBlock(
-            text="原因 | 处理\n密码错误 | 重置密码",
-            block_type="table",
-            page_number=2,
-            section_title="账号登录",
-            evidence={"source_file": "manual.pdf", "page_number": 2, "block_type": "table"},
-        ),
+    assert [(block.text, block.block_type, block.page_number, block.section_title) for block in blocks] == [
+        ("账号登录", "title", 1, "账号登录"),
+        ("用户无法登录时先检查账号状态。", "text", 2, "账号登录"),
+        ("原因 | 处理\n密码错误 | 重置密码", "table", 2, "账号登录"),
     ]
+    assert blocks[0].evidence["layoutno"] == "title-0"
+    assert blocks[1].evidence["doc_type_kwd"] == "text"
+    assert blocks[2].evidence["doc_type_kwd"] == "table"
 
 
 def test_build_import_chunks_from_blocks_batches_text_with_evidence():
-    """解析块进入导入审核前会带上页码、章节和来源证据。"""
+    """解析块进入导入审核前会把结构单独保存，审核正文不混入标签。"""
     blocks = [
         ParsedBlock(
             text="账号登录",
@@ -76,10 +61,227 @@ def test_build_import_chunks_from_blocks_batches_text_with_evidence():
     assert len(chunks) == 1
     assert chunks[0]["file_id"] == "imp_1"
     assert chunks[0]["chunk_index"] == 1
-    assert "章节：账号登录" in chunks[0]["source_text"]
-    assert "页码：1" in chunks[0]["source_text"]
+    assert "章节：账号登录" not in chunks[0]["source_text"]
+    assert "页码：1" not in chunks[0]["source_text"]
+    assert "类型：text" not in chunks[0]["source_text"]
+    assert "账号登录" in chunks[0]["source_text"]
     assert "用户无法登录时先检查账号状态。" in chunks[0]["source_text"]
     assert "manual.pdf" in chunks[0]["keywords"]
+    assert chunks[0]["section_path"] == ["账号登录"]
+    assert chunks[0]["page_start"] == 1
+    assert chunks[0]["page_end"] == 1
+    assert chunks[0]["block_type"] == "mixed"
+    assert chunks[0]["source_offsets"] == {}
+    assert chunks[0]["source_blocks"] == [
+        {
+            "text": "账号登录",
+            "block_type": "title",
+            "page_number": 1,
+            "section_title": "账号登录",
+            "evidence": {"source_file": "manual.pdf", "page_number": 1, "block_type": "title"},
+        },
+        {
+            "text": "用户无法登录时先检查账号状态。",
+            "block_type": "text",
+            "page_number": 1,
+            "section_title": "账号登录",
+            "evidence": {"source_file": "manual.pdf", "page_number": 1, "block_type": "text"},
+        },
+    ]
+
+
+def test_extract_blocks_from_mineru_content_list_preserves_ragflow_position_tag():
+    """MinerU bbox 会按 RAGFlow 的 @@page 坐标 tag 保存到结构字段。"""
+    payload = {
+        "content_list": [
+            {
+                "type": "text",
+                "text": "退款规则以订单状态为准。",
+                "page_idx": 0,
+                "bbox": [200, 80, 100, 160],
+            }
+        ]
+    }
+
+    blocks = extract_blocks_from_mineru_payload(payload, source_file="manual.pdf")
+    chunks = build_import_chunks_from_blocks("imp_1", blocks, max_chars=1000)
+
+    assert blocks[0].position_tag == "@@1\t100.0\t200.0\t80.0\t160.0##"
+    assert blocks[0].evidence["position_tag"] == "@@1\t100.0\t200.0\t80.0\t160.0##"
+    assert chunks[0]["source_offsets"] == {
+        "position_tags": ["@@1\t100.0\t200.0\t80.0\t160.0##"],
+        "pdf_positions": [[1, 100.0, 200.0, 80.0, 160.0]],
+    }
+    assert chunks[0]["source_blocks"][0]["position_tag"] == "@@1\t100.0\t200.0\t80.0\t160.0##"
+
+
+def test_extract_blocks_from_mineru_content_list_transfers_ragflow_content_types():
+    """MinerU table/image/equation/code/list 会按 RAGFlow _transfer_to_sections 口径转文本。"""
+    payload = {
+        "content_list": [
+            {
+                "type": "table",
+                "table_body": "状态 | 处理\n待发货 | 可退款",
+                "table_caption": ["退款规则"],
+                "table_footnote": ["以订单状态为准"],
+                "page_idx": 0,
+                "table_img_path": "tables/t1.png",
+            },
+            {
+                "type": "image",
+                "image_caption": ["退款流程图"],
+                "image_footnote": ["仅示意"],
+                "page_idx": 0,
+                "img_path": "images/i1.png",
+            },
+            {
+                "type": "equation",
+                "text": "refund = paid - fee",
+                "page_idx": 0,
+                "equation_img_path": "equations/e1.png",
+            },
+            {
+                "type": "code",
+                "code_body": "print('refund')",
+                "code_caption": ["示例代码"],
+                "page_idx": 0,
+            },
+            {"type": "list", "list_items": ["第一步", "第二步"], "page_idx": 0},
+            {"type": "discarded", "text": "页脚噪音", "page_idx": 0},
+        ]
+    }
+
+    blocks = extract_blocks_from_mineru_payload(
+        payload,
+        source_file="manual.pdf",
+        use_kb_packager=False,
+    )
+
+    assert [block.block_type for block in blocks] == ["table", "image", "equation", "code", "list"]
+    assert blocks[0].text == "状态 | 处理\n待发货 | 可退款\n退款规则\n以订单状态为准"
+    assert blocks[0].evidence["asset_paths"] == {"table_img_path": "tables/t1.png"}
+    assert blocks[1].text == "退款流程图\n仅示意"
+    assert blocks[1].evidence["asset_paths"] == {"img_path": "images/i1.png"}
+    assert blocks[2].text == "refund = paid - fee"
+    assert blocks[2].evidence["asset_paths"] == {"equation_img_path": "equations/e1.png"}
+    assert blocks[3].text == "print('refund')\n示例代码"
+    assert blocks[4].text == "第一步\n第二步"
+
+    chunks = build_import_chunks_from_blocks("imp_1", blocks, chunk_token_num=512)
+    assert chunks[0]["source_blocks"][0]["doc_type_kwd"] == "table"
+    assert chunks[0]["source_blocks"][0]["layoutno"] == "table-0"
+    assert chunks[0]["source_blocks"][0]["asset_paths"] == {"table_img_path": "tables/t1.png"}
+
+
+def test_mineru_client_standard_mode_extracts_zip_assets_to_evidence(tmp_path):
+    """标准 API zip 里的图片资产会落到本地目录，并写入 MinerU block 证据。"""
+    source = tmp_path / "manual.pdf"
+    source.write_bytes(b"%PDF")
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w") as archive:
+        archive.writestr(
+            "manual_content_list.json",
+            json.dumps(
+                [
+                    {
+                        "type": "image",
+                        "image_caption": ["退款流程图"],
+                        "page_idx": 0,
+                        "img_path": "images/flow.png",
+                    }
+                ],
+                ensure_ascii=False,
+            ),
+        )
+        archive.writestr("images/flow.png", b"png-bytes")
+
+    class FakeResponse:
+        def __init__(self, payload=None, status_code=200, content=b""):
+            self.payload = payload or {}
+            self.status_code = status_code
+            self.text = ""
+            self.content = content
+
+        def json(self):
+            return self.payload
+
+    class FakeSession:
+        def post(self, url, **kwargs):
+            return FakeResponse(
+                {
+                    "code": 0,
+                    "data": {
+                        "batch_id": "batch_1",
+                        "file_urls": [{"file_name": "manual.pdf", "upload_url": "https://oss.example/upload"}],
+                    },
+                }
+            )
+
+        def put(self, url, **kwargs):
+            return FakeResponse(status_code=200)
+
+        def get(self, url, **kwargs):
+            if url.endswith("/batch_1"):
+                return FakeResponse(
+                    {
+                        "code": 0,
+                        "data": {
+                            "extract_result": [
+                                {
+                                    "file_name": "manual.pdf",
+                                    "state": "done",
+                                    "full_zip_url": "https://cdn.example/result.zip",
+                                }
+                            ]
+                        },
+                    }
+                )
+            if url == "https://cdn.example/result.zip":
+                return FakeResponse(content=zip_buffer.getvalue())
+            raise AssertionError(url)
+
+    blocks = MineruClient(
+        api_token="mineru-token",
+        timeout_seconds=1,
+        asset_output_dir=tmp_path / "assets",
+        use_kb_packager=False,
+        session=FakeSession(),
+    ).parse_file(source)
+
+    asset_path = blocks[0].evidence["asset_paths"]["img_path"]
+    assert asset_path.endswith("images/flow.png")
+    assert (tmp_path / "assets" / "images" / "flow.png").read_bytes() == b"png-bytes"
+
+
+def test_build_import_chunks_from_blocks_applies_table_context_window():
+    """导入审核切片会在表格块上应用 RAGFlow 表格上下文窗口。"""
+    blocks = [
+        ParsedBlock(
+            text="退款规则如下。",
+            block_type="text",
+            page_number=1,
+            section_title="售后",
+            evidence={"source_file": "manual.pdf", "page_number": 1, "block_type": "text"},
+        ),
+        ParsedBlock(
+            text="状态 | 处理\n待发货 | 可退款",
+            block_type="table",
+            page_number=1,
+            section_title="售后",
+            evidence={"source_file": "manual.pdf", "page_number": 1, "block_type": "table"},
+        ),
+    ]
+
+    chunks = build_import_chunks_from_blocks(
+        "imp_1",
+        blocks,
+        chunk_token_num=128,
+        table_context_size=100,
+    )
+
+    assert chunks[0]["source_blocks"][1]["context_above"] == "退款规则如下。"
+    assert "退款规则如下。" in chunks[0]["source_blocks"][1]["text"]
+    assert "待发货 | 可退款" in chunks[0]["source_text"]
 
 
 def test_extract_blocks_from_mineru_payload_rejects_empty_result():

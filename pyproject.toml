@@ -12,6 +12,7 @@ dependencies = [
     "qrcode>=7.4.2",
     "pillow>=10.4.0",
     "pycryptodome>=3.20.0",
+    "tiktoken>=0.7.0",
 ]
 
 [project.scripts]
