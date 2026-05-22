@@ -70,8 +70,15 @@ CREATE TABLE IF NOT EXISTS knowledge_chunks (
     source_type TEXT NOT NULL,
     source_id TEXT NOT NULL,
     source_chunk_id TEXT,
+    parent_chunk_id TEXT,
+    chunk_level TEXT NOT NULL DEFAULT 'chunk',
     source_title TEXT,
     chunk_index INTEGER NOT NULL DEFAULT 0,
+    section_path JSONB NOT NULL DEFAULT '[]'::jsonb,
+    page_start INTEGER,
+    page_end INTEGER,
+    block_type TEXT,
+    source_offsets JSONB NOT NULL DEFAULT '{}'::jsonb,
     content TEXT NOT NULL,
     embedding_text TEXT NOT NULL,
     search_text TEXT NOT NULL,
@@ -91,8 +98,20 @@ CREATE TABLE IF NOT EXISTS knowledge_chunks (
     UNIQUE (source_type, source_id, chunk_index)
 );
 
+ALTER TABLE knowledge_chunks
+    ADD COLUMN IF NOT EXISTS parent_chunk_id TEXT,
+    ADD COLUMN IF NOT EXISTS chunk_level TEXT NOT NULL DEFAULT 'chunk',
+    ADD COLUMN IF NOT EXISTS section_path JSONB NOT NULL DEFAULT '[]'::jsonb,
+    ADD COLUMN IF NOT EXISTS page_start INTEGER,
+    ADD COLUMN IF NOT EXISTS page_end INTEGER,
+    ADD COLUMN IF NOT EXISTS block_type TEXT,
+    ADD COLUMN IF NOT EXISTS source_offsets JSONB NOT NULL DEFAULT '{}'::jsonb;
+
 CREATE INDEX IF NOT EXISTS knowledge_chunks_source_idx
     ON knowledge_chunks (source_type, source_id);
+
+CREATE INDEX IF NOT EXISTS knowledge_chunks_parent_idx
+    ON knowledge_chunks (parent_chunk_id);
 
 CREATE INDEX IF NOT EXISTS knowledge_chunks_status_source_idx
     ON knowledge_chunks (status, source_type);
@@ -105,6 +124,9 @@ CREATE INDEX IF NOT EXISTS knowledge_chunks_embedding_idx
 
 CREATE INDEX IF NOT EXISTS knowledge_chunks_metadata_idx
     ON knowledge_chunks USING gin (metadata);
+
+CREATE INDEX IF NOT EXISTS knowledge_chunks_section_path_idx
+    ON knowledge_chunks USING gin (section_path);
 
 CREATE INDEX IF NOT EXISTS knowledge_chunks_search_idx
     ON knowledge_chunks USING gin (to_tsvector('simple', search_text));
@@ -136,6 +158,13 @@ CREATE TABLE IF NOT EXISTS import_chunks (
     id TEXT PRIMARY KEY,
     file_id TEXT NOT NULL REFERENCES import_files(id) ON DELETE CASCADE,
     chunk_index INTEGER NOT NULL,
+    section_path JSONB NOT NULL DEFAULT '[]'::jsonb,
+    page_start INTEGER,
+    page_end INTEGER,
+    block_type TEXT,
+    source_offsets JSONB NOT NULL DEFAULT '{}'::jsonb,
+    source_blocks JSONB NOT NULL DEFAULT '[]'::jsonb,
+    children_delimiter TEXT NOT NULL DEFAULT '',
     start_at TIMESTAMPTZ,
     end_at TIMESTAMPTZ,
     message_count INTEGER NOT NULL DEFAULT 0,
@@ -146,6 +175,17 @@ CREATE TABLE IF NOT EXISTS import_chunks (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE import_chunks
+    DROP COLUMN IF EXISTS parent_chunk_id,
+    DROP COLUMN IF EXISTS chunk_level,
+    ADD COLUMN IF NOT EXISTS section_path JSONB NOT NULL DEFAULT '[]'::jsonb,
+    ADD COLUMN IF NOT EXISTS page_start INTEGER,
+    ADD COLUMN IF NOT EXISTS page_end INTEGER,
+    ADD COLUMN IF NOT EXISTS block_type TEXT,
+    ADD COLUMN IF NOT EXISTS source_offsets JSONB NOT NULL DEFAULT '{}'::jsonb,
+    ADD COLUMN IF NOT EXISTS source_blocks JSONB NOT NULL DEFAULT '[]'::jsonb,
+    ADD COLUMN IF NOT EXISTS children_delimiter TEXT NOT NULL DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS import_candidates (
     id TEXT PRIMARY KEY,
@@ -254,3 +294,36 @@ CREATE TABLE IF NOT EXISTS retrieval_aliases (
 
 CREATE INDEX IF NOT EXISTS retrieval_aliases_status_idx
     ON retrieval_aliases (status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS query_analytics_events (
+    id BIGSERIAL PRIMARY KEY,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    query TEXT NOT NULL,
+    intent TEXT,
+    retrieved_chunk_ids TEXT[] NOT NULL DEFAULT '{}',
+    top_score DOUBLE PRECISION,
+    hit_count INT NOT NULL DEFAULT 0,
+    rerank_used BOOLEAN NOT NULL DEFAULT false,
+    latency_ms INT,
+    requester_type TEXT NOT NULL DEFAULT 'unknown',
+    requester_id TEXT,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS idx_query_analytics_created_at
+    ON query_analytics_events (created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_query_analytics_hit_zero
+    ON query_analytics_events (created_at DESC)
+    WHERE hit_count = 0;
+
+CREATE TABLE IF NOT EXISTS query_analytics_cluster_summaries (
+    id BIGSERIAL PRIMARY KEY,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    period_start TIMESTAMPTZ NOT NULL,
+    period_end TIMESTAMPTZ NOT NULL,
+    cluster_label TEXT NOT NULL,
+    suggested_content TEXT,
+    event_count INT NOT NULL,
+    sample_queries TEXT[] NOT NULL DEFAULT '{}'
+);
