@@ -1,0 +1,445 @@
+import { useEffect, useMemo, useState } from 'react'
+import { AnimatePresence, motion } from 'framer-motion'
+import {
+  Loader2,
+  Save,
+  Sparkles,
+  Wand2,
+} from 'lucide-react'
+import {
+  Drawer,
+  DrawerBody,
+  DrawerContent,
+  DrawerHeader,
+  DrawerTitle,
+} from '@/components/ui/drawer'
+import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
+import { StatusDot } from '@/components/ui/status-dot'
+import { Skeleton } from '@/components/ui/skeleton'
+import { TagInput } from '@/components/shared/tag-input'
+import { toast } from '@/components/ui/toaster'
+import {
+  useEmbedFaq,
+  useFaq,
+  useOptimizeFaq,
+  useSaveFaq,
+} from '@/api/hooks'
+import { useUi } from '@/store/ui'
+import { cn } from '@/lib/cn'
+import { confidenceLabel, embeddingStatusLabel, faqStatusLabel, tr } from '@/lib/labels'
+import type { Faq } from '@/api/schemas'
+
+interface Props {
+  faqId: string | null
+  onClose: () => void
+  onCreated?: (id: string) => void
+}
+
+interface FaqDraft {
+  question: string
+  answer: string
+  question_variants: string[]
+  tags: string[]
+  category: string
+  status: string
+  confidence: string
+}
+
+const EMPTY_DRAFT: FaqDraft = {
+  question: '',
+  answer: '',
+  question_variants: [],
+  tags: [],
+  category: '',
+  status: 'usable',
+  confidence: 'medium',
+}
+
+export function FaqDrawer({ faqId, onClose, onCreated }: Props) {
+  const open = !!faqId
+  return (
+    <AnimatePresence>
+      {open && (
+        <Drawer key={faqId} open={open} onOpenChange={(o) => !o && onClose()}>
+          <DrawerContent width={680}>
+            <DrawerInner faqId={faqId!} onClose={onClose} onCreated={onCreated} />
+          </DrawerContent>
+        </Drawer>
+      )}
+    </AnimatePresence>
+  )
+}
+
+function DrawerInner({
+  faqId,
+  onClose,
+  onCreated,
+}: {
+  faqId: string
+  onClose: () => void
+  onCreated?: (id: string) => void
+}) {
+  const isNew = faqId === 'new'
+  const { data: faq, isPending } = useFaq(isNew ? null : faqId)
+  const save = useSaveFaq()
+  const embed = useEmbedFaq()
+  const optimize = useOptimizeFaq()
+  const { setFaqDirty } = useUi()
+
+  const [draft, setDraft] = useState<FaqDraft>(EMPTY_DRAFT)
+
+  useEffect(() => {
+    if (isNew) {
+      setDraft(EMPTY_DRAFT)
+      return
+    }
+    if (faq) {
+      setDraft({
+        question: faq.question || '',
+        answer: faq.answer || '',
+        question_variants: faq.question_variants || [],
+        tags: faq.tags || [],
+        category: faq.category || '',
+        status: faq.status || 'usable',
+        confidence: faq.confidence || 'medium',
+      })
+    }
+  }, [faq, isNew])
+
+  const baseline = useMemo<FaqDraft>(() => {
+    if (isNew) return EMPTY_DRAFT
+    if (!faq) return EMPTY_DRAFT
+    return {
+      question: faq.question || '',
+      answer: faq.answer || '',
+      question_variants: faq.question_variants || [],
+      tags: faq.tags || [],
+      category: faq.category || '',
+      status: faq.status || 'usable',
+      confidence: faq.confidence || 'medium',
+    }
+  }, [faq, isNew])
+
+  const dirty = useMemo(() => JSON.stringify(draft) !== JSON.stringify(baseline), [draft, baseline])
+
+  useEffect(() => {
+    setFaqDirty(dirty)
+    return () => setFaqDirty(false)
+  }, [dirty, setFaqDirty])
+
+  const onSave = async () => {
+    if (!draft.question.trim()) {
+      toast.error('请填写问题')
+      return
+    }
+    if (!draft.answer.trim()) {
+      toast.error('请填写答案')
+      return
+    }
+    try {
+      const payload: Partial<Faq> = isNew
+        ? { ...draft }
+        : { id: faqId, ...draft }
+      const saved = await save.mutateAsync(payload)
+      toast.success(isNew ? '已创建 FAQ' : '已保存修改')
+      if (isNew && saved?.id) {
+        onCreated?.(saved.id)
+      }
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
+  const onEmbed = async () => {
+    if (isNew) {
+      toast.error('请先保存再生成 embedding')
+      return
+    }
+    try {
+      await embed.mutateAsync(faqId)
+      toast.success('已生成 embedding')
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
+  const onOptimize = async () => {
+    if (!draft.question.trim() || !draft.answer.trim()) {
+      toast.error('优化前需要先填问题和答案')
+      return
+    }
+    try {
+      const r = await optimize.mutateAsync({
+        question: draft.question,
+        answer: draft.answer,
+      })
+      setDraft((d) => ({
+        ...d,
+        question: r.question?.trim() || d.question,
+        answer: r.answer?.trim() || d.answer,
+        question_variants: r.question_variants?.length ? r.question_variants : d.question_variants,
+        tags: r.tags?.length ? r.tags : d.tags,
+      }))
+      toast.success('已应用 AI 优化建议')
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
+  if (isPending && !isNew) return <DrawerInnerSkeleton />
+
+  return (
+    <>
+      <DrawerHeader>
+        <div className="min-w-0 flex-1">
+          <DrawerTitle className="flex items-center gap-2">
+            {isNew ? (
+              <span className="text-(--color-text)">新建 FAQ</span>
+            ) : (
+              <>
+                <span className="font-mono text-[12px] text-(--color-text-faint)">
+                  {faqId.slice(0, 12)}
+                </span>
+              </>
+            )}
+            {dirty && (
+              <Badge tone="warning" className="text-[10px]">
+                未保存
+              </Badge>
+            )}
+          </DrawerTitle>
+          {faq && !isNew && (
+            <div className="mt-1.5 flex items-center gap-2 text-[11px] text-(--color-text-muted)">
+              <StatusDot
+                tone={mapEmbed(faq.embedding_status)}
+                label={tr(embeddingStatusLabel, faq.embedding_status, '未索引')}
+              />
+              <span className="text-(--color-text-faint)">
+                · 创建 {formatTime(faq.created_at)}
+              </span>
+              <span className="text-(--color-text-faint)">
+                · 修改 {formatTime(faq.updated_at)}
+              </span>
+            </div>
+          )}
+        </div>
+        <ShimmerButton onClick={onOptimize} loading={optimize.isPending}>
+          AI 优化
+        </ShimmerButton>
+      </DrawerHeader>
+
+      <DrawerBody className="!p-0">
+        <div className="px-6 py-5 pb-24 flex flex-col gap-5">
+          <Field label="问题" required>
+            <Input
+              value={draft.question}
+              onChange={(e) => setDraft({ ...draft, question: e.target.value })}
+              className="h-10 text-[14px]"
+              placeholder="用户实际提问形式"
+            />
+          </Field>
+
+          <Field label={`相似问法 ${draft.question_variants.length > 0 ? `(${draft.question_variants.length})` : ''}`}>
+            <TagInput
+              value={draft.question_variants}
+              onChange={(v) => setDraft({ ...draft, question_variants: v })}
+              placeholder="同义提问，回车 / 逗号添加"
+            />
+          </Field>
+
+          <Field label="答案" required>
+            <Textarea
+              value={draft.answer}
+              onChange={(e) => setDraft({ ...draft, answer: e.target.value })}
+              rows={8}
+              className="!font-sans text-[14px] leading-[1.65]"
+              placeholder="给客服 / 用户的标准答复"
+            />
+          </Field>
+
+          <Field label="分类">
+            <Input
+              value={draft.category}
+              onChange={(e) => setDraft({ ...draft, category: e.target.value })}
+              placeholder="如：账户 / 物流"
+            />
+          </Field>
+
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="状态">
+              <PillSelect
+                value={draft.status}
+                options={[
+                  { value: 'usable', label: tr(faqStatusLabel, 'usable') },
+                  { value: 'needs_review', label: tr(faqStatusLabel, 'needs_review') },
+                  { value: 'draft', label: tr(faqStatusLabel, 'draft') },
+                  { value: 'archived', label: tr(faqStatusLabel, 'archived') },
+                ]}
+                onChange={(v) => setDraft({ ...draft, status: v })}
+              />
+            </Field>
+            <Field label="置信度">
+              <PillSelect
+                value={draft.confidence}
+                options={[
+                  { value: 'high', label: tr(confidenceLabel, 'high') },
+                  { value: 'medium', label: tr(confidenceLabel, 'medium') },
+                  { value: 'low', label: tr(confidenceLabel, 'low') },
+                ]}
+                onChange={(v) => setDraft({ ...draft, confidence: v })}
+              />
+            </Field>
+          </div>
+
+          <Field label="标签">
+            <TagInput
+              value={draft.tags}
+              onChange={(v) => setDraft({ ...draft, tags: v })}
+              placeholder="关键词，便于检索 / 归类"
+            />
+          </Field>
+        </div>
+      </DrawerBody>
+
+      {/* sticky 底部操作栏 + 玻璃感 */}
+      <div className="shrink-0 border-t border-(--color-border) bg-(--color-surface)/85 backdrop-blur-md px-6 py-3 flex items-center gap-2">
+        <span className="text-[11px] text-(--color-text-faint)">
+          {dirty ? '有未保存的修改' : isNew ? '新建一条 FAQ' : '所有修改已保存'}
+        </span>
+        <div className="ml-auto" />
+        <Button variant="ghost" onClick={onClose}>
+          关闭
+        </Button>
+        <Button
+          variant="outline"
+          onClick={onEmbed}
+          disabled={isNew || embed.isPending}
+          title={isNew ? '保存后才能生成' : ''}
+        >
+          {embed.isPending ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
+          生成 embedding
+        </Button>
+        <Button variant="primary" onClick={onSave} disabled={save.isPending || !dirty}>
+          {save.isPending ? <Loader2 className="size-3.5 animate-spin" /> : <Save className="size-3.5" />}
+          {isNew ? '创建' : '保存修改'}
+        </Button>
+      </div>
+    </>
+  )
+}
+
+function Field({
+  label,
+  required,
+  children,
+}: {
+  label: string
+  required?: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <label className="text-[11px] uppercase tracking-[0.14em] text-(--color-text-faint)">
+        {label} {required && <span className="text-(--color-danger)">*</span>}
+      </label>
+      {children}
+    </div>
+  )
+}
+
+function PillSelect({
+  value,
+  options,
+  onChange,
+}: {
+  value: string
+  options: { value: string; label: string }[]
+  onChange: (v: string) => void
+}) {
+  return (
+    <div className="flex flex-wrap gap-1 rounded-(--radius-control) bg-(--color-surface-2) border border-(--color-border) p-0.5">
+      {options.map((opt) => (
+        <button
+          key={opt.value}
+          type="button"
+          onClick={() => onChange(opt.value)}
+          className={cn(
+            'min-w-0 flex-1 whitespace-nowrap rounded-(--radius-control) px-2 py-1 text-[12px] transition-colors',
+            value === opt.value
+              ? 'bg-(--color-surface-3) text-(--color-text)'
+              : 'text-(--color-text-muted) hover:text-(--color-text)',
+          )}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function ShimmerButton({
+  onClick,
+  loading,
+  children,
+}: {
+  onClick: () => void
+  loading: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <motion.button
+      whileTap={{ scale: 0.97 }}
+      onClick={onClick}
+      disabled={loading}
+      className="group relative inline-flex items-center gap-1.5 overflow-hidden rounded-(--radius-control) border border-(--color-primary)/40 bg-(--color-primary-soft) px-3 py-1.5 text-[12px] font-[500] text-(--color-primary-hi) disabled:opacity-60"
+    >
+      {/* shimmer 扫光 */}
+      <span
+        aria-hidden
+        className="pointer-events-none absolute inset-y-0 -left-1/2 w-1/2 -skew-x-12 bg-gradient-to-r from-transparent via-white/15 to-transparent transition-transform duration-[1200ms] ease-out group-hover:translate-x-[300%]"
+      />
+      {loading ? (
+        <Loader2 className="size-3.5 animate-spin" />
+      ) : (
+        <Wand2 className="size-3.5" />
+      )}
+      {loading ? '优化中…' : children}
+    </motion.button>
+  )
+}
+
+function DrawerInnerSkeleton() {
+  return (
+    <div className="space-y-3 p-6">
+      <Skeleton className="h-6 w-1/3" />
+      <Skeleton className="h-4 w-1/2" />
+      <div className="space-y-2 pt-4">
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-24 w-full" />
+        <Skeleton className="h-32 w-full" />
+      </div>
+    </div>
+  )
+}
+
+function mapEmbed(s?: string) {
+  if (s === 'ready') return 'ready' as const
+  if (s === 'failed') return 'failed' as const
+  if (s === 'stale') return 'stale' as const
+  return 'pending' as const
+}
+
+function formatTime(ts?: string | null) {
+  if (!ts) return ''
+  const d = new Date(ts)
+  if (Number.isNaN(d.getTime())) return ts
+  const diff = (Date.now() - d.getTime()) / 1000
+  if (diff < 60) return '刚刚'
+  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`
+  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`
+  if (diff < 86400 * 30) return `${Math.floor(diff / 86400)} 天前`
+  return d.toLocaleDateString('zh-CN')
+}

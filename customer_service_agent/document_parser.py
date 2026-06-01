@@ -276,7 +276,10 @@ def package_mineru_payload_for_kb(payload: dict[str, Any], *, source_file: str) 
                 continue
 
             text = _extract_kb_text(block, block_type).strip()
-            if not text:
+            asset_paths = _mineru_asset_paths(block)
+            # 图 / 表 / 公式即便没有 caption 也要保留：MinerU 经常返回无标题的截图，
+            # 关键内容在 asset_paths 里，丢掉就等于解析丢图。只有纯 text 类型没文字才跳过。
+            if not text and not asset_paths:
                 continue
 
             position_tag = _ragflow_position_tag(block)
@@ -290,9 +293,12 @@ def package_mineru_payload_for_kb(payload: dict[str, Any], *, source_file: str) 
             }
             if position_tag:
                 evidence["position_tag"] = position_tag
-            asset_paths = _mineru_asset_paths(block)
             if asset_paths:
                 evidence["asset_paths"] = asset_paths
+            if normalized_type == "table":
+                table_html = _mineru_table_html(block)
+                if table_html:
+                    evidence["table_html"] = table_html
             parsed = ParsedBlock(
                 text=text,
                 block_type=normalized_type,
@@ -329,7 +335,11 @@ def build_import_chunks_from_blocks(
     normalized = []
     for block in blocks:
         parsed = _ensure_block(block)
-        if parsed.text.strip():
+        # 保留两类块：①有文字的块；②虽然没文字但带资产路径的块（image/table/equation）。
+        # 后者是 MinerU 对无 caption 截图的常见输出 —— 丢掉就等于丢图。
+        has_text = bool(parsed.text.strip())
+        has_assets = bool((parsed.evidence or {}).get("asset_paths"))
+        if has_text or has_assets:
             normalized.append(parsed)
     if not normalized:
         raise MineruParseError("MinerU returned no parseable text")
@@ -641,7 +651,10 @@ def _blocks_from_content_list(items: list[dict[str, Any]], *, source_file: str) 
         if block_type == "discarded":
             continue
         text = _extract_item_text(item)
-        if not text:
+        asset_paths = _mineru_asset_paths(item)
+        # 图 / 表 / 公式即便没有 caption 也要保留：MinerU 经常返回无标题的截图，
+        # 关键内容在 asset_paths 里，丢掉就等于解析丢图。
+        if not text and not asset_paths:
             continue
         page_number = _extract_page_number(item)
         position_tag = _ragflow_position_tag(item)
@@ -661,9 +674,12 @@ def _blocks_from_content_list(items: list[dict[str, Any]], *, source_file: str) 
         }
         if position_tag:
             evidence["position_tag"] = position_tag
-        asset_paths = _mineru_asset_paths(item)
         if asset_paths:
             evidence["asset_paths"] = asset_paths
+        if block_type == "table":
+            table_html = _mineru_table_html(item)
+            if table_html:
+                evidence["table_html"] = table_html
         blocks.append(
             ParsedBlock(
                 text=text,
@@ -766,13 +782,85 @@ def _extract_mineru_table_section(item: dict[str, Any]) -> str:
     return text or "FAILED TO PARSE TABLE"
 
 
+def _mineru_table_html(item: dict[str, Any]) -> str:
+    """从 MinerU 表格块拿原始 HTML，前端富预览直接渲染表格。
+
+    - v1 扁平：顶层 `table_body`
+    - v2 嵌套：`content.html`
+    """
+    if not isinstance(item, dict):
+        return ""
+    table_body = item.get("table_body")
+    if isinstance(table_body, str) and table_body.strip():
+        return table_body.strip()
+    content = item.get("content")
+    if isinstance(content, dict):
+        html = content.get("html")
+        if isinstance(html, str) and html.strip():
+            return html.strip()
+    return ""
+
+
 def _mineru_asset_paths(item: dict[str, Any]) -> dict[str, str]:
-    """保留 MinerU 图片、表格、公式资产路径，供后续证据或预览使用。"""
-    assets = {}
-    for key in ("img_path", "table_img_path", "equation_img_path"):
-        value = item.get(key)
-        if isinstance(value, str) and value.strip():
-            assets[key] = value.strip()
+    """保留 MinerU 图片、表格、公式资产路径，供后续证据或预览使用。
+
+    兼容 MinerU 两种结果格式（实测 2026-05 vlm 模式）：
+    - content_list.json（扁平）：顶层 `img_path` / `table_img_path` / `equation_img_path`
+    - content_list_v2.json（kb-packager 默认走这个）：所有视觉资产都在 `content.image_source.path`
+      这个通用字段下，含义取决于父块 `type`（image/table/equation）
+    """
+    assets: dict[str, str] = {}
+    block_type = str(item.get("type") or item.get("block_type") or "").strip().lower()
+    if block_type == "table":
+        nested_primary_target = "table_img_path"
+    elif block_type in {"equation", "equation_interline"}:
+        nested_primary_target = "equation_img_path"
+    else:
+        nested_primary_target = "img_path"
+
+    def collect_from(node: Any) -> None:
+        if not isinstance(node, dict):
+            return
+        # 扁平结构：顶层直接是 img_path 等字段；MinerU v1 里 table/equation 块
+        # 也用通用的 img_path 存截图，所以按父块 type 把通用字段映射到合适 key
+        generic_image_keys = ("img_path", "image_path")
+        explicit_aliases = {
+            "table_img_path": "table_img_path",
+            "table_image_path": "table_img_path",
+            "equation_img_path": "equation_img_path",
+            "equation_image_path": "equation_img_path",
+        }
+        for src_key, target_key in explicit_aliases.items():
+            if target_key in assets:
+                continue
+            value = node.get(src_key)
+            if isinstance(value, str) and value.strip():
+                assets[target_key] = value.strip()
+        for src_key in generic_image_keys:
+            if nested_primary_target in assets:
+                continue
+            value = node.get(src_key)
+            if isinstance(value, str) and value.strip():
+                assets[nested_primary_target] = value.strip()
+        # v2 嵌套结构：image_source 是 v2 里所有可视化资产的通用字段名，
+        # 真正含义取决于父块 type；table_source / equation_source 是兜底别名（若以后版本调整）
+        nested_aliases = {
+            "image_source": nested_primary_target,
+            "table_source": "table_img_path",
+            "equation_source": "equation_img_path",
+        }
+        for sub_key, target_key in nested_aliases.items():
+            if target_key in assets:
+                continue
+            sub = node.get(sub_key)
+            if isinstance(sub, dict):
+                path_value = sub.get("path") or sub.get("img_path") or sub.get("image_path")
+                if isinstance(path_value, str) and path_value.strip():
+                    assets[target_key] = path_value.strip()
+
+    collect_from(item)
+    if isinstance(item, dict):
+        collect_from(item.get("content"))
     return assets
 
 

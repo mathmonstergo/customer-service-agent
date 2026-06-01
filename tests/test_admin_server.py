@@ -5,6 +5,7 @@ import pytest
 
 from customer_service_agent.admin_server import (
     AdminApp,
+    AdminNotFoundError,
     AdminValidationError,
     format_sse_event,
     parse_sse_event,
@@ -800,7 +801,8 @@ def test_admin_app_polling_mineru_done_downloads_result_and_replaces_chunks(tmp_
 
 
 def test_admin_app_delete_import_file_removes_record_and_local_upload(tmp_path):
-    """文档管理删除文件时需要同时删除导入记录和本地原件。"""
+    """删除文档时同时清理本地原件，并把要展示给用户的提示文案数组直接组装好返回，
+    让前端无需关心业务字段，只按 messages 数组逐条提示。"""
     source = tmp_path / "manual.pdf"
     source.write_bytes(b"%PDF")
     calls = []
@@ -808,7 +810,13 @@ def test_admin_app_delete_import_file_removes_record_and_local_upload(tmp_path):
     class FakeDatabase:
         def delete_import_file(self, file_id):
             calls.append(("delete", file_id))
-            return {"id": file_id, "stored_path": str(source), "original_name": "manual.pdf"}
+            return {
+                "id": file_id,
+                "stored_path": str(source),
+                "original_name": "manual.pdf",
+                "_deleted_chunk_count": 7,
+                "_deleted_vector_count": 12,
+            }
 
     app = AdminApp(
         SimpleNamespace(database_url="postgresql://unused", upload_dir=tmp_path),
@@ -817,9 +825,41 @@ def test_admin_app_delete_import_file_removes_record_and_local_upload(tmp_path):
 
     result = app.delete_import_file("imp_1")
 
-    assert result == {"deleted": True, "id": "imp_1"}
+    assert result == {
+        "deleted": True,
+        "id": "imp_1",
+        "messages": [
+            "已删除文件原件",
+            "已清理文档切片 7 个",
+            "已清理向量索引 12 条",
+        ],
+    }
     assert calls == [("delete", "imp_1")]
     assert not source.exists()
+
+
+def test_admin_app_delete_import_file_skips_zero_count_messages(tmp_path):
+    """文档没有切片或向量时，对应提示就不应该出现在 messages 数组里 — 由后端决定要发哪几条。"""
+    source = tmp_path / "manual.pdf"
+    source.write_bytes(b"%PDF")
+
+    class FakeDatabase:
+        def delete_import_file(self, file_id):
+            return {
+                "id": file_id,
+                "stored_path": str(source),
+                "_deleted_chunk_count": 0,
+                "_deleted_vector_count": 0,
+            }
+
+    app = AdminApp(
+        SimpleNamespace(database_url="postgresql://unused", upload_dir=tmp_path),
+        db=FakeDatabase(),
+    )
+
+    result = app.delete_import_file("imp_1")
+
+    assert result["messages"] == ["已删除文件原件"]
 
 
 def test_admin_app_save_import_candidate_writes_needs_review_faq_and_embeds():
@@ -1301,9 +1341,15 @@ def test_admin_app_list_import_file_candidates_delegates_to_database():
     assert calls == ["imp_1"]
 
 
-def test_static_path_accepts_admin_html_route():
-    """用户直接访问 /admin.html 时也应返回管理页。"""
-    assert static_path("/admin.html").name == "admin.html"
+def test_static_path_root_returns_react_index():
+    """根路径返回 React SPA 入口。老的 /admin.html 已删除，应 404。"""
+    import pytest
+    from customer_service_agent.admin_server import AdminNotFoundError
+
+    assert static_path("/").name == "index.html"
+    assert static_path("/").parent.name == "dist"
+    with pytest.raises(AdminNotFoundError):
+        static_path("/admin.html")
 
 
 def test_admin_app_save_faq_keeps_existing_metadata_when_payload_omits_it():
@@ -2020,3 +2066,149 @@ def test_admin_app_iter_assistant_chat_events_records_query_event():
     assert event["requester_type"] == "admin_ui"
     assert event["requester_id"] == "human-1"
     assert "kc_1" in event["retrieved_chunk_ids"]
+
+
+def _mineru_asset_app(tmp_path, file_id="imp_test", asset_relpath="images/cover.png", asset_bytes=b"PNG_BYTES"):
+    """构造一个 AdminApp 加上对应 mineru-assets 目录与可下载的导入文件记录。"""
+    upload_dir = tmp_path / "uploads"
+    asset_dir = upload_dir / "mineru-assets" / file_id
+    asset_dir.mkdir(parents=True)
+    asset_subdir = asset_dir / "/".join(asset_relpath.split("/")[:-1]) if "/" in asset_relpath else asset_dir
+    asset_subdir.mkdir(parents=True, exist_ok=True)
+    asset_full = asset_subdir / asset_relpath.split("/")[-1]
+    asset_full.write_bytes(asset_bytes)
+
+    class FakeDatabase:
+        def get_import_file(self, fid):
+            if fid != file_id:
+                return None
+            return {"id": file_id, "parser": "mineru", "stored_path": str(upload_dir / "raw.pdf")}
+
+    app = AdminApp(
+        SimpleNamespace(
+            database_url="postgresql://unused",
+            upload_dir=upload_dir,
+        ),
+        db=FakeDatabase(),
+    )
+    return app, asset_full
+
+
+def test_admin_app_get_import_asset_serves_file_within_mineru_assets(tmp_path):
+    """资产路由应返回 mineru-assets/<file_id>/<relpath> 下的文件路径与字节。"""
+    app, asset_full = _mineru_asset_app(tmp_path, asset_relpath="images/cover.png", asset_bytes=b"PNG_BYTES")
+
+    record, path = app.get_import_asset("imp_test", "images/cover.png")
+
+    assert record["id"] == "imp_test"
+    assert path == asset_full
+    assert path.read_bytes() == b"PNG_BYTES"
+
+
+def test_admin_app_get_import_asset_rejects_path_traversal(tmp_path):
+    """资产路径含 ../ 必须拒绝，避免读取上层目录文件。"""
+    app, _ = _mineru_asset_app(tmp_path)
+
+    with pytest.raises(AdminValidationError):
+        app.get_import_asset("imp_test", "../../etc/passwd")
+
+
+def test_admin_app_get_import_asset_404_when_missing(tmp_path):
+    """资产文件不存在时报 not found，不能落到任意 IO 错误。"""
+    app, _ = _mineru_asset_app(tmp_path)
+
+    with pytest.raises(AdminNotFoundError):
+        app.get_import_asset("imp_test", "images/missing.png")
+
+
+def test_admin_app_get_import_asset_unknown_file_id_404(tmp_path):
+    """import file 记录不存在时也是 404。"""
+    app, _ = _mineru_asset_app(tmp_path)
+
+    with pytest.raises(AdminNotFoundError):
+        app.get_import_asset("imp_unknown", "images/cover.png")
+
+
+def test_admin_app_set_import_file_disabled_persists_flag(tmp_path):
+    """文件级禁用 API 必须把 is_disabled 写回去并返回最新文件记录。"""
+    captured = []
+
+    class FakeDatabase:
+        def set_import_file_disabled(self, file_id, is_disabled):
+            captured.append((file_id, is_disabled))
+            return {"id": file_id, "is_disabled": is_disabled, "original_name": "x.pdf"}
+
+    app = AdminApp(
+        SimpleNamespace(database_url="postgresql://unused", upload_dir=tmp_path),
+        db=FakeDatabase(),
+    )
+
+    result = app.set_import_file_disabled("imp_1", {"is_disabled": True})
+
+    assert captured == [("imp_1", True)]
+    assert result["item"]["is_disabled"] is True
+
+
+def test_admin_app_set_import_file_disabled_requires_flag(tmp_path):
+    """payload 缺 is_disabled 字段必须报校验错误，避免静默写默认值。"""
+    class FakeDatabase:
+        def set_import_file_disabled(self, file_id, is_disabled):  # pragma: no cover
+            raise AssertionError("should not be called")
+
+    app = AdminApp(
+        SimpleNamespace(database_url="postgresql://unused", upload_dir=tmp_path),
+        db=FakeDatabase(),
+    )
+
+    with pytest.raises(AdminValidationError):
+        app.set_import_file_disabled("imp_1", {})
+
+
+def test_admin_app_set_import_file_disabled_unknown_id_404(tmp_path):
+    """切换不存在的文件应抛 NotFound，不能静默成功。"""
+    class FakeDatabase:
+        def set_import_file_disabled(self, file_id, is_disabled):
+            return None
+
+    app = AdminApp(
+        SimpleNamespace(database_url="postgresql://unused", upload_dir=tmp_path),
+        db=FakeDatabase(),
+    )
+
+    with pytest.raises(AdminNotFoundError):
+        app.set_import_file_disabled("imp_missing", {"is_disabled": True})
+
+
+def test_admin_app_set_import_chunk_disabled_persists_flag(tmp_path):
+    """切片级禁用 API 必须把 is_disabled 写回切片记录并返回最新条目。"""
+    captured = []
+
+    class FakeDatabase:
+        def set_import_chunk_disabled(self, chunk_id, is_disabled):
+            captured.append((chunk_id, is_disabled))
+            return {"id": chunk_id, "file_id": "imp_1", "is_disabled": is_disabled}
+
+    app = AdminApp(
+        SimpleNamespace(database_url="postgresql://unused", upload_dir=tmp_path),
+        db=FakeDatabase(),
+    )
+
+    result = app.set_import_chunk_disabled("chk_1", {"is_disabled": False})
+
+    assert captured == [("chk_1", False)]
+    assert result["item"]["is_disabled"] is False
+
+
+def test_admin_app_set_import_chunk_disabled_unknown_id_404(tmp_path):
+    """切片不存在必须 404，前端可据此提示用户刷新。"""
+    class FakeDatabase:
+        def set_import_chunk_disabled(self, chunk_id, is_disabled):
+            return None
+
+    app = AdminApp(
+        SimpleNamespace(database_url="postgresql://unused", upload_dir=tmp_path),
+        db=FakeDatabase(),
+    )
+
+    with pytest.raises(AdminNotFoundError):
+        app.set_import_chunk_disabled("chk_missing", {"is_disabled": True})

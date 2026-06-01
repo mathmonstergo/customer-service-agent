@@ -81,10 +81,101 @@ class ImportMixin:
             return conn.execute(sql, {"id": file_id}).fetchone()
 
     def delete_import_file(self, file_id: str) -> dict[str, Any] | None:
-        """删除导入文件记录，依赖外键级联清理切块和候选 FAQ。"""
-        sql = "DELETE FROM import_files WHERE id = %(id)s RETURNING *"
+        """删除导入文件记录，依赖外键级联清理切块和候选 FAQ。
+
+        knowledge_chunks 不在外键级联范围内（统一知识表），需手工清除文档来源的向量行，
+        避免文件删除后残留 stale embedding 继续被检索命中。
+
+        返回值带 `_deleted_chunk_count` / `_deleted_vector_count`，反映实际触发的 DB 事件量；
+        前端据此条件性提示（没切片就不提示切片清理，没向量就不提示向量清理），避免假动作提示。
+        """
+        count_chunks_sql = (
+            "SELECT count(*) AS c FROM import_chunks WHERE file_id = %(id)s"
+        )
+        delete_knowledge_sql = (
+            "DELETE FROM knowledge_chunks "
+            "WHERE source_type = 'document' AND source_id = %(id)s "
+            "RETURNING id"
+        )
+        delete_file_sql = "DELETE FROM import_files WHERE id = %(id)s RETURNING *"
         with self.connect() as conn:
-            return conn.execute(sql, {"id": file_id}).fetchone()
+            chunk_count = int(
+                conn.execute(count_chunks_sql, {"id": file_id}).fetchone()["c"]
+            )
+            deleted_vectors = conn.execute(
+                delete_knowledge_sql, {"id": file_id}
+            ).fetchall()
+            record = conn.execute(delete_file_sql, {"id": file_id}).fetchone()
+        if record is None:
+            return None
+        record["_deleted_chunk_count"] = chunk_count
+        record["_deleted_vector_count"] = len(deleted_vectors)
+        return record
+
+    def set_import_file_disabled(
+        self, file_id: str, is_disabled: bool
+    ) -> dict[str, Any] | None:
+        """切换文件级禁用标记；禁用后该文件下所有切片不再被 RAG 检索召回。"""
+        sql = """
+        UPDATE import_files
+        SET is_disabled = %(is_disabled)s,
+            updated_at = now()
+        WHERE id = %(id)s
+        RETURNING *
+        """
+        with self.connect() as conn:
+            return conn.execute(
+                sql, {"id": file_id, "is_disabled": bool(is_disabled)}
+            ).fetchone()
+
+    def set_import_chunk_disabled(
+        self, chunk_id: str, is_disabled: bool
+    ) -> dict[str, Any] | None:
+        """切换切片级禁用标记；禁用后该切片不再被 RAG 检索召回（即使所属文件启用）。"""
+        sql = """
+        UPDATE import_chunks
+        SET is_disabled = %(is_disabled)s,
+            updated_at = now()
+        WHERE id = %(id)s
+        RETURNING *
+        """
+        with self.connect() as conn:
+            return conn.execute(
+                sql, {"id": chunk_id, "is_disabled": bool(is_disabled)}
+            ).fetchone()
+
+    def set_import_chunk_questions(
+        self,
+        chunk_id: str,
+        questions: list[str],
+        *,
+        model: str | None,
+        status: str = "ready",
+        error: str | None = None,
+    ) -> dict[str, Any] | None:
+        """落库假设性问题与生成状态；status 取 pending|ready|failed|skipped。"""
+        sql = """
+        UPDATE import_chunks
+        SET questions = %(questions)s::jsonb,
+            questions_status = %(status)s,
+            questions_model = %(model)s,
+            questions_updated_at = now(),
+            questions_error = %(error)s,
+            updated_at = now()
+        WHERE id = %(id)s
+        RETURNING *
+        """
+        with self.connect() as conn:
+            return conn.execute(
+                sql,
+                {
+                    "id": chunk_id,
+                    "questions": json.dumps(list(questions or []), ensure_ascii=False),
+                    "status": status,
+                    "model": model,
+                    "error": error,
+                },
+            ).fetchone()
 
     def list_import_files(
         self,

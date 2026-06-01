@@ -226,6 +226,46 @@ def test_search_knowledge_sql_reads_unified_chunks_without_confidence_filter():
     assert "confidence = %(confidence)s" not in sql
 
 
+def test_search_knowledge_sql_filters_disabled_files_and_chunks():
+    """向量检索 SQL 必须 LEFT JOIN import_files / import_chunks 并过滤禁用项。"""
+    sql = Database._search_knowledge_sql()
+
+    assert "LEFT JOIN import_files imp" in sql
+    assert "LEFT JOIN import_chunks ic" in sql
+    assert "COALESCE(imp.is_disabled, false) = false" in sql
+    assert "COALESCE(ic.is_disabled, false) = false" in sql
+
+
+def test_search_knowledge_text_sql_filters_disabled_files_and_chunks():
+    """关键词检索 SQL 同样要应用文件 / 切片级禁用过滤。"""
+    sql = Database._search_knowledge_text_sql()
+
+    assert "LEFT JOIN import_files imp" in sql
+    assert "LEFT JOIN import_chunks ic" in sql
+    assert "COALESCE(imp.is_disabled, false) = false" in sql
+    assert "COALESCE(ic.is_disabled, false) = false" in sql
+
+
+def test_get_parent_context_chunks_sql_filters_disabled_files_and_chunks():
+    """parent 上下文回填也需要排除禁用文件或切片，否则禁用后仍可能被 parent 召回。"""
+    sql = Database._get_parent_context_chunks_sql()
+
+    assert "LEFT JOIN import_files imp" in sql
+    assert "LEFT JOIN import_chunks ic" in sql
+    assert "COALESCE(imp.is_disabled, false) = false" in sql
+    assert "COALESCE(ic.is_disabled, false) = false" in sql
+
+
+def test_import_files_schema_supports_disabled_toggle():
+    """import_files / import_chunks 必须各带 is_disabled 列，提供文件级 / 切片级开关。"""
+    schema = Path("sql/001_init.sql").read_text(encoding="utf-8")
+
+    assert "ALTER TABLE import_files" in schema
+    assert "ADD COLUMN IF NOT EXISTS is_disabled BOOLEAN NOT NULL DEFAULT false" in schema
+    # 一次出现已覆盖 import_files；保证 import_chunks 也含同列
+    assert schema.count("is_disabled BOOLEAN NOT NULL DEFAULT false") >= 2
+
+
 def test_search_knowledge_text_sql_reads_keyword_fields():
     """关键词召回应读取统一知识单元的 search_text、标题和正文。"""
     sql = Database._search_knowledge_text_sql()

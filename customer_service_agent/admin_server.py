@@ -9,10 +9,12 @@ import sys
 import time
 import traceback
 import uuid
+
+import requests
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import parse_qs, quote, unquote, urlparse
@@ -36,8 +38,9 @@ from customer_service_agent.document_parser import (
 )
 from customer_service_agent.import_dedupe import compare_candidate_duplicate
 from customer_service_agent.import_ai import ImportAiAssistant, ImportCandidateError
+from customer_service_agent.import_questions import ImportQuestionAssistant, ImportQuestionError
 from customer_service_agent.import_models import detect_file_type
-from customer_service_agent.llm import ChatClient, EmbeddingClient, RerankClient
+from customer_service_agent.llm import ChatClient, EmbeddingClient, RerankClient, build_openai_client
 from customer_service_agent.markdown_import import chunk_messages, parse_wechat_messages
 from customer_service_agent.rag import build_user_prompt, load_system_prompt
 from customer_service_agent.retrieval import (
@@ -657,6 +660,68 @@ class AdminApp:
         if self.chat is None:
             self.chat = ChatClient.from_settings(self.settings)
         return self.chat
+
+    def _chat_client_for_payload(self, payload: dict[str, Any]) -> ChatClient:
+        """支持单次请求覆盖 chat 供应商：三件套齐了就临时造一个，否则走全局默认。"""
+        base_url = str(payload.get("chat_base_url") or "").strip()
+        api_key = str(payload.get("chat_api_key") or "").strip()
+        model = str(payload.get("chat_model") or "").strip()
+        if base_url and api_key and model:
+            return ChatClient(build_openai_client(base_url, api_key), model=model)
+        return self.chat_client()
+
+    def probe_chat_provider(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """用最小 chat completion 测试一次连通性，结果以 ok/error 形式回，不抛 4xx。"""
+        base_url = str(payload.get("chat_base_url") or "").strip()
+        api_key = str(payload.get("chat_api_key") or "").strip()
+        model = str(payload.get("chat_model") or "").strip()
+        if not (base_url and api_key and model):
+            return {"ok": False, "error": "请填写 base_url、api_key、model 三项"}
+        try:
+            started = time.perf_counter()
+            client = ChatClient(build_openai_client(base_url, api_key), model=model)
+            sample = client.complete("", "ping")
+            return {
+                "ok": True,
+                "latency_ms": int((time.perf_counter() - started) * 1000),
+                "model": model,
+                "sample": (sample or "")[:80],
+            }
+        except Exception as exc:
+            return {"ok": False, "error": str(exc) or exc.__class__.__name__}
+
+    def list_chat_provider_models(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """调供应商的 GET /models 列出可用模型，归一化为 {items: [{id, owned_by}]}。"""
+        base_url = str(payload.get("chat_base_url") or "").strip()
+        api_key = str(payload.get("chat_api_key") or "").strip()
+        if not (base_url and api_key):
+            return {"items": [], "ok": False, "error": "请填写 base_url 和 api_key"}
+        try:
+            url = base_url.rstrip("/") + "/models"
+            resp = requests.get(
+                url,
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=15.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            raw = data.get("data") if isinstance(data, dict) else None
+            items: list[dict[str, str]] = []
+            if isinstance(raw, list):
+                for item in raw:
+                    if isinstance(item, dict) and item.get("id"):
+                        items.append({
+                            "id": str(item["id"]),
+                            "owned_by": str(item.get("owned_by") or ""),
+                        })
+            items.sort(key=lambda m: m["id"])
+            return {"ok": True, "items": items}
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else "?"
+            body = exc.response.text[:200] if exc.response is not None else ""
+            return {"ok": False, "items": [], "error": f"HTTP {status} {body}"}
+        except Exception as exc:
+            return {"ok": False, "items": [], "error": str(exc) or exc.__class__.__name__}
 
     def rerank_client(self) -> RerankClient | None:
         """按配置返回 RerankClient；缺一项即返回 None 让上游透传。"""
@@ -1405,6 +1470,38 @@ class AdminApp:
             "embedding_summary": self.database().get_import_file_embedding_summary(file_id),
         }
 
+    def embed_import_chunk(self, chunk_id: str) -> dict[str, Any]:
+        """对单个切片重新生成向量，不影响同文档其他切片。
+        典型场景是编辑切片原文后 embedding 被标记为 stale，用户单独刷新这一片。
+        """
+        chunk = self.database().get_import_chunk(chunk_id)
+        if chunk is None:
+            raise AdminNotFoundError(f"Import chunk not found: {chunk_id}")
+        record = self.database().get_import_file(chunk["file_id"])
+        if record is None:
+            raise AdminNotFoundError(f"Import file not found: {chunk['file_id']}")
+
+        embedding_client = self.embedding_client()
+        rows = []
+        for chunk_row in document_knowledge_rows_for_embedding(chunk, record):
+            vector = embedding_client.embed(chunk_row["embedding_text"])
+            rows.append(
+                self.database().upsert_knowledge_chunk(
+                    chunk_row,
+                    vector,
+                    embedding_model=embedding_client.model,
+                    embedding_dimensions=embedding_client.dimensions,
+                )
+            )
+        return {
+            "chunk_id": chunk_id,
+            "file_id": chunk["file_id"],
+            "count": len(rows),
+            "items": rows,
+            "embedding_summary": self.database().get_import_file_embedding_summary(chunk["file_id"]),
+            "messages": [f"已重新生成切片向量 ({len(rows)} 条)"],
+        }
+
     def get_import_file_for_download(self, file_id: str) -> tuple[dict[str, Any], Path]:
         """返回可下载的原件路径，关键约束是必须来自已登记导入文件。"""
         record = self.database().get_import_file(file_id)
@@ -1415,15 +1512,141 @@ class AdminApp:
             raise AdminValidationError("stored upload file is missing")
         return record, stored_path
 
+    def get_import_asset(self, file_id: str, asset_relpath: str) -> tuple[dict[str, Any], Path]:
+        """返回 MinerU 资产文件（image / table_img / equation_img）的本地路径。
+
+        关键约束：拼出的最终路径必须落在 `<upload_dir>/mineru-assets/<safe(file_id)>/` 之内，
+        防止 `../` 逃逸；文件不存在或对应 import_file 没登记都报 404。
+        """
+        record = self.database().get_import_file(file_id)
+        if record is None:
+            raise AdminNotFoundError(f"Import file not found: {file_id}")
+        asset_root = Path(self.settings.upload_dir) / "mineru-assets" / safe_upload_name(file_id)
+        if not str(asset_relpath or "").strip():
+            raise AdminValidationError("asset path is required")
+        candidate = asset_root / asset_relpath
+        resolved = ensure_upload_path_within(asset_root, candidate)
+        if not resolved.exists() or not resolved.is_file():
+            raise AdminNotFoundError(f"Asset not found: {asset_relpath}")
+        return record, resolved
+
     def delete_import_file(self, file_id: str) -> dict[str, Any]:
-        """删除导入文件记录和本地原件，数据库级联清理切片与候选 FAQ。"""
+        """删除导入文件记录和本地原件，数据库级联清理切片与候选 FAQ。
+
+        把要展示给用户的提示文案在后端组装好放在 `messages` 数组中返回；
+        前端不解析业务字段，只对 messages 数组逐条调通用 toast，保持 UI 与业务解耦。
+        """
         record = self.database().delete_import_file(file_id)
         if record is None:
             raise AdminNotFoundError(f"Import file not found: {file_id}")
         stored_path = Path(record.get("stored_path") or "")
         if stored_path.exists():
             stored_path.unlink()
-        return {"deleted": True, "id": file_id}
+        chunk_count = int(record.get("_deleted_chunk_count") or 0)
+        vector_count = int(record.get("_deleted_vector_count") or 0)
+        messages = ["已删除文件原件"]
+        if chunk_count > 0:
+            messages.append(f"已清理文档切片 {chunk_count} 个")
+        if vector_count > 0:
+            messages.append(f"已清理向量索引 {vector_count} 条")
+        return {
+            "deleted": True,
+            "id": file_id,
+            "messages": messages,
+        }
+
+    def set_import_file_disabled(
+        self, file_id: str, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """切换文件级禁用开关，RAG 检索立即跳过该文件下所有切片。"""
+        if "is_disabled" not in payload:
+            raise AdminValidationError("is_disabled is required")
+        is_disabled = bool(payload.get("is_disabled"))
+        record = self.database().set_import_file_disabled(file_id, is_disabled)
+        if record is None:
+            raise AdminNotFoundError(f"Import file not found: {file_id}")
+        return {"item": record}
+
+    def set_import_chunk_disabled(
+        self, chunk_id: str, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """切换切片级禁用开关，仅作用于单个切片。"""
+        if "is_disabled" not in payload:
+            raise AdminValidationError("is_disabled is required")
+        is_disabled = bool(payload.get("is_disabled"))
+        record = self.database().set_import_chunk_disabled(chunk_id, is_disabled)
+        if record is None:
+            raise AdminNotFoundError(f"Import chunk not found: {chunk_id}")
+        return {"item": record}
+
+    def generate_import_file_questions(
+        self, file_id: str, payload: Mapping[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """批量为文档每个切片生成假设性用户问题，落库 questions 字段。
+
+        - 默认跳过已 `ready` 的切片；payload 传 `force=True` 时全部重算
+        - 单条失败写 `questions_error` 不阻塞其余切片
+        - 返回 messages 数组供前端 toast 逐条弹出（按通用 UI 约定，后端拼好文案）
+        """
+        force = bool((payload or {}).get("force"))
+        record = self.database().get_import_file(file_id)
+        if record is None:
+            raise AdminNotFoundError(f"Import file not found: {file_id}")
+        chunks = self.database().list_import_chunks(file_id)
+        if not chunks:
+            raise AdminValidationError("parsed document has no chunks")
+
+        assistant = ImportQuestionAssistant(self.chat_client())
+        ready = 0
+        skipped = 0
+        failed = 0
+        source_title = str(record.get("original_name") or "").strip()
+        for chunk in chunks:
+            if not force and str(chunk.get("questions_status") or "") == "ready":
+                skipped += 1
+                continue
+            source_text = str(chunk.get("source_text") or "").strip()
+            if not source_text:
+                # 没有正文（极端：只有图片资产的切片）— 标记 skipped 不算失败
+                self.database().set_import_chunk_questions(
+                    chunk["id"], [], model=assistant.model, status="skipped"
+                )
+                skipped += 1
+                continue
+            try:
+                questions = assistant.generate_questions(
+                    source_text=source_text,
+                    section_path=list(chunk.get("section_path") or []),
+                    source_title=source_title,
+                    block_type=str(chunk.get("block_type") or "") or None,
+                )
+            except ImportQuestionError as exc:
+                self.database().set_import_chunk_questions(
+                    chunk["id"], [], model=assistant.model, status="failed", error=str(exc)
+                )
+                failed += 1
+                continue
+            self.database().set_import_chunk_questions(
+                chunk["id"], questions, model=assistant.model, status="ready"
+            )
+            ready += 1
+
+        messages: list[str] = []
+        if ready:
+            messages.append(f"已为 {ready} 个切片生成假设问题")
+        if skipped:
+            messages.append(f"跳过 {skipped} 个切片（已生成或无正文）")
+        if failed:
+            messages.append(f"{failed} 个切片生成失败")
+        if not messages:
+            messages.append("没有需要处理的切片")
+        return {
+            "file_id": file_id,
+            "ready": ready,
+            "skipped": skipped,
+            "failed": failed,
+            "messages": messages,
+        }
 
     def list_import_candidates(self, chunk_id: str) -> dict[str, Any]:
         """返回某个切块下的候选 FAQ 列表。"""
@@ -1603,6 +1826,7 @@ class AdminApp:
         }
 
         started = time.perf_counter()
+        chat = self._chat_client_for_payload(payload)
         yield assistant_step_event(
             "input_question",
             "输入问题",
@@ -1612,7 +1836,7 @@ class AdminApp:
         )
 
         intent_started = time.perf_counter()
-        analysis = analyze_query(question, self.chat_client())
+        analysis = analyze_query(question, chat)
         yield assistant_step_event(
             "intent_detection",
             "意图识别",
@@ -1738,7 +1962,7 @@ class AdminApp:
         prompt = build_user_prompt(question, docs)
         answer_parts: list[str] = []
         system_prompt = self.assistant_system_prompt_from_payload(payload)
-        for text in self.chat_client().stream_complete(system_prompt, prompt):
+        for text in chat.stream_complete(system_prompt, prompt):
             answer_parts.append(text)
             yield {"type": "delta", "text": text}
 
@@ -1810,14 +2034,28 @@ class AdminApp:
 
 
 def static_path(path: str) -> Path:
-    """把允许访问的管理页静态路径映射到本地文件。"""
+    """把允许访问的管理页静态路径映射到本地文件。
+
+    管理后台是 React SPA（HashRouter），仅放行两类资源：
+    1. `/` —— React 入口 `static/dist/index.html`
+    2. `/static/dist/<任意子路径>` —— Vite 产物（含 hash 文件名 + 子目录），路径必须落在 `static/dist/` 之内
+    """
     static_dir = Path(__file__).with_name("static")
-    if path in {"", "/", "/admin.html"}:
-        return static_dir / "admin.html"
+    dist_dir = static_dir / "dist"
     clean = unquote(path).lstrip("/")
-    if clean not in {"admin.css", "admin.js"}:
+    if path in {"", "/"}:
+        return dist_dir / "index.html"
+    if clean.startswith("static/dist/"):
+        rel = clean[len("static/dist/") :]
+        candidate = (dist_dir / rel).resolve()
+        try:
+            candidate.relative_to(dist_dir.resolve())
+        except ValueError:
+            raise AdminNotFoundError(path)
+        if candidate.exists() and candidate.is_file():
+            return candidate
         raise AdminNotFoundError(path)
-    return static_dir / clean
+    raise AdminNotFoundError(path)
 
 
 def make_handler(app: AdminApp):
@@ -1847,6 +2085,13 @@ def make_handler(app: AdminApp):
                     file_id = parsed.path.removeprefix("/api/import/files/").removesuffix("/download")
                     record, stored_path = app.get_import_file_for_download(file_id)
                     self.send_download(stored_path, record.get("original_name") or stored_path.name)
+                    return
+                if parsed.path.startswith("/api/import/files/") and "/assets/" in parsed.path:
+                    # 资产路由：/api/import/files/<file_id>/assets/<relpath>
+                    head, _, asset_relpath = parsed.path.removeprefix("/api/import/files/").partition("/assets/")
+                    file_id = head
+                    _record, asset_path = app.get_import_asset(file_id, unquote(asset_relpath))
+                    self.send_static(asset_path)
                     return
                 if parsed.path.startswith("/api/import/files/") and parsed.path.endswith("/chunks"):
                     file_id = parsed.path.removeprefix("/api/import/files/").removesuffix("/chunks")
@@ -1930,6 +2175,14 @@ def make_handler(app: AdminApp):
                     file_id = parsed.path.removeprefix("/api/import/files/").removesuffix("/parse-jobs")
                     self.send_json(app.start_import_parse_job(file_id, payload))
                     return
+                if parsed.path.startswith("/api/import/files/") and parsed.path.endswith("/disabled"):
+                    file_id = parsed.path.removeprefix("/api/import/files/").removesuffix("/disabled")
+                    self.send_json(app.set_import_file_disabled(file_id, payload))
+                    return
+                if parsed.path.startswith("/api/import/files/") and parsed.path.endswith("/generate-questions"):
+                    file_id = parsed.path.removeprefix("/api/import/files/").removesuffix("/generate-questions")
+                    self.send_json(app.generate_import_file_questions(file_id, payload))
+                    return
                 if parsed.path.startswith("/api/import/files/") and parsed.path.endswith("/embed"):
                     file_id = parsed.path.removeprefix("/api/import/files/").removesuffix("/embed")
                     self.send_json(app.embed_import_file(file_id))
@@ -1956,6 +2209,12 @@ def make_handler(app: AdminApp):
                         payload["requester_id"] = requester_id
                     self.send_sse(app.iter_assistant_chat_events(payload))
                     return
+                if parsed.path == "/api/assistant/probe":
+                    self.send_json(app.probe_chat_provider(payload))
+                    return
+                if parsed.path == "/api/assistant/models":
+                    self.send_json(app.list_chat_provider_models(payload))
+                    return
                 if parsed.path == "/api/analytics/cluster-zero-hit":
                     self.send_json(app.cluster_zero_hit_queries(payload))
                     return
@@ -1965,6 +2224,14 @@ def make_handler(app: AdminApp):
                 if parsed.path.startswith("/api/import/chunks/") and parsed.path.endswith("/generate"):
                     chunk_id = parsed.path.removeprefix("/api/import/chunks/").removesuffix("/generate")
                     self.send_json(app.generate_import_candidates(chunk_id))
+                    return
+                if parsed.path.startswith("/api/import/chunks/") and parsed.path.endswith("/disabled"):
+                    chunk_id = parsed.path.removeprefix("/api/import/chunks/").removesuffix("/disabled")
+                    self.send_json(app.set_import_chunk_disabled(chunk_id, payload))
+                    return
+                if parsed.path.startswith("/api/import/chunks/") and parsed.path.endswith("/embed"):
+                    chunk_id = parsed.path.removeprefix("/api/import/chunks/").removesuffix("/embed")
+                    self.send_json(app.embed_import_chunk(chunk_id))
                     return
                 if parsed.path.startswith("/api/import/chunks/"):
                     chunk_id = parsed.path.removeprefix("/api/import/chunks/")
@@ -2110,10 +2377,14 @@ def make_handler(app: AdminApp):
 
 
 def run_admin_server(settings: Settings, *, host: str, port: int) -> None:
-    """启动本地后台 HTTP 服务；非 loopback host 必须显式 env 同意，避免误暴露。"""
+    """启动本地后台 HTTP 服务；非 loopback host 必须显式 env 同意，避免误暴露。
+
+    用 ThreadingHTTPServer 而不是单线程 HTTPServer：embed 这类阻塞调用（同步循环请求 OpenAI embedding API）
+    可能持续几十秒到几分钟，单线程会让期间所有其他请求（含轮询解析进度、刷新列表）全部排队卡死。
+    """
     ensure_loopback_or_explicit_opt_in(host, os.environ)
     app = AdminApp(settings)
     app.database().init_schema()
-    server = HTTPServer((host, port), make_handler(app))
+    server = ThreadingHTTPServer((host, port), make_handler(app))
     print(f"Customer Service Agent admin: http://{host}:{port}", flush=True)
     server.serve_forever()

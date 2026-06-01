@@ -152,7 +152,8 @@ CREATE TABLE IF NOT EXISTS import_files (
 ALTER TABLE import_files
     ADD COLUMN IF NOT EXISTS parse_batch_id TEXT,
     ADD COLUMN IF NOT EXISTS parse_file_name TEXT,
-    ADD COLUMN IF NOT EXISTS parse_progress JSONB NOT NULL DEFAULT '{}'::jsonb;
+    ADD COLUMN IF NOT EXISTS parse_progress JSONB NOT NULL DEFAULT '{}'::jsonb,
+    ADD COLUMN IF NOT EXISTS is_disabled BOOLEAN NOT NULL DEFAULT false;
 
 CREATE TABLE IF NOT EXISTS import_chunks (
     id TEXT PRIMARY KEY,
@@ -185,7 +186,13 @@ ALTER TABLE import_chunks
     ADD COLUMN IF NOT EXISTS block_type TEXT,
     ADD COLUMN IF NOT EXISTS source_offsets JSONB NOT NULL DEFAULT '{}'::jsonb,
     ADD COLUMN IF NOT EXISTS source_blocks JSONB NOT NULL DEFAULT '[]'::jsonb,
-    ADD COLUMN IF NOT EXISTS children_delimiter TEXT NOT NULL DEFAULT '';
+    ADD COLUMN IF NOT EXISTS children_delimiter TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS is_disabled BOOLEAN NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS questions JSONB NOT NULL DEFAULT '[]'::jsonb,
+    ADD COLUMN IF NOT EXISTS questions_status TEXT NOT NULL DEFAULT 'pending',
+    ADD COLUMN IF NOT EXISTS questions_model TEXT,
+    ADD COLUMN IF NOT EXISTS questions_updated_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS questions_error TEXT;
 
 CREATE TABLE IF NOT EXISTS import_candidates (
     id TEXT PRIMARY KEY,

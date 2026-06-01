@@ -34,6 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     admin_parser = sub.add_parser("admin")
     admin_parser.add_argument("--host", default="127.0.0.1")
     admin_parser.add_argument("--port", type=int, default=8765)
+    sub.add_parser("mcp")
     return parser
 
 
@@ -124,6 +125,11 @@ def main(argv: list[str] | None = None) -> int:
         from customer_service_agent.admin_server import run_admin_server
 
         run_admin_server(settings, host=args.host, port=args.port)
+        return 0
+    if args.command == "mcp":
+        from customer_service_agent.mcp_server import run_stdio
+
+        run_stdio(settings)
         return 0
 
     raise AssertionError(f"Unhandled command: {args.command}")

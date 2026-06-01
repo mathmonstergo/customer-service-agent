@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterator
 
 from customer_service_agent.db import RetrievedDocument
 from customer_service_agent.rag import EMPTY_RESPONSE_FALLBACK, build_user_prompt
@@ -136,3 +136,33 @@ class RagTool:
             top_k=self.top_k,
             min_score=self.min_score,
         )
+
+    def stream_answer(self, question: str) -> Iterator[dict[str, Any]]:
+        """流式回答生成器；先 yield 多个 delta 事件，最后 yield 一个 final 事件。
+
+        关键约束：每个 delta 事件形如 {"type": "delta", "text": "..."}，
+        final 事件含完整 answer_draft + documents + top_score + hit_count，
+        供上游 MCP / SSE 等流式 transport 直接转发。空回复时给占位文案。
+        """
+        docs = self._retrieve(question)
+        prompt = build_user_prompt(question, docs)
+        parts: list[str] = []
+        for delta in self.chat.stream_complete(self.system_prompt, prompt):
+            if not delta:
+                continue
+            parts.append(delta)
+            yield {"type": "delta", "text": delta}
+        answer_draft = "".join(parts).strip()
+        if not answer_draft:
+            answer_draft = EMPTY_RESPONSE_FALLBACK
+        documents = [RagToolDocument.from_retrieved(doc) for doc in docs]
+        yield {
+            "type": "final",
+            "answer_draft": answer_draft,
+            "documents": [doc.to_dict() for doc in documents],
+            "top_score": documents[0].score if documents else None,
+            "hit_count": len(documents),
+            "top_k": self.top_k,
+            "min_score": self.min_score,
+            "has_context": bool(documents),
+        }

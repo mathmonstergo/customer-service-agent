@@ -248,60 +248,79 @@ class KnowledgeMixin:
 
     @staticmethod
     def _search_knowledge_sql() -> str:
-        """集中维护统一知识单元向量检索 SQL，后续混合检索会复用同一候选表。"""
+        """集中维护统一知识单元向量检索 SQL，后续混合检索会复用同一候选表。
+
+        LEFT JOIN import_files / import_chunks 是为了让"文档级 / 切片级禁用"立即在检索层生效，
+        不需要重新生成 embedding；FAQ 来源因为 source_type != 'document' 走 COALESCE→false，不受影响。
+        """
         return """
         SELECT
-            id, source_type, source_id, source_chunk_id, parent_chunk_id,
-            chunk_level, source_title, section_path, page_start, page_end,
-            block_type, source_offsets, content,
-            metadata, tags, confidence, status,
-            1 - (embedding <=> %(embedding)s::vector) AS score
-        FROM knowledge_chunks
-        WHERE status = %(status)s
-          AND embedding_status = 'ready'
-          AND embedding IS NOT NULL
-          AND (embedding <=> %(embedding)s::vector) <= %(max_distance)s
-        ORDER BY embedding <=> %(embedding)s::vector
+            kc.id, kc.source_type, kc.source_id, kc.source_chunk_id, kc.parent_chunk_id,
+            kc.chunk_level, kc.source_title, kc.section_path, kc.page_start, kc.page_end,
+            kc.block_type, kc.source_offsets, kc.content,
+            kc.metadata, kc.tags, kc.confidence, kc.status,
+            1 - (kc.embedding <=> %(embedding)s::vector) AS score
+        FROM knowledge_chunks kc
+        LEFT JOIN import_files imp
+            ON kc.source_type = 'document' AND imp.id = kc.source_id
+        LEFT JOIN import_chunks ic
+            ON kc.source_type = 'document' AND ic.id = kc.source_chunk_id
+        WHERE kc.status = %(status)s
+          AND kc.embedding_status = 'ready'
+          AND kc.embedding IS NOT NULL
+          AND (kc.embedding <=> %(embedding)s::vector) <= %(max_distance)s
+          AND COALESCE(imp.is_disabled, false) = false
+          AND COALESCE(ic.is_disabled, false) = false
+        ORDER BY kc.embedding <=> %(embedding)s::vector
         LIMIT %(top_k)s
         """
 
     @staticmethod
     def _search_knowledge_text_sql() -> str:
-        """集中维护统一知识单元关键词检索 SQL，作为混合召回的第二路候选。"""
+        """集中维护统一知识单元关键词检索 SQL，作为混合召回的第二路候选。
+
+        与向量检索一致，LEFT JOIN import_files / import_chunks 走 COALESCE 过滤掉文档/切片级禁用项。
+        """
         return """
         SELECT
-            id, source_type, source_id, source_chunk_id, parent_chunk_id,
-            chunk_level, source_title, section_path, page_start, page_end,
-            block_type, source_offsets, content,
-            metadata, tags, confidence, status,
+            kc.id, kc.source_type, kc.source_id, kc.source_chunk_id, kc.parent_chunk_id,
+            kc.chunk_level, kc.source_title, kc.section_path, kc.page_start, kc.page_end,
+            kc.block_type, kc.source_offsets, kc.content,
+            kc.metadata, kc.tags, kc.confidence, kc.status,
             (
-                CASE WHEN source_title ILIKE %(query_like)s THEN 0.45 ELSE 0 END
-                + CASE WHEN search_text ILIKE %(query_like)s THEN 0.35 ELSE 0 END
-                + CASE WHEN content ILIKE %(query_like)s THEN 0.20 ELSE 0 END
+                CASE WHEN kc.source_title ILIKE %(query_like)s THEN 0.45 ELSE 0 END
+                + CASE WHEN kc.search_text ILIKE %(query_like)s THEN 0.35 ELSE 0 END
+                + CASE WHEN kc.content ILIKE %(query_like)s THEN 0.20 ELSE 0 END
                 + COALESCE((
                     SELECT sum(
-                        CASE WHEN source_title ILIKE ('%%' || term || '%%') THEN 0.18 ELSE 0 END
-                        + CASE WHEN search_text ILIKE ('%%' || term || '%%') THEN 0.12 ELSE 0 END
-                        + CASE WHEN content ILIKE ('%%' || term || '%%') THEN 0.06 ELSE 0 END
+                        CASE WHEN kc.source_title ILIKE ('%%' || term || '%%') THEN 0.18 ELSE 0 END
+                        + CASE WHEN kc.search_text ILIKE ('%%' || term || '%%') THEN 0.12 ELSE 0 END
+                        + CASE WHEN kc.content ILIKE ('%%' || term || '%%') THEN 0.06 ELSE 0 END
                     )
                     FROM unnest(%(query_terms)s::text[]) AS term
                 ), 0)
             ) AS score
-        FROM knowledge_chunks
-        WHERE status = %(status)s
+        FROM knowledge_chunks kc
+        LEFT JOIN import_files imp
+            ON kc.source_type = 'document' AND imp.id = kc.source_id
+        LEFT JOIN import_chunks ic
+            ON kc.source_type = 'document' AND ic.id = kc.source_chunk_id
+        WHERE kc.status = %(status)s
+          AND COALESCE(imp.is_disabled, false) = false
+          AND COALESCE(ic.is_disabled, false) = false
           AND (
-              source_title ILIKE %(query_like)s
-              OR content ILIKE %(query_like)s
-              OR search_text ILIKE %(query_like)s
+              kc.source_title ILIKE %(query_like)s
+              OR kc.content ILIKE %(query_like)s
+              OR kc.search_text ILIKE %(query_like)s
               OR EXISTS (
                   SELECT 1
                   FROM unnest(%(query_terms)s::text[]) AS term
-                  WHERE source_title ILIKE ('%%' || term || '%%')
-                     OR content ILIKE ('%%' || term || '%%')
-                     OR search_text ILIKE ('%%' || term || '%%')
+                  WHERE kc.source_title ILIKE ('%%' || term || '%%')
+                     OR kc.content ILIKE ('%%' || term || '%%')
+                     OR kc.search_text ILIKE ('%%' || term || '%%')
               )
           )
-        ORDER BY score DESC, updated_at DESC, id ASC
+        ORDER BY score DESC, kc.updated_at DESC, kc.id ASC
         LIMIT %(top_k)s
         """
 
@@ -333,9 +352,15 @@ class KnowledgeMixin:
           ON parent.id = child.parent_chunk_id
          AND parent.source_type = child.source_type
          AND parent.source_id = child.source_id
+        LEFT JOIN import_files imp
+            ON parent.source_type = 'document' AND imp.id = parent.source_id
+        LEFT JOIN import_chunks ic
+            ON parent.source_type = 'document' AND ic.id = parent.source_chunk_id
         WHERE child.id = ANY(%(child_ids)s::text[])
           AND parent.chunk_level = 'parent'
           AND parent.status = %(status)s
           AND parent.embedding_status = 'ready'
+          AND COALESCE(imp.is_disabled, false) = false
+          AND COALESCE(ic.is_disabled, false) = false
         ORDER BY parent.source_type, parent.source_id, parent.source_chunk_id, parent.id
         """

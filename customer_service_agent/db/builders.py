@@ -123,8 +123,12 @@ def build_document_embedding_text(
     block_type: str | None,
     keywords: list[str],
     source_text: str,
+    questions: list[str] | None = None,
 ) -> str:
-    """构造文档向量文本，关键约束是给孤立切片补足文件、章节和页码上下文。"""
+    """构造文档向量文本，关键约束是给孤立切片补足文件、章节和页码上下文。
+
+    `questions` 是 LLM 生成的假设性用户问题，拼在正文前面让向量更贴近真实提问。
+    """
     parts = []
     if source_title:
         parts.append(f"文件：{source_title}")
@@ -138,6 +142,8 @@ def build_document_embedding_text(
         parts.append(f"块类型：{block_type}")
     if keywords:
         parts.append(f"关键词：{'，'.join(keywords)}")
+    if questions:
+        parts.append(f"可能问题：{' / '.join(questions)}")
     parts.append(f"正文：{source_text}")
     return "\n".join(parts)
 
@@ -227,6 +233,7 @@ def build_document_knowledge_chunk_row(
     source_offsets = clean_dict(chunk.get("source_offsets"))
     source_blocks = clean_block_list(chunk.get("source_blocks"))
     chunk_level = str(chunk.get("chunk_level") or "chunk").strip() or "chunk"
+    questions = clean_list(chunk.get("questions"))
     embedding_text = build_document_embedding_text(
         source_title=source_title,
         section_path=section_path,
@@ -235,6 +242,7 @@ def build_document_knowledge_chunk_row(
         block_type=block_type,
         keywords=keywords,
         source_text=source_text,
+        questions=questions,
     )
     metadata = {
         "file_id": chunk.get("file_id"),
@@ -252,6 +260,7 @@ def build_document_knowledge_chunk_row(
         "source_offsets": source_offsets,
         "source_blocks": source_blocks,
         "parent_content": chunk.get("parent_content"),
+        "questions": questions,
     }
     row = {
         "id": f"kc_document_{chunk['id']}",
@@ -277,6 +286,7 @@ def build_document_knowledge_chunk_row(
                 format_page_range(page_start, page_end),
                 block_type,
                 keywords,
+                questions,
                 source_text,
             ]
         ),

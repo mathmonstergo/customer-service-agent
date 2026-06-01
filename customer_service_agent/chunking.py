@@ -99,7 +99,8 @@ def attach_media_context_to_blocks(
     token_counter: TokenCounter = num_tokens_from_string,
 ) -> list[dict[str, Any]]:
     """按 RAGFlow attach_media_context 思路给表格/图片块补邻近文本。"""
-    normalized = [_normalize_block(block) for block in blocks if _block_text(block)]
+    # 保留有文字 / 或有资产路径的媒体块；后者文字为空但是是图/表实体，不能在这里被过滤掉。
+    normalized = [_normalize_block(block) for block in blocks if _has_content(block)]
     if not normalized or (table_context_size <= 0 and image_context_size <= 0):
         return normalized
 
@@ -213,7 +214,9 @@ def ragflow_naive_merge_blocks(
     token_counter: TokenCounter = num_tokens_from_string,
 ) -> list[StructuredChunk]:
     """按 RAGFlow naive_merge 思路合并结构块，同时保留结构化来源。"""
-    normalized = [_normalize_block(block) for block in blocks if _block_text(block)]
+    # 保留两类块：①有文字的块；②虽然没文字但带资产路径的媒体块（image/table/equation）。
+    # 后者是 MinerU 对无 caption 截图的常见输出 —— 只看 text 会让 image 块在 merge 阶段被砍光。
+    normalized = [_normalize_block(block) for block in blocks if _has_content(block)]
     if not normalized:
         return []
 
@@ -533,6 +536,14 @@ def _normalize_block(block: dict[str, Any]) -> dict[str, Any]:
 def _block_text(block: dict[str, Any]) -> str:
     """读取来源块正文，空白块不参与 chunk。"""
     return str(block.get("text") or "").strip()
+
+
+def _has_content(block: dict[str, Any]) -> bool:
+    """文字非空，或带 asset_paths（image/table/equation 块），都视为有内容、参与 chunk。"""
+    if _block_text(block):
+        return True
+    evidence = block.get("evidence") if isinstance(block.get("evidence"), dict) else {}
+    return bool(evidence.get("asset_paths"))
 
 
 def _chunk_section_path(blocks: list[dict[str, Any]]) -> list[str]:
