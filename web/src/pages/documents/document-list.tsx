@@ -2,12 +2,12 @@ import { motion } from 'framer-motion'
 import { CircleAlert, FileText } from 'lucide-react'
 import type { ImportFile } from '@/api/schemas'
 import { Skeleton } from '@/components/ui/skeleton'
-import { StatusDot } from '@/components/ui/status-dot'
+import { StatusDot, type DotTone } from '@/components/ui/status-dot'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/cn'
 import { ease, dur } from '@/lib/motion'
-import { importFileStatusLabel, tr } from '@/lib/labels'
+import { embeddingStatusLabel, tr } from '@/lib/labels'
 
 interface Props {
   items: ImportFile[]
@@ -72,7 +72,10 @@ export function DocumentList({ items, isPending, isError, onRetry, onSelect }: P
               </div>
             </div>
           </div>
-          <StatusDot tone={mapStatus(f.status)} label={tr(importFileStatusLabel, f.status, f.status)} />
+          <StatusDot
+            tone={fileEmbedDotTone(f.embedding_summary, f.is_disabled)}
+            label={f.is_disabled ? '已禁用' : tr(embeddingStatusLabel, f.embedding_summary?.status, '未索引')}
+          />
           <div className="flex flex-col gap-0.5">
             <span className="text-(--color-text-muted)">
               切片 <span className="text-(--color-text)">{f.chunk_count}</span>
@@ -111,12 +114,11 @@ function EmbeddingMini({ summary }: { summary?: ImportFile['embedding_summary'] 
   )
 }
 
-function mapStatus(s: string) {
-  if (s === 'completed') return 'ready' as const
-  if (s === 'needs_review') return 'warning' as const
-  if (s === 'failed') return 'failed' as const
-  if (s === 'processing' || s === 'parsing') return 'pending' as const
-  return 'muted' as const
+// 文件层圆点三态：文件被禁用 → 灰，覆盖一切；整份已嵌入且无过期/失败（summary.status==='ready'）→ 绿；其余（未生成/部分/过期/失败）→ 黄。
+function fileEmbedDotTone(summary: { status?: string } | undefined, disabled: boolean): DotTone {
+  if (disabled) return 'muted'
+  if (summary?.status === 'ready') return 'ready'
+  return 'warning'
 }
 
 function ListSkeleton() {

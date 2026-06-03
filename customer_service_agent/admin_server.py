@@ -1395,8 +1395,16 @@ class AdminApp:
         normalized_progress = _normalize_parse_progress(raw_progress)
         current_state = state or normalized_progress.get("state") or _state_from_import_status(record.get("status"))
         normalized_progress.setdefault("state", current_state)
+        # 附带文档级向量摘要，使解析轮询返回的 file 与列表接口同形；前端文件层圆点据此判定「已嵌入(绿)/其余(黄)」。
+        file_record = record
+        file_id = record.get("id")
+        if file_id and "embedding_summary" not in file_record:
+            file_record = {
+                **record,
+                "embedding_summary": self.database().get_import_file_embedding_summary(file_id),
+            }
         return {
-            "file": record,
+            "file": file_record,
             "status": record.get("status"),
             "state": current_state,
             "progress": normalized_progress,
@@ -1450,9 +1458,16 @@ class AdminApp:
         if not chunks:
             raise AdminValidationError("parsed document has no chunks")
 
+        # 只嵌"非绿"切片：跳过已索引(ready)与已禁用切片，避免重复消耗 embedding 调用。
+        pending_chunks = [
+            chunk
+            for chunk in chunks
+            if not chunk.get("is_disabled") and chunk.get("embedding_status") != "ready"
+        ]
+
         embedding_client = self.embedding_client()
         rows = []
-        for chunk in chunks:
+        for chunk in pending_chunks:
             for chunk_row in document_knowledge_rows_for_embedding(chunk, record):
                 vector = embedding_client.embed(chunk_row["embedding_text"])
                 rows.append(

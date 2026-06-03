@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import {
+  Check,
   ChevronLeft,
   ChevronRight,
   Edit3,
   EyeOff,
   Eye,
+  ListFilter,
   MessageCircleQuestion,
   RefreshCw,
   Save,
@@ -13,8 +15,9 @@ import {
 } from 'lucide-react'
 import type { ImportChunk } from '@/api/schemas'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
-import { StatusDot } from '@/components/ui/status-dot'
+import { TONE_COLOR, embedDotTone, type DotTone } from '@/components/ui/status-dot'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Textarea } from '@/components/ui/textarea'
 import { SourceBlockPreview } from '@/components/shared/source-block-preview'
 import {
@@ -29,7 +32,7 @@ import { ease, dur } from '@/lib/motion'
 import { embeddingStatusLabel, tr } from '@/lib/labels'
 import { useHorizontalWheelScroll } from '@/lib/use-horizontal-wheel-scroll'
 
-export function ChunkBrowser({ fileId, chunks }: { fileId: string; chunks: ImportChunk[] }) {
+export function ChunkBrowser({ fileId, chunks, fileDisabled }: { fileId: string; chunks: ImportChunk[]; fileDisabled?: boolean }) {
   const { currentChunkIndex, setCurrentChunkIndex, chunkEditMode, setChunkEditMode } = useUi()
   const toggleDisabled = useToggleImportChunkDisabled()
   const update = useUpdateImportChunk()
@@ -57,11 +60,13 @@ export function ChunkBrowser({ fileId, chunks }: { fileId: string; chunks: Impor
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* 切片导航：横向滚动 chips，与外部按钮组、抽屉头部对齐到 24px 左缘 */}
+      {/* 切片导航：横向滚动 chips，与外部按钮组、抽屉头部对齐到 24px 左缘。key=fileId 让状态筛选随文件切换复位 */}
       <ChunkNav
+        key={fileId}
         chunks={chunks}
         activeIndex={safeIdx}
         onJump={setCurrentChunkIndex}
+        fileDisabled={fileDisabled}
       />
       {/* 切片元信息与操作 */}
       <ChunkToolbar
@@ -102,8 +107,13 @@ export function ChunkBrowser({ fileId, chunks }: { fileId: string; chunks: Impor
                   variant="primary"
                   disabled={update.isPending || draft === chunk.source_text}
                   onClick={async () => {
-                    await update.mutateAsync({ id: chunk.id, source_text: draft })
-                    setChunkEditMode(false)
+                    try {
+                      await update.mutateAsync({ id: chunk.id, source_text: draft })
+                      toast.success('切片已保存，向量已标记过期，记得重新生成')
+                      setChunkEditMode(false)
+                    } catch (e) {
+                      toast.error((e as Error).message || '保存失败')
+                    }
                   }}
                 >
                   <Save className="size-3.5" />
@@ -128,14 +138,18 @@ function ChunkNav({
   chunks,
   activeIndex,
   onJump,
+  fileDisabled,
 }: {
   chunks: ImportChunk[]
   activeIndex: number
   onJump: (i: number) => void
+  fileDisabled?: boolean
 }) {
   const scrollerRef = useRef<HTMLDivElement>(null)
   const activeRef = useRef<HTMLButtonElement>(null)
   useHorizontalWheelScroll(scrollerRef)
+  // 状态筛选：空集 = 不筛选（全显）；key 为 embedding 状态值或特殊键 'disabled'。
+  const [filter, setFilter] = useState<Set<string>>(() => new Set())
 
   // 当前 chip 滚动到可视区
   useEffect(() => {
@@ -144,17 +158,69 @@ function ChunkNav({
     el.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' })
   }, [activeIndex])
 
+  // 命中筛选的切片下标（保留绝对 #编号，未命中的不渲染）
+  const visibleIndices = useMemo(
+    () => chunks.map((_, i) => i).filter((i) => chunkMatchesFilter(filter, chunks[i], fileDisabled)),
+    [chunks, filter, fileDisabled],
+  )
+  // 上一/下一：在命中筛选的可见集合内移动
+  const prevTarget = [...visibleIndices].reverse().find((i) => i < activeIndex)
+  const nextTarget = visibleIndices.find((i) => i > activeIndex)
+
+  // 筛选项按数据动态派生：实际出现的 embedding 状态（固定展示顺序）+ 禁用（若有）。
+  const statusCounts = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const c of chunks) {
+      const k = c.embedding_status || 'pending'
+      m.set(k, (m.get(k) || 0) + 1)
+    }
+    return m
+  }, [chunks])
+  const disabledCount = useMemo(
+    () => chunks.filter((c) => !!fileDisabled || c.is_disabled).length,
+    [chunks, fileDisabled],
+  )
+  const options = [
+    ...FILTER_STATUS_ORDER.filter((s) => statusCounts.has(s)).map((s) => ({
+      key: s,
+      label: tr(embeddingStatusLabel, s, s),
+      tone: embedDotTone(s, false),
+      count: statusCounts.get(s) || 0,
+    })),
+    ...(disabledCount > 0
+      ? [{ key: 'disabled', label: '已禁用', tone: 'muted' as DotTone, count: disabledCount }]
+      : []),
+  ]
+
+  const toggle = (key: string) => {
+    const next = new Set(filter)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    setFilter(next)
+    // 定位：筛选后若当前 chip 不在命中集合，跳到第一个命中的切片
+    if (next.size > 0) {
+      const vis = chunks.map((_, i) => i).filter((i) => chunkMatchesFilter(next, chunks[i], fileDisabled))
+      if (vis.length && !vis.includes(activeIndex)) onJump(vis[0])
+    }
+  }
+  const filtering = filter.size > 0
+
   return (
     <div className="flex shrink-0 items-center gap-1.5 border-b border-(--color-border) px-6 py-2">
       <span className="shrink-0 text-[11px] uppercase tracking-wider text-(--color-text-faint)">
-        切片 <span className="text-(--color-text-muted)">{chunks.length}</span>
+        切片{' '}
+        <span className="text-(--color-text-muted)">
+          {filtering ? `${visibleIndices.length} / ${chunks.length}` : chunks.length}
+        </span>
       </span>
       <Button
         variant="ghost"
         size="icon"
         className="size-6"
-        disabled={activeIndex <= 0}
-        onClick={() => onJump(Math.max(0, activeIndex - 1))}
+        disabled={prevTarget === undefined}
+        onClick={() => {
+          if (prevTarget !== undefined) onJump(prevTarget)
+        }}
       >
         <ChevronLeft className="size-3.5" />
       </Button>
@@ -162,55 +228,123 @@ function ChunkNav({
         ref={scrollerRef}
         className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto scroll-thin scroll-smooth pb-0.5"
       >
-        {chunks.map((c, i) => {
-          const isActive = i === activeIndex
-          // 橙点严格语义：embed 过、原文被改后被标 stale、还没重做。
-          // failed 是另一类"上次 embed 出错"问题，已经在切片工具栏的 StatusDot 用红色文字标出，不再用小点重复提示。
-          const isStale = c.embedding_status === 'stale'
-          const hasQuestions = c.questions_status === 'ready' && c.questions?.length > 0
-          return (
-            <button
-              key={c.id}
-              ref={isActive ? activeRef : undefined}
-              type="button"
-              onClick={() => onJump(i)}
-              className={cn(
-                'group inline-flex shrink-0 items-center gap-1 rounded-(--radius-control) border px-2 py-1 text-[11px] transition-colors',
-                isActive
-                  ? 'border-(--color-primary)/40 bg-(--color-primary-soft) text-(--color-text)'
-                  : 'border-transparent text-(--color-text-muted) hover:bg-(--color-surface-2) hover:text-(--color-text)',
-                c.is_disabled && 'opacity-50',
-              )}
-              title={[
-                c.section_path?.join(' > ') || c.block_type || '',
-                isStale && '原文已改，向量待刷新',
-                hasQuestions && `${c.questions.length} 条假设问题`,
-              ]
-                .filter(Boolean)
-                .join(' · ')}
-            >
-              <span className="font-mono text-(--color-text-faint) group-hover:text-(--color-text-muted)">
-                #{i + 1}
-              </span>
-              {(isStale || hasQuestions) && (
-                <span className="inline-flex items-center gap-0.5">
-                  {isStale && <span className="size-1 rounded-full bg-(--color-warning)" />}
-                  {hasQuestions && <span className="size-1 rounded-full bg-(--color-primary)" />}
-                </span>
-              )}
-            </button>
-          )
-        })}
+        {visibleIndices.length === 0 ? (
+          <span className="px-1 text-[11px] text-(--color-text-faint)">没有匹配的切片</span>
+        ) : (
+          visibleIndices.map((i) => {
+            const c = chunks[i]
+            const isActive = i === activeIndex
+            // 禁用（文件层或切片层任一）置灰并覆盖；其余按 embedding 状态一色一态。
+            const disabled = !!fileDisabled || c.is_disabled
+            const tone = embedDotTone(c.embedding_status, disabled)
+            const title = c.section_path?.join(' > ') || c.block_type || `切片 #${i + 1}`
+            const statusText = disabled
+              ? '已禁用'
+              : tr(embeddingStatusLabel, c.embedding_status, '未索引')
+            const qCount = c.questions?.length || 0
+            return (
+              <Tooltip key={c.id}>
+                <TooltipTrigger asChild>
+                  <button
+                    ref={isActive ? activeRef : undefined}
+                    type="button"
+                    onClick={() => onJump(i)}
+                    className={cn(
+                      'group inline-flex shrink-0 items-center gap-1 rounded-(--radius-control) border px-2 py-1 text-[11px] transition-colors',
+                      isActive
+                        ? 'border-(--color-primary)/40 bg-(--color-primary-soft) text-(--color-text)'
+                        : 'border-transparent text-(--color-text-muted) hover:bg-(--color-surface-2) hover:text-(--color-text)',
+                      c.is_disabled && 'opacity-50',
+                    )}
+                  >
+                    <span className="font-mono text-(--color-text-faint) group-hover:text-(--color-text-muted)">
+                      #{i + 1}
+                    </span>
+                    <span className={cn('size-1 rounded-full', TONE_COLOR[tone])} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="max-w-[260px]">
+                  <div className="flex flex-col gap-1">
+                    <span className="font-medium break-words">{title}</span>
+                    <span className="flex items-center gap-1.5 text-(--color-text-muted)">
+                      <span className={cn('size-1.5 shrink-0 rounded-full', TONE_COLOR[tone])} />
+                      {statusText}
+                    </span>
+                    {qCount > 0 && (
+                      <span className="text-(--color-text-faint)">{qCount} 个假设问题</span>
+                    )}
+                  </div>
+                </TooltipContent>
+              </Tooltip>
+            )
+          })
+        )}
       </div>
       <Button
         variant="ghost"
         size="icon"
         className="size-6"
-        disabled={activeIndex >= chunks.length - 1}
-        onClick={() => onJump(Math.min(chunks.length - 1, activeIndex + 1))}
+        disabled={nextTarget === undefined}
+        onClick={() => {
+          if (nextTarget !== undefined) onJump(nextTarget)
+        }}
       >
         <ChevronRight className="size-3.5" />
       </Button>
+      {/* 状态筛选 */}
+      <Popover>
+        <PopoverTrigger asChild>
+          <Button
+            variant={filtering ? 'primary' : 'ghost'}
+            size="icon"
+            className="size-6 shrink-0"
+            title="按状态筛选切片"
+          >
+            <ListFilter className="size-3.5" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="end" className="w-52 p-1.5">
+          <div className="flex items-center justify-between px-1.5 pb-1.5 text-[11px] text-(--color-text-faint)">
+            <span>按状态筛选</span>
+            {filtering && (
+              <button
+                type="button"
+                onClick={() => setFilter(new Set())}
+                className="text-(--color-primary-hi) hover:underline"
+              >
+                清除
+              </button>
+            )}
+          </div>
+          <div className="flex flex-col">
+            {options.map((o) => {
+              const checked = filter.has(o.key)
+              return (
+                <button
+                  key={o.key}
+                  type="button"
+                  onClick={() => toggle(o.key)}
+                  className="flex items-center gap-2 rounded-(--radius-control) px-1.5 py-1.5 text-[12px] text-(--color-text) hover:bg-(--color-surface-2)"
+                >
+                  <span
+                    className={cn(
+                      'flex size-3.5 shrink-0 items-center justify-center rounded-[4px] border',
+                      checked
+                        ? 'border-(--color-primary) bg-(--color-primary)'
+                        : 'border-(--color-border)',
+                    )}
+                  >
+                    {checked && <Check className="size-2.5 text-(--color-text)" />}
+                  </span>
+                  <span className={cn('size-1.5 shrink-0 rounded-full', TONE_COLOR[o.tone])} />
+                  <span className="flex-1 text-left">{o.label}</span>
+                  <span className="text-(--color-text-faint)">{o.count}</span>
+                </button>
+              )
+            })}
+          </div>
+        </PopoverContent>
+      </Popover>
     </div>
   )
 }
@@ -246,25 +380,18 @@ function ChunkToolbar({
     : null
   return (
     <div className="flex shrink-0 items-center justify-between gap-2 border-b border-(--color-border-soft) bg-(--color-surface) px-6 py-2.5">
+      {/* 状态已统一到滚轴圆点 + hover，这里只留段落 / 页码等定位信息，保持工具栏清爽 */}
       <div className="flex min-w-0 flex-1 items-center gap-2 text-[12px] text-(--color-text-muted)">
         {sectionLeaf && (
           <span className="truncate text-(--color-text)" title={chunk.section_path?.join(' > ')}>
             {sectionLeaf}
           </span>
         )}
-        {chunk.is_disabled && <Badge tone="danger">已禁</Badge>}
-        {chunk.questions_status === 'ready' && chunk.questions?.length > 0 && (
-          <Badge tone="primary">
-            <MessageCircleQuestion className="size-3" />
-            {chunk.questions.length} 问
-          </Badge>
-        )}
-        <StatusDot
-          tone={mapEmbed(chunk.embedding_status)}
-          label={tr(embeddingStatusLabel, chunk.embedding_status, '未索引')}
-        />
         {meta.length > 0 && (
-          <span className="text-(--color-text-faint)">· {meta.join(' · ')}</span>
+          <span className="text-(--color-text-faint)">
+            {sectionLeaf ? '· ' : ''}
+            {meta.join(' · ')}
+          </span>
         )}
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
@@ -321,9 +448,12 @@ function QuestionsBlock({ questions }: { questions: string[] }) {
   )
 }
 
-function mapEmbed(s?: string) {
-  if (s === 'ready') return 'ready' as const
-  if (s === 'failed') return 'failed' as const
-  if (s === 'stale') return 'stale' as const
-  return 'pending' as const
+// 筛选下拉里 embedding 状态的展示顺序（仅展示数据中实际出现的）。
+const FILTER_STATUS_ORDER = ['ready', 'stale', 'failed', 'partial', 'pending']
+
+// 纯匹配：active 为选中的状态键集合（空 = 全显）；'disabled' 命中文件层或切片层禁用。
+function chunkMatchesFilter(active: Set<string>, c: ImportChunk, fileDisabled?: boolean) {
+  if (active.size === 0) return true
+  if (active.has('disabled') && (!!fileDisabled || c.is_disabled)) return true
+  return active.has(c.embedding_status || 'pending')
 }

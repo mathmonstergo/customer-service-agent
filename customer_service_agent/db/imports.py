@@ -266,15 +266,55 @@ class ImportMixin:
         return rows
 
     def list_import_chunks(self, file_id: str) -> list[dict[str, Any]]:
-        """按文件列出时间切块。"""
-        sql = """
-        SELECT *
-        FROM import_chunks
-        WHERE file_id = %(file_id)s
-        ORDER BY chunk_index ASC
+        """按文件列出切片，并联表 knowledge_chunks 派生每片真实 embedding_status。
+
+        import_chunks 本身不存 embedding 状态（向量只落在统一知识表 knowledge_chunks），
+        因此切片级状态要按"该片的 parent + child 知识单元"聚合得到，规则与文件级摘要保持一致：
+        无向量=未索引(pending)、任一 stale=过期、全失败=失败、全就绪=已索引、其余=部分(partial)。
         """
         with self.connect() as conn:
-            return conn.execute(sql, {"file_id": file_id}).fetchall()
+            return conn.execute(self._list_import_chunks_sql(), {"file_id": file_id}).fetchall()
+
+    @staticmethod
+    def _list_import_chunks_sql() -> str:
+        """集中维护切片列表 SQL；LEFT JOIN 知识表派生切片级 embedding_status。
+
+        关联口径沿用 stale/删除 SQL：parent 的 source_chunk_id=切片 id，
+        child 的 parent_chunk_id='kc_document_'||切片 id，用 OR 一次覆盖该片全部知识单元。
+        """
+        return """
+        WITH chunk_knowledge AS (
+            SELECT
+                ic.id AS chunk_id,
+                count(kc.id) AS knowledge_count,
+                count(kc.id) FILTER (WHERE kc.embedding_status = 'ready') AS ready_count,
+                count(kc.id) FILTER (WHERE kc.embedding_status = 'stale') AS stale_count,
+                count(kc.id) FILTER (WHERE kc.embedding_status = 'failed') AS failed_count
+            FROM import_chunks ic
+            LEFT JOIN knowledge_chunks kc
+              ON kc.source_type = 'document'
+             AND (
+                    kc.source_chunk_id = ic.id
+                    OR kc.parent_chunk_id = ('kc_document_' || ic.id)
+                 )
+            WHERE ic.file_id = %(file_id)s
+            GROUP BY ic.id
+        )
+        SELECT
+            ic.*,
+            CASE
+                WHEN COALESCE(ck.knowledge_count, 0) = 0 THEN 'pending'
+                WHEN ck.stale_count > 0 THEN 'stale'
+                WHEN ck.failed_count > 0 AND ck.ready_count = 0 THEN 'failed'
+                WHEN ck.ready_count >= ck.knowledge_count THEN 'ready'
+                WHEN ck.ready_count = 0 THEN 'pending'
+                ELSE 'partial'
+            END AS embedding_status
+        FROM import_chunks ic
+        LEFT JOIN chunk_knowledge ck ON ck.chunk_id = ic.id
+        WHERE ic.file_id = %(file_id)s
+        ORDER BY ic.chunk_index ASC
+        """
 
     def get_import_chunk(self, chunk_id: str) -> dict[str, Any] | None:
         """按 id 获取导入切块。"""
@@ -742,7 +782,7 @@ class ImportMixin:
         UPDATE knowledge_chunks
         SET content = %(source_text)s,
             embedding_text = %(source_text)s,
-            search_text = concat_ws(E'\n', source_title, tags::text, %(source_text)s),
+            search_text = concat_ws(E'\n', source_title, tags::text, %(source_text)s::text),
             embedding_status = 'stale',
             embedding_error = NULL,
             content_hash = %(content_hash)s,

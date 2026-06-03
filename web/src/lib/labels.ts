@@ -25,6 +25,7 @@ export const embeddingStatusLabel: Record<string, string> = {
   stale: '过期',
   failed: '索引失败',
   none: '未生成',
+  partial: '部分索引',
 }
 
 export const questionsStatusLabel: Record<string, string> = {

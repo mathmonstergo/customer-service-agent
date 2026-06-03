@@ -7,9 +7,9 @@ import {
   PowerOff,
   Power,
   RotateCw,
-  Sparkles,
   Trash2,
   Wand2,
+  Waypoints,
 } from 'lucide-react'
 import {
   Drawer,
@@ -20,7 +20,7 @@ import {
 } from '@/components/ui/drawer'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { StatusDot } from '@/components/ui/status-dot'
+import { StatusDot, type DotTone } from '@/components/ui/status-dot'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
   useDeleteImportFile,
@@ -34,7 +34,7 @@ import {
   type ParseStatusResponse,
 } from '@/api/hooks'
 import { toast } from '@/components/ui/toaster'
-import { importFileStatusLabel, parseStateLabel, tr } from '@/lib/labels'
+import { embeddingStatusLabel, parseStateLabel, tr } from '@/lib/labels'
 import { dur, ease } from '@/lib/motion'
 import { ChunkBrowser } from './chunk-browser'
 
@@ -100,10 +100,10 @@ function DrawerInner({ fileId, onClose }: { fileId: string; onClose: () => void 
   const del = useDeleteImportFile()
 
   const isParsed = !!file && ['needs_review', 'completed'].includes(file.status)
-  // 该文档下有多少切片处于 stale：embed 过但原文被改过，等待重新生成。
-  // 用于在"生成 embedding"按钮上显示橙色数字徽章，提醒用户有内容待刷新。
-  const staleCount = (chunksQ.data?.items || []).filter(
-    (c) => c.embedding_status === 'stale',
+  // 该文档下有多少切片「非绿」：未禁用且未索引/过期/失败/部分，即点 Embedding 会实际处理的数量。
+  // 用于在 Embedding 按钮上显示数字徽章，并在全绿时禁用按钮。
+  const nonGreenCount = (chunksQ.data?.items || []).filter(
+    (c) => !c.is_disabled && c.embedding_status !== 'ready',
   ).length
 
   const fireMessages = (messages?: string[]) => (messages || []).forEach((m) => toast(m))
@@ -156,8 +156,10 @@ function DrawerInner({ fileId, onClose }: { fileId: string; onClose: () => void 
           <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[12px] text-(--color-text-muted)">
             <Badge tone="muted">{file.file_type}</Badge>
             <Badge tone="muted">{file.parser}</Badge>
-            <StatusDot tone={mapStatus(file.status)} label={tr(importFileStatusLabel, file.status, file.status)} />
-            {file.is_disabled && <Badge tone="danger">已禁用</Badge>}
+            <StatusDot
+              tone={fileEmbedDotTone(file.embedding_summary, file.is_disabled)}
+              label={file.is_disabled ? '已禁用' : tr(embeddingStatusLabel, file.embedding_summary?.status, '未索引')}
+            />
           </div>
         </div>
       </DrawerHeader>
@@ -175,22 +177,22 @@ function DrawerInner({ fileId, onClose }: { fileId: string; onClose: () => void 
         <Button
           variant="primary"
           onClick={onEmbed}
-          disabled={!isParsed || pending.embed}
+          disabled={!isParsed || pending.embed || (!!chunksQ.data && nonGreenCount === 0)}
           title={
-            staleCount > 0
-              ? `重新生成全部切片向量（${staleCount} 个切片原文已改，待刷新）`
-              : '为所有切片生成向量'
+            nonGreenCount > 0
+              ? `为 ${nonGreenCount} 个非绿切片生成向量（已索引的自动跳过）`
+              : '所有切片均已索引，无需重新生成'
           }
         >
           {pending.embed ? (
             <Loader2 className="size-3.5 animate-spin" />
           ) : (
-            <Sparkles className="size-3.5" />
+            <Waypoints className="size-3.5" />
           )}
-          {pending.embed ? '生成中…' : '生成 embedding'}
-          {staleCount > 0 && !pending.embed && (
+          {pending.embed ? '生成中…' : 'Embedding'}
+          {nonGreenCount > 0 && !pending.embed && (
             <span className="ml-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-(--radius-control) bg-(--color-warning)/20 px-1 font-mono text-[10px] text-(--color-warning)">
-              {staleCount}
+              {nonGreenCount}
             </span>
           )}
         </Button>
@@ -250,7 +252,7 @@ function DrawerInner({ fileId, onClose }: { fileId: string; onClose: () => void 
             <Skeleton className="h-32 w-full" />
           </div>
         ) : (
-          <ChunkBrowser fileId={fileId} chunks={chunksQ.data?.items || []} />
+          <ChunkBrowser fileId={fileId} chunks={chunksQ.data?.items || []} fileDisabled={file.is_disabled} />
         )}
       </DrawerBody>
     </>
@@ -327,6 +329,8 @@ function TaskRow({ label, hint }: { label: string; hint: string }) {
 function DrawerInnerSkeleton() {
   return (
     <div className="space-y-3 p-6">
+      {/* 加载态也要有 DrawerTitle，否则 Radix 在 file 拉取完成前会报"DialogContent 缺 DialogTitle" */}
+      <DrawerTitle className="sr-only">文档详情</DrawerTitle>
       <Skeleton className="h-6 w-1/3" />
       <Skeleton className="h-4 w-1/2" />
       <div className="space-y-2 pt-4">
@@ -337,9 +341,9 @@ function DrawerInnerSkeleton() {
   )
 }
 
-function mapStatus(s: string) {
-  if (s === 'completed' || s === 'needs_review') return 'ready' as const
-  if (s === 'failed') return 'failed' as const
-  if (s === 'processing' || s === 'parsing') return 'pending' as const
-  return 'muted' as const
+// 文件层圆点三态：文件被禁用 → 灰，覆盖一切；整份已嵌入且无过期/失败（summary.status==='ready'）→ 绿；其余（未生成/部分/过期/失败）→ 黄。
+function fileEmbedDotTone(summary: { status?: string } | undefined, disabled: boolean): DotTone {
+  if (disabled) return 'muted'
+  if (summary?.status === 'ready') return 'ready'
+  return 'warning'
 }

@@ -18,6 +18,7 @@
   --color-warning: #f2c94c;
   --color-danger: #eb5757;
   --color-danger-soft: rgb(235 87 87 / 0.12);
+  --color-stale: #ec8e3c;
 
   --radius-card: 10px;
   --radius-control: 6px;
