@@ -2,7 +2,7 @@ import { motion } from 'framer-motion'
 import type { Faq } from '@/api/schemas'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Button } from '@/components/ui/button'
-import { StatusDot } from '@/components/ui/status-dot'
+import { StatusDot, embedDotTone } from '@/components/ui/status-dot'
 import { cn } from '@/lib/cn'
 import { dur, ease } from '@/lib/motion'
 import { embeddingStatusLabel, faqStatusLabel, tr } from '@/lib/labels'
@@ -69,6 +69,7 @@ function FaqRow({ faq, active, onClick }: { faq: Faq; active: boolean; onClick: 
           active
             ? 'border-(--color-primary)/40 bg-(--color-primary-soft)'
             : 'border-(--color-border) hover:bg-(--color-surface-2) hover:border-(--color-border)',
+          faq.status === 'disabled' && 'opacity-60',
         )}
       >
         {/* 左侧状态色条：选中时变 primary，否则按状态分色 */}
@@ -125,7 +126,7 @@ function FaqRow({ faq, active, onClick }: { faq: Faq; active: boolean; onClick: 
               {tr(faqStatusLabel, faq.status, faq.status)}
             </span>
             <StatusDot
-              tone={mapEmbed(faq.embedding_status)}
+              tone={embedDotTone(faq.embedding_status)}
               label={tr(embeddingStatusLabel, faq.embedding_status, '未索引')}
             />
           </div>
@@ -175,8 +176,8 @@ function Empty({ children }: { children: React.ReactNode }) {
 
 function mapStatus(s: string): 'success' | 'warning' | 'muted' | 'danger' {
   if (s === 'usable') return 'success'
-  if (s === 'needs_review' || s === 'draft') return 'warning'
-  if (s === 'archived') return 'muted'
+  if (s === 'needs_review') return 'warning'
+  if (s === 'disabled') return 'muted'
   return 'muted'
 }
 function statusBarClass(t: ReturnType<typeof mapStatus>) {
@@ -190,10 +191,4 @@ function statusBarClass(t: ReturnType<typeof mapStatus>) {
     default:
       return 'bg-(--color-border)'
   }
-}
-function mapEmbed(s?: string) {
-  if (s === 'ready') return 'ready' as const
-  if (s === 'failed') return 'failed' as const
-  if (s === 'stale') return 'stale' as const
-  return 'pending' as const
 }

@@ -48,6 +48,15 @@ ALTER TABLE faq_documents
 ALTER TABLE faq_documents
     ADD COLUMN IF NOT EXISTS content_hash TEXT;
 
+-- FAQ 用 status 表达禁用(usable/needs_review/disabled)，不再要正交的 is_disabled 列；历史库若已加则移除。
+ALTER TABLE faq_documents
+    DROP COLUMN IF EXISTS is_disabled;
+
+-- 历史遗留的非常规状态(如 product_request / draft / archived)归一到三态：非 usable/disabled 的都视作待复核。
+UPDATE faq_documents
+SET status = 'needs_review'
+WHERE status NOT IN ('usable', 'needs_review', 'disabled');
+
 UPDATE faq_documents
 SET embedding_status = 'ready'
 WHERE embedding IS NOT NULL

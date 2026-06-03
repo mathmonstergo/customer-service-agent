@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ChevronLeft, ChevronRight, Plus, Search, X } from 'lucide-react'
-import { useFaqs } from '@/api/hooks'
+import { ChevronLeft, ChevronRight, Loader2, Plus, Search, Waypoints, X } from 'lucide-react'
+import { useEmbedPendingFaqs, useFaqs } from '@/api/hooks'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
+import { toast } from '@/components/ui/toaster'
 import { useUi } from '@/store/ui'
 import { cn } from '@/lib/cn'
 import { FaqStatsBar } from './faqs/faq-stats-bar'
@@ -13,8 +14,7 @@ const STATUS_OPTIONS = [
   { value: '', label: '全部' },
   { value: 'usable', label: '可用' },
   { value: 'needs_review', label: '待复核' },
-  { value: 'draft', label: '草稿' },
-  { value: 'archived', label: '已归档' },
+  { value: 'disabled', label: '禁用' },
 ]
 
 const EMBED_OPTIONS = [
@@ -61,6 +61,19 @@ export default function FaqsPage() {
     return { pendingEmbedding: p, failedEmbedding: f }
   }, [items])
 
+  // 本页可见的「非绿」FAQ 数（未索引/过期/失败），作为批量 Embedding 的数字提示。
+  // 真正处理范围是全库候选（后端一次 ≤200 条），不止当前页。
+  const pageNonGreen = pendingEmbedding + failedEmbedding
+  const embedPending = useEmbedPendingFaqs()
+  const onEmbedPending = async () => {
+    try {
+      const r = await embedPending.mutateAsync(200)
+      toast.success(`已为 ${r?.count ?? 0} 条 FAQ 生成 embedding`)
+    } catch (e) {
+      toast.error((e as Error).message || '批量 embedding 失败')
+    }
+  }
+
   return (
     <div className="flex h-full flex-col">
       {/* 顶部工具栏 */}
@@ -86,6 +99,24 @@ export default function FaqsPage() {
         <SegmentedFilter value={status} onChange={setStatus} options={STATUS_OPTIONS} />
         <SegmentedFilter value={embedding} onChange={setEmbedding} options={EMBED_OPTIONS} />
         <div className="ml-auto" />
+        <Button
+          variant="outline"
+          onClick={onEmbedPending}
+          disabled={embedPending.isPending}
+          title="为所有未索引 / 过期 / 失败的 FAQ 批量生成 embedding（一次最多 200 条）"
+        >
+          {embedPending.isPending ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <Waypoints className="size-3.5" />
+          )}
+          {embedPending.isPending ? '生成中…' : 'Embedding'}
+          {pageNonGreen > 0 && !embedPending.isPending && (
+            <span className="ml-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-(--radius-control) bg-(--color-warning)/20 px-1 font-mono text-[10px] text-(--color-warning)">
+              {pageNonGreen}
+            </span>
+          )}
+        </Button>
         <Button variant="primary" onClick={() => setOpenFaqId('new')}>
           <Plus className="size-3.5" />
           新建 FAQ

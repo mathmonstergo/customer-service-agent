@@ -348,6 +348,20 @@ export function useEmbedFaq() {
   })
 }
 
+// 批量为所有「非绿」(pending/stale/failed) FAQ 生成 embedding；后端按候选表一次处理（≤200 条）。
+export function useEmbedPendingFaqs() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationKey: ['embed-pending-faqs'],
+    mutationFn: (limit: number) =>
+      requestJson<{ count?: number; items?: unknown[] }>('/api/faqs/embed-pending', {
+        method: 'POST',
+        body: { limit },
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['faqs'] }),
+  })
+}
+
 export interface OptimizeResponse {
   question?: string
   answer?: string

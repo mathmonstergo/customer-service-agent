@@ -3,8 +3,8 @@ import { AnimatePresence, motion } from 'framer-motion'
 import {
   Loader2,
   Save,
-  Sparkles,
   Wand2,
+  Waypoints,
 } from 'lucide-react'
 import {
   Drawer,
@@ -17,7 +17,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import { StatusDot } from '@/components/ui/status-dot'
+import { StatusDot, embedDotTone } from '@/components/ui/status-dot'
 import { Skeleton } from '@/components/ui/skeleton'
 import { TagInput } from '@/components/shared/tag-input'
 import { toast } from '@/components/ui/toaster'
@@ -147,6 +147,9 @@ function DrawerInner({
       toast.success(isNew ? '已创建 FAQ' : '已保存修改')
       if (isNew && saved?.id) {
         onCreated?.(saved.id)
+      } else {
+        // 编辑态保存成功后自动关闭抽屉；新建态留开以便接着生成 embedding。
+        onClose()
       }
     } catch (e) {
       toast.error((e as Error).message)
@@ -214,8 +217,12 @@ function DrawerInner({
           {faq && !isNew && (
             <div className="mt-1.5 flex items-center gap-2 text-[11px] text-(--color-text-muted)">
               <StatusDot
-                tone={mapEmbed(faq.embedding_status)}
-                label={tr(embeddingStatusLabel, faq.embedding_status, '未索引')}
+                tone={embedDotTone(faq.embedding_status, faq.status === 'disabled')}
+                label={
+                  faq.status === 'disabled'
+                    ? '已禁用'
+                    : tr(embeddingStatusLabel, faq.embedding_status, '未索引')
+                }
               />
               <span className="text-(--color-text-faint)">
                 · 创建 {formatTime(faq.created_at)}
@@ -275,8 +282,7 @@ function DrawerInner({
                 options={[
                   { value: 'usable', label: tr(faqStatusLabel, 'usable') },
                   { value: 'needs_review', label: tr(faqStatusLabel, 'needs_review') },
-                  { value: 'draft', label: tr(faqStatusLabel, 'draft') },
-                  { value: 'archived', label: tr(faqStatusLabel, 'archived') },
+                  { value: 'disabled', label: tr(faqStatusLabel, 'disabled') },
                 ]}
                 onChange={(v) => setDraft({ ...draft, status: v })}
               />
@@ -319,8 +325,8 @@ function DrawerInner({
           disabled={isNew || embed.isPending}
           title={isNew ? '保存后才能生成' : ''}
         >
-          {embed.isPending ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
-          生成 embedding
+          {embed.isPending ? <Loader2 className="size-3.5 animate-spin" /> : <Waypoints className="size-3.5" />}
+          Embedding
         </Button>
         <Button variant="primary" onClick={onSave} disabled={save.isPending || !dirty}>
           {save.isPending ? <Loader2 className="size-3.5 animate-spin" /> : <Save className="size-3.5" />}
@@ -414,6 +420,8 @@ function ShimmerButton({
 function DrawerInnerSkeleton() {
   return (
     <div className="space-y-3 p-6">
+      {/* 加载态也要有 DrawerTitle，否则 Radix 在 faq 拉取完成前会报"DialogContent 缺 DialogTitle" */}
+      <DrawerTitle className="sr-only">FAQ 详情</DrawerTitle>
       <Skeleton className="h-6 w-1/3" />
       <Skeleton className="h-4 w-1/2" />
       <div className="space-y-2 pt-4">
@@ -423,13 +431,6 @@ function DrawerInnerSkeleton() {
       </div>
     </div>
   )
-}
-
-function mapEmbed(s?: string) {
-  if (s === 'ready') return 'ready' as const
-  if (s === 'failed') return 'failed' as const
-  if (s === 'stale') return 'stale' as const
-  return 'pending' as const
 }
 
 function formatTime(ts?: string | null) {

@@ -38,8 +38,7 @@ export const questionsStatusLabel: Record<string, string> = {
 export const faqStatusLabel: Record<string, string> = {
   usable: '可用',
   needs_review: '待复核',
-  archived: '已归档',
-  draft: '草稿',
+  disabled: '禁用',
 }
 
 export const confidenceLabel: Record<string, string> = {

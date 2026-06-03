@@ -251,7 +251,7 @@ class KnowledgeMixin:
         """集中维护统一知识单元向量检索 SQL，后续混合检索会复用同一候选表。
 
         LEFT JOIN import_files / import_chunks 是为了让"文档级 / 切片级禁用"立即在检索层生效，
-        不需要重新生成 embedding；FAQ 来源因为 source_type != 'document' 走 COALESCE→false，不受影响。
+        不需要重新生成 embedding；FAQ 来源再 LEFT JOIN faq_documents 读**实时** status——禁用/待复核（status≠usable）即时排除，改状态无需重嵌（kc.status 是投影快照，故以 fq.status 为准）。
         """
         return """
         SELECT
@@ -265,7 +265,9 @@ class KnowledgeMixin:
             ON kc.source_type = 'document' AND imp.id = kc.source_id
         LEFT JOIN import_chunks ic
             ON kc.source_type = 'document' AND ic.id = kc.source_chunk_id
-        WHERE kc.status = %(status)s
+        LEFT JOIN faq_documents fq
+            ON kc.source_type = 'faq' AND fq.id = kc.source_id
+        WHERE COALESCE(fq.status, kc.status) = %(status)s
           AND kc.embedding_status = 'ready'
           AND kc.embedding IS NOT NULL
           AND (kc.embedding <=> %(embedding)s::vector) <= %(max_distance)s
@@ -279,7 +281,7 @@ class KnowledgeMixin:
     def _search_knowledge_text_sql() -> str:
         """集中维护统一知识单元关键词检索 SQL，作为混合召回的第二路候选。
 
-        与向量检索一致，LEFT JOIN import_files / import_chunks 走 COALESCE 过滤掉文档/切片级禁用项。
+        与向量检索一致；FAQ 走 fq.status 实时口径（COALESCE(fq.status, kc.status)），文档/切片仍按 is_disabled 过滤。
         """
         return """
         SELECT
@@ -305,7 +307,9 @@ class KnowledgeMixin:
             ON kc.source_type = 'document' AND imp.id = kc.source_id
         LEFT JOIN import_chunks ic
             ON kc.source_type = 'document' AND ic.id = kc.source_chunk_id
-        WHERE kc.status = %(status)s
+        LEFT JOIN faq_documents fq
+            ON kc.source_type = 'faq' AND fq.id = kc.source_id
+        WHERE COALESCE(fq.status, kc.status) = %(status)s
           AND COALESCE(imp.is_disabled, false) = false
           AND COALESCE(ic.is_disabled, false) = false
           AND (
