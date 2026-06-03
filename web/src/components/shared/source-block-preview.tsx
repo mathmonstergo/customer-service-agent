@@ -18,6 +18,53 @@ interface Props {
   className?: string
 }
 
+// 单个汉字/假名/谚文(用于识别竖排标题里的逐字行)
+const SINGLE_CJK = /^[㐀-鿿豈-﫿぀-ヿ가-힯]$/
+
+/**
+ * 还原 MinerU 封面竖排标题。
+ *
+ * PDF 封面里"用 户 使 用 手 册"这类竖排/疏排标题会被解析成单字之间夹空行的文本
+ * (如 "用\n\n户\n\n使…"),再用 whitespace-pre-wrap 渲染就变成了每字一行。
+ * 这里只把"连续 ≥2 个单字行(可被空行隔开)"的片段横向合并成一行,普通段落、目录等原样保留。
+ * 纯展示层处理,不改动已存储的 source_text 与向量,不改变文字内容本身。
+ */
+function deverticalizeCjk(text?: string | null): string {
+  const raw = text || ''
+  if (!raw.includes('\n')) return raw
+  const lines = raw.split('\n')
+  const out: string[] = []
+  let i = 0
+  while (i < lines.length) {
+    // 从 i 起尝试收集一段"单字行(中间可夹空行)"的竖排串
+    const run: string[] = []
+    let last = i
+    let j = i
+    while (j < lines.length) {
+      const t = lines[j].trim()
+      if (t === '') {
+        j++ // 跳过竖排串内部的空行
+        continue
+      }
+      if (SINGLE_CJK.test(t)) {
+        run.push(t)
+        last = j
+        j++
+        continue
+      }
+      break
+    }
+    if (run.length >= 2) {
+      out.push(run.join('')) // 竖排串合并成正常一行
+      i = last + 1
+    } else {
+      out.push(lines[i]) // 普通行原样保留
+      i++
+    }
+  }
+  return out.join('\n')
+}
+
 export function SourceBlockPreview({ blocks, fileId, className }: Props) {
   return (
     <div className={cn('flex flex-col gap-4 text-[14px] leading-[1.65]', className)}>
@@ -67,10 +114,10 @@ function SourceBlockRender({ block, fileId }: { block: SourceBlock; fileId: stri
   }
 
   if (type === 'title') {
-    return <h3 className="text-[15px] text-(--color-text)">{block.text}</h3>
+    return <h3 className="text-[15px] text-(--color-text)">{deverticalizeCjk(block.text)}</h3>
   }
 
-  return <p className="whitespace-pre-wrap text-(--color-text)">{block.text}</p>
+  return <p className="whitespace-pre-wrap text-(--color-text)">{deverticalizeCjk(block.text)}</p>
 }
 
 function TableBlock({ block, fileId }: { block: SourceBlock; fileId: string }) {

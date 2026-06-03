@@ -17,7 +17,9 @@ export const DrawerContent = forwardRef<HTMLDivElement, DrawerContentProps>(
   ({ className, children, width = 720, ...props }, ref) => (
     <DialogPrimitive.Portal>
       <DialogPrimitive.Overlay className="fixed inset-0 z-40 bg-black/60 backdrop-blur-[6px] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0" />
-      <DialogPrimitive.Content ref={ref} asChild {...props}>
+      {/* aria-describedby={undefined}：抽屉用自定义副标题行而非 Radix Description，显式关掉"缺 Description"提示；
+          放在 {...props} 前，消费方仍可自行传 aria-describedby 关联描述 */}
+      <DialogPrimitive.Content ref={ref} asChild aria-describedby={undefined} {...props}>
         <motion.div
           initial={{ x: 20, opacity: 0 }}
           animate={{ x: 0, opacity: 1 }}

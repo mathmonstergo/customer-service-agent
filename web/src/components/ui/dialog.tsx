@@ -36,7 +36,9 @@ export const DialogContent = forwardRef<HTMLDivElement, DialogContentProps>(
   ({ className, children, ...props }, ref) => (
     <DialogPortal>
       <DialogOverlay />
-      <DialogPrimitive.Content ref={ref} asChild {...props}>
+      {/* aria-describedby={undefined}：对话框默认不提供 Radix Description，显式关掉"缺 Description"提示；
+          放在 {...props} 前，消费方仍可自行传 aria-describedby 关联描述 */}
+      <DialogPrimitive.Content ref={ref} asChild aria-describedby={undefined} {...props}>
         <motion.div
           initial={{ opacity: 0, scale: 0.96, y: 8 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
