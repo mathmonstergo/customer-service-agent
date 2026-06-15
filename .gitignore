@@ -19,6 +19,8 @@ system_prompt.txt
 
 # Local-only planning artifacts.
 docs/superpowers/
+.agents/
+.trellis/
 
 __pycache__/
 *.py[cod]
