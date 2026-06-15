@@ -222,7 +222,7 @@ def test_search_knowledge_sql_reads_unified_chunks_without_confidence_filter():
     assert "content" in sql
     assert "metadata" in sql
     assert "embedding_status = 'ready'" in sql
-    assert "status = %(status)s" in sql
+    assert "COALESCE(fq.status, kc.status) = %(status)s" in sql
     assert "confidence = %(confidence)s" not in sql
 
 
@@ -364,6 +364,50 @@ def test_update_import_chunk_text_sql_marks_existing_knowledge_chunk_stale():
     assert "source_chunk_id = %(chunk_id)s" in stale_sql
     assert "parent_chunk_id = ('kc_document_' || %(chunk_id)s)" not in stale_sql
     assert "embedding_status = 'stale'" in stale_sql
+
+
+def test_replace_import_chunks_removes_old_document_knowledge_chunks():
+    """重新解析替换切片前，应先清理同文件旧知识单元，避免问答页召回旧向量。"""
+
+    class _FakeConn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, sql, params=None):
+            self.calls.append((sql, params or {}))
+            return self
+
+        def fetchone(self):
+            return {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    conn = _FakeConn()
+    db = Database("postgresql://unused")
+    db.connect = lambda: conn
+
+    db.replace_import_chunks("imp_1", [])
+
+    assert conn.calls
+    delete_knowledge_calls = [
+        (sql, params)
+        for sql, params in conn.calls
+        if "DELETE FROM knowledge_chunks" in sql
+    ]
+    assert delete_knowledge_calls, "replace_import_chunks must clear old document knowledge"
+    sql, params = delete_knowledge_calls[0]
+    assert "source_type = 'document'" in sql
+    assert "source_id = %(file_id)s" in sql
+    assert params == {"file_id": "imp_1"}
+    import_delete_index = next(
+        index for index, (sql, _params) in enumerate(conn.calls) if "DELETE FROM import_chunks" in sql
+    )
+    knowledge_delete_index = conn.calls.index(delete_knowledge_calls[0])
+    assert knowledge_delete_index < import_delete_index
 
 
 def test_parent_context_sql_reads_same_source_parent_chunks():

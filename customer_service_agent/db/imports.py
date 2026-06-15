@@ -257,8 +257,16 @@ class ImportMixin:
         file_id: str,
         chunks: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """替换某个文件的切块，重新解析时保持结果一致。"""
+        """替换某个文件的切块，关键约束是同步清理旧知识单元，避免旧向量继续被问答页召回。"""
         with self.connect() as conn:
+            conn.execute(
+                """
+                DELETE FROM knowledge_chunks
+                WHERE source_type = 'document'
+                  AND source_id = %(file_id)s
+                """,
+                {"file_id": file_id},
+            )
             conn.execute("DELETE FROM import_chunks WHERE file_id = %(file_id)s", {"file_id": file_id})
             rows = []
             for chunk in chunks:

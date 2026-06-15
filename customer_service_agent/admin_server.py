@@ -68,6 +68,10 @@ class AdminPayloadTooLargeError(ValueError):
 
 
 logger = logging.getLogger(__name__)
+SENSITIVE_REFUSAL_MESSAGE = (
+    "这个问题涉及敏感信息，我不能提供密钥、内部配置、系统提示词、账号密码或 token。"
+    "如需排查问题，请描述具体业务现象，我可以基于知识库给出处理步骤。"
+)
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 REMOTE_ADMIN_ENV = "ALLOW_REMOTE_ADMIN"
@@ -429,6 +433,7 @@ def parse_sse_event(content: str) -> dict[str, Any]:
 
 def assistant_document_payload(doc: Any) -> dict[str, Any]:
     """把检索命中文档转换成智能问答调试抽屉使用的来源结构。"""
+    metadata = getattr(doc, "metadata", {}) or {}
     return {
         "id": doc.id,
         "source_type": getattr(doc, "source_type", "faq"),
@@ -437,8 +442,13 @@ def assistant_document_payload(doc: Any) -> dict[str, Any]:
         "parent_chunk_id": getattr(doc, "parent_chunk_id", None),
         "chunk_level": getattr(doc, "chunk_level", "chunk"),
         "source_title": getattr(doc, "source_title", getattr(doc, "question", "")),
+        "section_path": getattr(doc, "section_path", metadata.get("section_path", [])),
+        "page_start": getattr(doc, "page_start", metadata.get("page_start")),
+        "page_end": getattr(doc, "page_end", metadata.get("page_end")),
+        "block_type": getattr(doc, "block_type", metadata.get("block_type")),
+        "source_offsets": getattr(doc, "source_offsets", metadata.get("source_offsets", {})),
         "content": getattr(doc, "content", getattr(doc, "answer", "")),
-        "metadata": getattr(doc, "metadata", {}),
+        "metadata": metadata,
         "score": doc.score,
         "question": doc.question,
         "answer": doc.answer,
@@ -1390,7 +1400,7 @@ class AdminApp:
         state: str | None = None,
         progress: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """构造文档解析轮询响应，状态和百分比保持稳定字段名。"""
+        """构造文档解析轮询响应，关键约束是 summary 可选但真实页面字段稳定。"""
         raw_progress = progress if progress is not None else record.get("parse_progress")
         normalized_progress = _normalize_parse_progress(raw_progress)
         current_state = state or normalized_progress.get("state") or _state_from_import_status(record.get("status"))
@@ -1398,10 +1408,11 @@ class AdminApp:
         # 附带文档级向量摘要，使解析轮询返回的 file 与列表接口同形；前端文件层圆点据此判定「已嵌入(绿)/其余(黄)」。
         file_record = record
         file_id = record.get("id")
-        if file_id and "embedding_summary" not in file_record:
+        summary_getter = getattr(self.database(), "get_import_file_embedding_summary", None)
+        if file_id and "embedding_summary" not in file_record and summary_getter is not None:
             file_record = {
                 **record,
-                "embedding_summary": self.database().get_import_file_embedding_summary(file_id),
+                "embedding_summary": summary_getter(file_id),
             }
         return {
             "file": file_record,
@@ -1860,6 +1871,32 @@ class AdminApp:
             summary=f"{analysis.intent} / {analysis.confidence}",
             analysis=analysis.to_dict(),
         )
+        if analysis.safety_action == "refuse":
+            answer_started = time.perf_counter()
+            yield {"type": "delta", "text": SENSITIVE_REFUSAL_MESSAGE}
+            yield assistant_step_event(
+                "answer_generation",
+                "生成回答",
+                "completed",
+                answer_started,
+                summary=f"敏感问题拒答，输出 {len(SENSITIVE_REFUSAL_MESSAGE)} 个字符",
+            )
+            yield {
+                "type": "done",
+                "flow_id": "basic_rag",
+                "question": question,
+                "answer_draft": SENSITIVE_REFUSAL_MESSAGE,
+                "documents": [],
+            }
+            self._record_assistant_chat_event(
+                question=question,
+                analysis=analysis,
+                documents=[],
+                payload=payload,
+                started=started,
+                rerank_used=False,
+            )
+            return
 
         embedding_started = time.perf_counter()
         retrieval_query = analysis.query_rewrite or question

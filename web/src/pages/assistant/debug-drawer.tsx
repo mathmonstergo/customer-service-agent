@@ -194,7 +194,10 @@ function SourceCard({ src, index }: { src: AssistantSource; index: number }) {
   const parentText = (src.metadata?.parent_content as string | undefined) || ''
   const score = typeof src.score === 'number' ? src.score : undefined
   const channels = Array.isArray(src.retrieval_channels) ? src.retrieval_channels : []
-  const page = src.metadata?.page_start as number | undefined
+  const page =
+    typeof src.page_start === 'number'
+      ? src.page_start
+      : (src.metadata?.page_start as number | undefined)
   const hasMore = fullText.length > 200 || !!parentText
 
   return (

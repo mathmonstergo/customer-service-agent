@@ -132,6 +132,11 @@ export interface AssistantSource {
   chunk_id?: string
   source_title?: string
   title?: string
+  section_path?: string[]
+  page_start?: number | null
+  page_end?: number | null
+  block_type?: string | null
+  source_offsets?: Record<string, unknown>
   // 正文：document 切片时是切片文本；FAQ 时是 answer。
   content?: string
   text?: string
@@ -141,7 +146,13 @@ export interface AssistantSource {
   tags?: string[]
   score?: number
   retrieval_channels?: string[]
-  metadata?: Record<string, unknown> & { parent_content?: string; file_name?: string }
+  metadata?: Record<string, unknown> & {
+    parent_content?: string
+    file_name?: string
+    section_path?: string[]
+    page_start?: number | null
+    page_end?: number | null
+  }
   [key: string]: unknown
 }
 

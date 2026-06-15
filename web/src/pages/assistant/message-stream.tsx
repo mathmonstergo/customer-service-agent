@@ -298,14 +298,17 @@ function MarkdownView({ text, streaming }: { text: string; streaming: boolean })
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
-          a: ({ node: _node, ...props }) => (
-            <a
-              {...props}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-(--color-primary-hi) underline underline-offset-2 hover:text-(--color-primary)"
-            />
-          ),
+          a: ({ node: _node, ...props }) => {
+            void _node
+            return (
+              <a
+                {...props}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-(--color-primary-hi) underline underline-offset-2 hover:text-(--color-primary)"
+              />
+            )
+          },
           code: ({ inline, className, children, ...props }: {
             inline?: boolean
             className?: string
@@ -378,8 +381,8 @@ function AssistantActions({ msg }: { msg: ChatMessage }) {
 // 来源 chips：按 source_type 分组——FAQ 全部合并成"FAQ × N"，文档按 source_title 分组成"文件名 × N"。
 // parent_context 来源也算在该文档的命中数里（它本质就是被命中切片的父切片，归到同文档）。
 function SourcesPreview({ sources }: { sources: AssistantSource[] }) {
-  if (!sources.length) return null
   const setDebugDrawerOpen = useAssistant((s) => s.setDebugDrawerOpen)
+  if (!sources.length) return null
 
   // 分组：faq 用单一 key，document 按 source_title 分桶
   const groups = new Map<string, { label: string; isFaq: boolean; count: number }>()
