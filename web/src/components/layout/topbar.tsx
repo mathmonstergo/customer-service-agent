@@ -5,8 +5,10 @@ const TITLES: Record<string, string> = {
   '/documents': '文档管理',
   '/faqs': 'FAQ 管理',
   '/assistant': '智能问答',
+  '/evaluation': '效果验收',
 }
 
+// 全局顶栏保持固定高度；标题映射要覆盖所有主路由，避免页面切换时文字位置空跳。
 export function Topbar() {
   const { pathname } = useLocation()
   const title = TITLES[pathname] || ''

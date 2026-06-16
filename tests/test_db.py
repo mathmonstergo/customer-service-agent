@@ -325,6 +325,54 @@ def test_retrieval_eval_schema_records_expected_hits_and_runs():
     assert "metrics JSONB NOT NULL DEFAULT '{}'::jsonb" in schema
 
 
+def test_list_retrieval_eval_cases_includes_latest_run():
+    """评测用例列表应带最近一次运行，页面刷新后仍可回放指标和候选。"""
+
+    class _FakeConn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, sql, params=None):
+            self.calls.append((sql, params or {}))
+            return self
+
+        def fetchall(self):
+            return [
+                {
+                    "id": "eval_1",
+                    "question": "报告导出失败怎么办？",
+                    "latest_run": {
+                        "id": "eval_run_1",
+                        "strategy": "retrieval_hybrid_v1",
+                    },
+                }
+            ]
+
+        def fetchone(self):
+            return {"total": 1}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    conn = _FakeConn()
+    db = Database("postgresql://unused")
+    db.connect = lambda: conn
+
+    result = db.list_retrieval_eval_cases(status="active", limit=20, offset=0)
+
+    assert result["items"][0]["latest_run"]["id"] == "eval_run_1"
+    rows_sql = conn.calls[0][0]
+    assert "LEFT JOIN LATERAL" in rows_sql
+    assert "FROM retrieval_eval_runs" in rows_sql
+    assert "run.case_id = c.id" in rows_sql
+    assert "ORDER BY run.created_at DESC" in rows_sql
+    assert "jsonb_build_object" in rows_sql
+    assert conn.calls[0][1] == {"status": "active", "limit": 20, "offset": 0}
+
+
 def test_import_file_embedding_summaries_sql_counts_document_chunks():
     """文档列表需要按文件汇总切片向量状态，区分完成、部分、过期和失败。"""
     sql = Database._import_file_embedding_summaries_sql()

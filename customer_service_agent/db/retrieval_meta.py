@@ -58,21 +58,38 @@ class RetrievalMetaMixin:
         limit: int = 50,
         offset: int = 0,
     ) -> dict[str, Any]:
-        """列出检索评测用例，供后端接口和后续评测页面复用。"""
+        """列出检索评测用例，并带最近运行结果供页面刷新后回放。"""
         clauses = []
         params: dict[str, Any] = {"limit": limit, "offset": offset}
         if status:
             params["status"] = status
-            clauses.append("status = %(status)s")
+            clauses.append("c.status = %(status)s")
         where = "WHERE " + " AND ".join(clauses) if clauses else ""
         rows_sql = f"""
-        SELECT *
-        FROM retrieval_eval_cases
+        SELECT
+            c.*,
+            latest.latest_run
+        FROM retrieval_eval_cases c
+        LEFT JOIN LATERAL (
+            SELECT jsonb_build_object(
+                'id', run.id,
+                'case_id', run.case_id,
+                'strategy', run.strategy,
+                'retrieved_items', run.retrieved_items,
+                'metrics', run.metrics,
+                'analysis', run.analysis,
+                'created_at', run.created_at
+            ) AS latest_run
+            FROM retrieval_eval_runs run
+            WHERE run.case_id = c.id
+            ORDER BY run.created_at DESC
+            LIMIT 1
+        ) latest ON true
         {where}
-        ORDER BY updated_at DESC, id DESC
+        ORDER BY c.updated_at DESC, c.id DESC
         LIMIT %(limit)s OFFSET %(offset)s
         """
-        count_sql = f"SELECT count(*) AS total FROM retrieval_eval_cases {where}"
+        count_sql = f"SELECT count(*) AS total FROM retrieval_eval_cases c {where}"
         with self.connect() as conn:
             rows = conn.execute(rows_sql, params).fetchall()
             total = conn.execute(count_sql, params).fetchone()["total"]
@@ -83,7 +100,7 @@ class RetrievalMetaMixin:
         payload = {
             "id": row.get("id") or f"eval_run_{uuid.uuid4().hex[:12]}",
             "case_id": row["case_id"],
-            "strategy": row.get("strategy", "hybrid_v1"),
+            "strategy": row.get("strategy", "retrieval_hybrid_v1"),
             "retrieved_items": json.dumps(row.get("retrieved_items", []), ensure_ascii=False),
             "metrics": json.dumps(row.get("metrics", {}), ensure_ascii=False),
             "analysis": json.dumps(row.get("analysis", {}), ensure_ascii=False),

@@ -78,6 +78,7 @@ REMOTE_ADMIN_ENV = "ALLOW_REMOTE_ADMIN"
 
 VALID_FAQ_STATUSES = {"usable", "needs_review", "disabled"}
 VALID_IMPORT_PARSE_MODES = {"by_days", "by_gap"}
+RETRIEVAL_EVAL_STRATEGY = "retrieval_hybrid_v1"
 DOCUMENT_CHILD_INDEX_OFFSET = 1
 
 
@@ -889,7 +890,7 @@ class AdminApp:
         )
         row = {
             "case_id": case_id,
-            "strategy": "hybrid_v1",
+            "strategy": RETRIEVAL_EVAL_STRATEGY,
             "retrieved_items": retrieved_items,
             "metrics": metrics,
             "analysis": {

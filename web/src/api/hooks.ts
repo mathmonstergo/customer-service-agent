@@ -15,6 +15,11 @@ import type {
   MessagesResponse,
   ProviderModelsResponse,
   ProviderProbeResponse,
+  RetrievalAlias,
+  RetrievalAliasListResponse,
+  RetrievalEvalCase,
+  RetrievalEvalCaseListResponse,
+  RetrievalEvalRun,
 } from './schemas'
 
 // ───── 文档 / Import ─────
@@ -412,5 +417,85 @@ export function useListChatProviderModels() {
         method: 'POST',
         body,
       }),
+  })
+}
+
+// ───── Retrieval Evaluation ─────
+
+export interface RetrievalEvalCaseListParams {
+  status?: string
+  limit?: number
+  offset?: number
+}
+
+// 拉取评测用例列表；queryKey 必须包含筛选参数，避免状态筛选复用旧缓存。
+export function useRetrievalEvalCases(params: RetrievalEvalCaseListParams = {}) {
+  return useQuery({
+    queryKey: ['retrieval-eval-cases', params],
+    queryFn: () =>
+      requestJson<RetrievalEvalCaseListResponse>('/api/retrieval/eval-cases', {
+        query: {
+          status: params.status,
+          limit: params.limit ?? 100,
+          offset: params.offset ?? 0,
+        },
+      }),
+    staleTime: 10_000,
+    placeholderData: (prev) => prev,
+  })
+}
+
+// 保存评测用例；成功后刷新全部评测列表，让 latest_run 和状态保持一致。
+export function useSaveRetrievalEvalCase() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (payload: Partial<RetrievalEvalCase>) =>
+      requestJson<RetrievalEvalCase>('/api/retrieval/eval-cases', {
+        method: 'POST',
+        body: payload,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['retrieval-eval-cases'] })
+    },
+  })
+}
+
+// 运行单条评测；成功后刷新用例列表，同时调用方可用返回值即时更新详情区。
+export function useRunRetrievalEvalCase() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationKey: ['run-retrieval-eval-case'],
+    mutationFn: (caseId: string) =>
+      requestJson<RetrievalEvalRun>(
+        `/api/retrieval/eval-cases/${encodeURIComponent(caseId)}/run`,
+        { method: 'POST', body: {} },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['retrieval-eval-cases'] })
+    },
+  })
+}
+
+// 拉取别名词典；当前后端只返回启用词条，用于页面维护和关键词扩展展示。
+export function useRetrievalAliases() {
+  return useQuery({
+    queryKey: ['retrieval-aliases'],
+    queryFn: () => requestJson<RetrievalAliasListResponse>('/api/retrieval/aliases'),
+    staleTime: 10_000,
+  })
+}
+
+// 保存别名词条；成功后刷新词典列表，后续评测运行会读取最新启用别名。
+export function useSaveRetrievalAlias() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (payload: Partial<RetrievalAlias>) =>
+      requestJson<RetrievalAlias>('/api/retrieval/aliases', {
+        method: 'POST',
+        body: payload,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['retrieval-aliases'] })
+    },
   })
 }

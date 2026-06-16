@@ -1,0 +1,227 @@
+import { useState, type ReactNode } from 'react'
+import type { RetrievalEvalCase } from '@/api/schemas'
+import { Button } from '@/components/ui/button'
+import {
+  Drawer,
+  DrawerBody,
+  DrawerContent,
+  DrawerFooter,
+  DrawerHeader,
+  DrawerTitle,
+} from '@/components/ui/drawer'
+import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
+import { toast } from '@/components/ui/toaster'
+import { useSaveRetrievalEvalCase } from '@/api/hooks'
+import { CASE_FORM_STATUS_OPTIONS, joinListInput, splitListInput } from './helpers'
+
+interface CaseFormState {
+  id: string
+  question: string
+  intent: string
+  expectedSourceIds: string
+  expectedChunkIds: string
+  tags: string
+  note: string
+  status: string
+}
+
+const EMPTY_FORM: CaseFormState = {
+  id: '',
+  question: '',
+  intent: '',
+  expectedSourceIds: '',
+  expectedChunkIds: '',
+  tags: '',
+  note: '',
+  status: 'active',
+}
+
+// 用例编辑抽屉容器；open 时才挂载表单，避免关闭后残留旧输入。
+export function CaseDrawer({
+  open,
+  item,
+  onOpenChange,
+  onSaved,
+}: {
+  open: boolean
+  item: RetrievalEvalCase | null
+  onOpenChange: (open: boolean) => void
+  onSaved: (item: RetrievalEvalCase) => void
+}) {
+  return (
+    <Drawer open={open} onOpenChange={onOpenChange}>
+      {open && (
+        <CaseDrawerForm
+          key={item?.id || 'new'}
+          item={item}
+          onOpenChange={onOpenChange}
+          onSaved={onSaved}
+        />
+      )}
+    </Drawer>
+  )
+}
+
+// 将后端用例快照转换为表单字符串，列表字段在 UI 中以换行展示。
+function formStateFromItem(item: RetrievalEvalCase | null): CaseFormState {
+  if (!item) return EMPTY_FORM
+  return {
+    id: item.id,
+    question: item.question,
+    intent: item.intent || '',
+    expectedSourceIds: joinListInput(item.expected_source_ids),
+    expectedChunkIds: joinListInput(item.expected_chunk_ids),
+    tags: joinListInput(item.tags),
+    note: item.note || '',
+    status: item.status || 'active',
+  }
+}
+
+// 用例表单主体；负责保存输入并把列表字段转换回数组提交给后端。
+function CaseDrawerForm({
+  item,
+  onOpenChange,
+  onSaved,
+}: {
+  item: RetrievalEvalCase | null
+  onOpenChange: (open: boolean) => void
+  onSaved: (item: RetrievalEvalCase) => void
+}) {
+  const [form, setForm] = useState<CaseFormState>(() => formStateFromItem(item))
+  const saveCase = useSaveRetrievalEvalCase()
+
+  // 单字段更新表单状态，所有字段保持受控输入。
+  const update = (key: keyof CaseFormState, value: string) => {
+    setForm((current) => ({ ...current, [key]: value }))
+  }
+
+  // 保存评测用例；后端统一做 id 生成、JSONB 清洗和 upsert。
+  const onSubmit = async () => {
+    try {
+      const saved = await saveCase.mutateAsync({
+        id: form.id || undefined,
+        question: form.question,
+        intent: form.intent || null,
+        expected_source_ids: splitListInput(form.expectedSourceIds),
+        expected_chunk_ids: splitListInput(form.expectedChunkIds),
+        tags: splitListInput(form.tags),
+        note: form.note || null,
+        status: form.status,
+      })
+      toast.success('评测用例已保存')
+      onSaved(saved)
+      onOpenChange(false)
+    } catch (error) {
+      toast.error((error as Error).message || '保存评测用例失败')
+    }
+  }
+
+  return (
+    <DrawerContent width={520}>
+      <DrawerHeader>
+        <div>
+          <DrawerTitle>{item ? '编辑评测用例' : '新建评测用例'}</DrawerTitle>
+          <p className="mt-1 text-[12px] text-(--color-text-muted)">
+            用例编辑以抽屉呈现，不占用主工作台布局。
+          </p>
+        </div>
+      </DrawerHeader>
+      <DrawerBody>
+        <div className="space-y-4">
+          <Field label="问题" required>
+            <Textarea
+              value={form.question}
+              onChange={(event) => update('question', event.target.value)}
+              placeholder="报告导出失败怎么办？"
+              className="min-h-20 font-sans"
+              maxLength={200}
+            />
+          </Field>
+          <Field label="意图">
+            <Input
+              value={form.intent}
+              onChange={(event) => update('intent', event.target.value)}
+              placeholder="troubleshooting"
+            />
+          </Field>
+          <Field label="期望 source ids">
+            <Textarea
+              value={form.expectedSourceIds}
+              onChange={(event) => update('expectedSourceIds', event.target.value)}
+              placeholder="DOC_10023&#10;FAQ_2056"
+            />
+          </Field>
+          <Field label="期望 chunk ids（可选）">
+            <Textarea
+              value={form.expectedChunkIds}
+              onChange={(event) => update('expectedChunkIds', event.target.value)}
+              placeholder="CHUNK_045&#10;CHUNK_002"
+            />
+          </Field>
+          <Field label="标签">
+            <Input
+              value={form.tags}
+              onChange={(event) => update('tags', event.target.value)}
+              placeholder="报告导出, 故障处理"
+            />
+          </Field>
+          <Field label="备注">
+            <Textarea
+              value={form.note}
+              onChange={(event) => update('note', event.target.value)}
+              placeholder="客户反馈导出失败，需能命中原因与解决方法。"
+              className="min-h-20 font-sans"
+            />
+          </Field>
+          <Field label="状态">
+            <select
+              value={form.status}
+              onChange={(event) => update('status', event.target.value)}
+              className="h-8 w-full rounded-(--radius-control) border border-(--color-border) bg-(--color-surface-2) px-2.5 text-[13px] text-(--color-text) focus:border-(--color-primary)/60 focus:outline-none"
+            >
+              {CASE_FORM_STATUS_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+      </DrawerBody>
+      <DrawerFooter>
+        <Button variant="ghost" onClick={() => onOpenChange(false)}>
+          取消
+        </Button>
+        <Button
+          variant="primary"
+          onClick={onSubmit}
+          disabled={saveCase.isPending || !form.question.trim()}
+        >
+          保存
+        </Button>
+      </DrawerFooter>
+    </DrawerContent>
+  )
+}
+
+// 表单字段包装器；统一标签、必填标识和输入控件的垂直间距。
+function Field({
+  label,
+  required,
+  children,
+}: {
+  label: string
+  required?: boolean
+  children: ReactNode
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1.5 block text-[12px] text-(--color-text-muted)">
+        {label}
+        {required && <span className="ml-0.5 text-(--color-danger)">*</span>}
+      </span>
+      {children}
+    </label>
+  )
+}

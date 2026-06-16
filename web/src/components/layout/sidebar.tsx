@@ -1,5 +1,12 @@
 import { NavLink } from 'react-router-dom'
-import { FileText, MessageSquare, Sparkles, ChevronLeft, ChevronRight } from 'lucide-react'
+import {
+  Activity,
+  ChevronLeft,
+  ChevronRight,
+  FileText,
+  MessageSquare,
+  Sparkles,
+} from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { useUi } from '@/store/ui'
 
@@ -7,6 +14,7 @@ const NAV_MIGRATED = [
   { path: '/documents', label: '文档管理', icon: FileText },
   { path: '/faqs', label: 'FAQ 管理', icon: Sparkles },
   { path: '/assistant', label: '智能问答', icon: MessageSquare },
+  { path: '/evaluation', label: '效果验收', icon: Activity },
 ]
 
 export function Sidebar() {

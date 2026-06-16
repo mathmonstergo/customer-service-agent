@@ -200,6 +200,7 @@ def test_admin_app_run_retrieval_eval_case_records_hybrid_result():
     assert result["id"] == "eval_run_1"
     assert result["metrics"]["recall_at_k"] == 1.0
     assert "kc_faq_1" in [item["id"] for item in result["retrieved_items"]]
+    assert result["strategy"] == "retrieval_hybrid_v1"
     assert result["analysis"]["intent"] == "troubleshooting"
     assert calls[0] == ("embed", "报告导出失败怎么办？")
     assert calls[-1][0] == "run"

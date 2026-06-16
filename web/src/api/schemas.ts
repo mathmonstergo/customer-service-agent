@@ -191,3 +191,84 @@ export interface ProviderModelsResponse {
   items: ProviderModel[]
   error?: string
 }
+
+// Retrieval Evaluation
+
+export interface RetrievalEvalMetrics {
+  case_count?: number
+  recall_at_k?: number
+  mrr?: number
+  hit_rate_at_1?: number
+  [key: string]: unknown
+}
+
+export interface RetrievalEvalAnalysis {
+  intent?: string
+  confidence?: string
+  query?: string
+  query_rewrite?: string
+  preferred_sources?: string[]
+  query_terms?: string[]
+  vector_count?: number
+  keyword_count?: number
+  reason?: string
+  [key: string]: unknown
+}
+
+export interface RetrievalEvalItem {
+  id: string
+  source_id: string
+  source_type: string
+  channels: string[]
+  fused_score?: number
+  vector_score?: number | null
+  keyword_score?: number | null
+  [key: string]: unknown
+}
+
+export interface RetrievalEvalRun {
+  id: string
+  case_id: string
+  strategy: string
+  retrieved_items: RetrievalEvalItem[]
+  metrics: RetrievalEvalMetrics
+  analysis: RetrievalEvalAnalysis
+  created_at?: string
+  [key: string]: unknown
+}
+
+export interface RetrievalEvalCase {
+  id: string
+  question: string
+  intent: string | null
+  expected_source_ids: string[]
+  expected_chunk_ids: string[]
+  tags: string[]
+  note: string | null
+  status: string
+  latest_run?: RetrievalEvalRun | null
+  created_at?: string
+  updated_at?: string
+  [key: string]: unknown
+}
+
+export interface RetrievalEvalCaseListResponse {
+  items: RetrievalEvalCase[]
+  total: number
+}
+
+export interface RetrievalAlias {
+  id: string
+  canonical: string
+  aliases: string[]
+  tags: string[]
+  status: string
+  created_at?: string
+  updated_at?: string
+  [key: string]: unknown
+}
+
+export interface RetrievalAliasListResponse {
+  items: RetrievalAlias[]
+  total: number
+}
