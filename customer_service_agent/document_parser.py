@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import csv
 import json
 import re
 import time
@@ -16,6 +17,7 @@ import requests
 from customer_service_agent.chunking import (
     StructuredChunk,
     attach_media_context_to_blocks,
+    extract_pdf_positions,
     ragflow_naive_merge_blocks,
 )
 
@@ -40,6 +42,7 @@ MINERU_CONTENT_TYPES = {
     "text",
     "title",
 }
+SUPPORTED_CHUNKER_TYPES = {"manual", "naive", "qa", "table"}
 
 
 class MineruParseError(RuntimeError):
@@ -350,8 +353,9 @@ def build_import_chunks_from_blocks(
     children_delimiter: str = "",
     table_context_size: int = 0,
     image_context_size: int = 0,
+    chunker_type: str = "naive",
 ) -> list[dict[str, Any]]:
-    """按 RAGFlow naive merge 把解析块合并为导入审核切块。"""
+    """按指定 RAGFlow-style chunker 把解析块合并为导入审核切块。"""
     normalized = []
     for block in blocks:
         parsed = _ensure_block(block)
@@ -369,12 +373,20 @@ def build_import_chunks_from_blocks(
         table_context_size=table_context_size,
         image_context_size=image_context_size,
     )
-    merged_chunks = ragflow_naive_merge_blocks(
-        source_blocks,
-        chunk_token_num=chunk_token_num or max_chars,
-        delimiter=delimiter,
-        overlapped_percent=overlapped_percent,
-    )
+    selected_chunker = _normalize_chunker_type(chunker_type)
+    if selected_chunker == "table":
+        merged_chunks = _table_chunks_from_blocks(source_blocks)
+    elif selected_chunker == "qa":
+        merged_chunks = _qa_chunks_from_blocks(source_blocks)
+    elif selected_chunker == "manual":
+        merged_chunks = _manual_chunks_from_blocks(source_blocks)
+    else:
+        merged_chunks = ragflow_naive_merge_blocks(
+            source_blocks,
+            chunk_token_num=chunk_token_num or max_chars,
+            delimiter=delimiter,
+            overlapped_percent=overlapped_percent,
+        )
     return [
         _build_import_chunk(
             file_id,
@@ -384,6 +396,338 @@ def build_import_chunks_from_blocks(
         )
         for index, chunk in enumerate(merged_chunks, start=1)
     ]
+
+
+def _normalize_chunker_type(chunker_type: str | None) -> str:
+    """规范化 chunker 名称，关键约束是未知值不能静默走错规则。"""
+    value = str(chunker_type or "naive").strip().lower() or "naive"
+    if value not in SUPPORTED_CHUNKER_TYPES:
+        raise MineruParseError(f"Unsupported chunker_type: {chunker_type}")
+    return value
+
+
+def _table_chunks_from_blocks(blocks: list[dict[str, Any]]) -> list[StructuredChunk]:
+    """按 RAGFlow table.py 口径把表格数据行转换为一行一个 chunk。"""
+    chunks: list[StructuredChunk] = []
+    for block in blocks:
+        if str(block.get("block_type") or "").lower() not in {"table", "table_row"}:
+            continue
+        headers, rows = _table_headers_and_rows(block)
+        if not headers:
+            continue
+        _ensure_unique_headers(headers)
+        evidence = block.get("evidence") if isinstance(block.get("evidence"), dict) else {}
+        for row_number, values in enumerate(rows, start=1):
+            if not any(str(value).strip() for value in values):
+                continue
+            if len(values) != len(headers):
+                continue
+            row_fields = [
+                (str(header).strip(), str(value).strip())
+                for header, value in zip(headers, values, strict=False)
+                if str(value).strip()
+            ]
+            if not row_fields:
+                continue
+            text = "\n".join(f"- {header}: {value}" for header, value in row_fields)
+            source_block = {
+                **block,
+                "text": text,
+                "block_type": "table_row",
+                "evidence": {
+                    **evidence,
+                    "headers": headers,
+                    "row_index": evidence.get("row_index") or row_number,
+                },
+            }
+            chunks.append(
+                StructuredChunk(
+                    text=text,
+                    source_blocks=[source_block],
+                    section_path=_section_path_from_block(block),
+                    page_start=_block_page(block),
+                    page_end=_block_page(block),
+                    block_type="table_row",
+                    source_offsets=_source_offsets_for_blocks(
+                        [source_block],
+                        chunker={"type": "table"},
+                        extra={
+                            "sheet_name": evidence.get("sheet_name"),
+                            "row_index": evidence.get("row_index") or row_number,
+                            "headers": headers,
+                            "field_map": {str(header): str(header) for header in headers},
+                            "table_html": evidence.get("table_html"),
+                        },
+                    ),
+                )
+            )
+    if not chunks:
+        raise MineruParseError("table chunker found no table rows")
+    return chunks
+
+
+def _table_headers_and_rows(block: dict[str, Any]) -> tuple[list[str], list[list[str]]]:
+    """从结构化证据或表格文本提取 headers/rows，优先保留 RAGFlow 行级语义。"""
+    evidence = block.get("evidence") if isinstance(block.get("evidence"), dict) else {}
+    headers = [str(item).strip() for item in evidence.get("headers", []) if str(item).strip()]
+    raw_rows = evidence.get("rows")
+    if headers and isinstance(raw_rows, list):
+        rows = [
+            [str(value).strip() for value in row]
+            for row in raw_rows
+            if isinstance(row, (list, tuple))
+        ]
+        return headers, rows
+
+    lines = [line.strip() for line in str(block.get("text") or "").splitlines() if line.strip()]
+    parsed_rows = [_split_table_row(line) for line in lines]
+    parsed_rows = [row for row in parsed_rows if row]
+    if len(parsed_rows) < 2:
+        return [], []
+    return parsed_rows[0], parsed_rows[1:]
+
+
+def _split_table_row(line: str) -> list[str]:
+    """按 RAGFlow 表格行输入常见分隔符拆字段，支持 pipe/tab/csv。"""
+    text = str(line or "").strip().strip("|")
+    if not text:
+        return []
+    if "|" in text:
+        return [part.strip() for part in text.split("|")]
+    if "\t" in text:
+        return [part.strip() for part in text.split("\t")]
+    try:
+        return [part.strip() for part in next(csv.reader([text]))]
+    except csv.Error:
+        return [text]
+
+
+def _ensure_unique_headers(headers: list[str]) -> None:
+    """检查表头唯一性，避免像 RAGFlow 一样静默覆盖字段。"""
+    clean = [header for header in headers if header]
+    if len(clean) != len(set(clean)):
+        raise MineruParseError(f"Duplicate table headers detected: {headers}")
+
+
+def _qa_chunks_from_blocks(blocks: list[dict[str, Any]]) -> list[StructuredChunk]:
+    """按 RAGFlow qa.py 口径生成一问一答 chunk，并处理坏行续写。"""
+    chunks: list[StructuredChunk] = []
+    current_question = ""
+    current_answer = ""
+    current_blocks: list[dict[str, Any]] = []
+    for block in blocks:
+        parsed = _qa_pair_from_block(block)
+        if parsed is None:
+            if current_question:
+                current_answer = "\n".join(
+                    part for part in (current_answer, str(block.get("text") or "").strip()) if part
+                )
+                current_blocks.append(block)
+            continue
+        if current_question:
+            chunks.append(_qa_structured_chunk(current_question, current_answer, current_blocks))
+        current_question, current_answer = parsed
+        current_blocks = [block]
+    if current_question:
+        chunks.append(_qa_structured_chunk(current_question, current_answer, current_blocks))
+    if not chunks:
+        raise MineruParseError("qa chunker found no question-answer pairs")
+    return chunks
+
+
+def _qa_pair_from_block(block: dict[str, Any]) -> tuple[str, str] | None:
+    """从 evidence 或两列文本中提取 Q/A；不合法行交给调用方按坏行处理。"""
+    evidence = block.get("evidence") if isinstance(block.get("evidence"), dict) else {}
+    question = str(evidence.get("question") or "").strip()
+    answer = str(evidence.get("answer") or "").strip()
+    if question:
+        return question, answer
+
+    text = str(block.get("text") or "").strip()
+    if not text:
+        return None
+    if "\t" in text:
+        parts = [part.strip() for part in text.split("\t")]
+        if len(parts) == 2 and all(parts):
+            return parts[0], parts[1]
+    try:
+        row = [part.strip() for part in next(csv.reader([text]))]
+    except csv.Error:
+        return None
+    if len(row) == 2 and all(row):
+        return row[0], row[1]
+    return None
+
+
+def _qa_structured_chunk(
+    question: str,
+    answer: str,
+    blocks: list[dict[str, Any]],
+) -> StructuredChunk:
+    """把一个 RAGFlow Q/A pair 转成项目 import chunk，保留行号和来源块。"""
+    text = f"问题：{question}\n回答：{answer}".strip()
+    rows = [
+        _optional_int((block.get("evidence") or {}).get("row_index"))
+        for block in blocks
+        if isinstance(block.get("evidence"), dict)
+    ]
+    rows = [row for row in rows if row is not None]
+    return StructuredChunk(
+        text=text,
+        source_blocks=[dict(block) for block in blocks],
+        section_path=_section_path_from_block(blocks[0]) if blocks else [],
+        page_start=_min_page(blocks),
+        page_end=_max_page(blocks),
+        block_type="qa",
+        source_offsets=_source_offsets_for_blocks(
+            blocks,
+            chunker={"type": "qa"},
+            extra={
+                "question": question,
+                "answer": answer,
+                "rows": rows or None,
+            },
+        ),
+    )
+
+
+def _manual_chunks_from_blocks(blocks: list[dict[str, Any]]) -> list[StructuredChunk]:
+    """按 RAGFlow manual.py 思路优先按标题/章节连续聚合块。"""
+    groups: list[tuple[str, list[dict[str, Any]]]] = []
+    current_key = ""
+    current_blocks: list[dict[str, Any]] = []
+    for block in blocks:
+        key = _manual_group_key(block)
+        if current_blocks and key != current_key:
+            groups.append((current_key, current_blocks))
+            current_blocks = []
+        current_key = key
+        current_blocks.append(block)
+    if current_blocks:
+        groups.append((current_key, current_blocks))
+
+    chunks = []
+    for group_key, group_blocks in groups:
+        text = "\n".join(str(block.get("text") or "").strip() for block in group_blocks if str(block.get("text") or "").strip())
+        if not text:
+            continue
+        chunks.append(
+            StructuredChunk(
+                text=text,
+                source_blocks=[dict(block) for block in group_blocks],
+                section_path=_section_path_from_title(group_key),
+                page_start=_min_page(group_blocks),
+                page_end=_max_page(group_blocks),
+                block_type=_combined_block_type(group_blocks),
+                source_offsets=_source_offsets_for_blocks(
+                    group_blocks,
+                    chunker={"type": "manual", "group": group_key},
+                ),
+            )
+        )
+    if not chunks:
+        raise MineruParseError("manual chunker found no section chunks")
+    return chunks
+
+
+def _manual_group_key(block: dict[str, Any]) -> str:
+    """读取 manual 聚合键，优先章节标题，缺失时用标题块正文兜底。"""
+    title = str(block.get("section_title") or "").strip()
+    if title:
+        return title
+    if str(block.get("block_type") or "").lower() == "title":
+        text = str(block.get("text") or "").strip()
+        if text:
+            return text
+    return "未分章节"
+
+
+def _source_offsets_for_blocks(
+    blocks: list[dict[str, Any]],
+    *,
+    chunker: dict[str, Any],
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """汇总 chunker 元数据和来源证据，保持切片抽屉可追溯。"""
+    offsets: dict[str, Any] = {"chunker": {key: value for key, value in chunker.items() if value}}
+    position_tags = []
+    pdf_positions = []
+    for block in blocks:
+        evidence = block.get("evidence") if isinstance(block.get("evidence"), dict) else {}
+        position_tag = block.get("position_tag") or evidence.get("position_tag")
+        if position_tag:
+            position_tags.append(str(position_tag))
+        for position in extract_pdf_positions(block):
+            if position not in pdf_positions:
+                pdf_positions.append(position)
+    if position_tags:
+        offsets["position_tags"] = position_tags
+    if pdf_positions:
+        offsets["pdf_positions"] = pdf_positions
+    for key, value in (extra or {}).items():
+        if value is not None and value != [] and value != {}:
+            offsets[key] = value
+    return offsets
+
+
+def _section_path_from_block(block: dict[str, Any]) -> list[str]:
+    """从来源块章节标题生成 section_path。"""
+    return _section_path_from_title(str(block.get("section_title") or "").strip())
+
+
+def _section_path_from_title(title: str) -> list[str]:
+    """把 RAGFlow 风格标题路径转为项目 section_path。"""
+    text = str(title or "").strip()
+    if not text:
+        return []
+    return [part.strip() for part in text.split(">") if part.strip()]
+
+
+def _block_page(block: dict[str, Any]) -> int | None:
+    """读取来源块页码，非法值返回 None。"""
+    page = _optional_int(block.get("page_number"))
+    if page is not None:
+        return page
+    evidence = block.get("evidence") if isinstance(block.get("evidence"), dict) else {}
+    return _optional_int(evidence.get("page_number"))
+
+
+def _optional_int(value: Any) -> int | None:
+    """把证据里的行号/页码转成整数，非法值保持为空。"""
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _min_page(blocks: list[dict[str, Any]]) -> int | None:
+    """计算一组块的最小页码，供 import_chunks 页码展示。"""
+    pages = [_block_page(block) for block in blocks]
+    pages = [page for page in pages if page is not None]
+    return min(pages) if pages else None
+
+
+def _max_page(blocks: list[dict[str, Any]]) -> int | None:
+    """计算一组块的最大页码，供 import_chunks 页码展示。"""
+    pages = [_block_page(block) for block in blocks]
+    pages = [page for page in pages if page is not None]
+    return max(pages) if pages else None
+
+
+def _combined_block_type(blocks: list[dict[str, Any]]) -> str:
+    """归纳 manual 聚合后的块类型，多个类型返回 mixed。"""
+    types = {
+        str(block.get("block_type") or "").strip()
+        for block in blocks
+        if str(block.get("block_type") or "").strip()
+    }
+    if not types:
+        return "text"
+    if len(types) == 1:
+        return next(iter(types))
+    return "mixed"
 
 
 def _check_response_status(response: Any) -> None:

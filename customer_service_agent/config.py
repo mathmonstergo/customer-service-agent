@@ -30,6 +30,7 @@ SETTINGS_ENV_FIELDS = {
     "MINERU_PARSE_TIMEOUT_SECONDS": "mineru_parse_timeout_seconds",
     "MINERU_USE_KB_PACKAGER": "mineru_use_kb_packager",
     "DOCUMENT_CHUNK_TOKEN_NUM": "document_chunk_token_num",
+    "DOCUMENT_CHUNKER_TYPE": "document_chunker_type",
     "DOCUMENT_CHUNK_DELIMITER": "document_chunk_delimiter",
     "DOCUMENT_CHUNK_OVERLAP_PERCENT": "document_chunk_overlap_percent",
     "DOCUMENT_CHILDREN_DELIMITER": "document_children_delimiter",
@@ -42,6 +43,7 @@ SETTINGS_ENV_FIELDS = {
     "RERANK_MODEL": "rerank_model",
     "RERANK_INPUT_SIZE": "rerank_input_size",
 }
+DOCUMENT_CHUNKER_TYPES = {"manual", "naive", "qa", "table"}
 
 
 @dataclass(frozen=True)
@@ -70,6 +72,7 @@ class Settings:
     mineru_parse_timeout_seconds: int = 600
     mineru_use_kb_packager: bool = True
     document_chunk_token_num: int = 512
+    document_chunker_type: str = "naive"
     document_chunk_delimiter: str = "\n。；！？"
     document_chunk_overlap_percent: int = 0
     document_children_delimiter: str = ""
@@ -159,6 +162,7 @@ class Settings:
             "DOCUMENT_CHUNK_TOKEN_NUM",
             512,
         )
+        values["document_chunker_type"] = cls._document_chunker_env(env)
         values["document_chunk_delimiter"] = env.get(
             "DOCUMENT_CHUNK_DELIMITER",
             "\n。；！？",
@@ -228,6 +232,15 @@ class Settings:
         if normalized in {"0", "false", "no", "off"}:
             return False
         raise SettingsError(f"{name} must be a boolean")
+
+    @staticmethod
+    def _document_chunker_env(env: Mapping[str, str]) -> str:
+        """读取文档 chunker 类型，关键约束是只能使用 RAGFlow 对齐范围。"""
+        value = env.get("DOCUMENT_CHUNKER_TYPE", "naive").strip().lower() or "naive"
+        if value not in DOCUMENT_CHUNKER_TYPES:
+            allowed = ", ".join(sorted(DOCUMENT_CHUNKER_TYPES))
+            raise SettingsError(f"DOCUMENT_CHUNKER_TYPE must be one of: {allowed}")
+        return value
 
     @staticmethod
     def _local_settings_env(path: Path, tenant_id: str | None = None) -> dict[str, str]:

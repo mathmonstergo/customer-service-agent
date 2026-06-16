@@ -34,6 +34,7 @@ def test_settings_from_env_parses_required_values():
     assert settings.mineru_parse_timeout_seconds == 600
     assert settings.mineru_use_kb_packager is True
     assert settings.document_chunk_token_num == 512
+    assert settings.document_chunker_type == "naive"
     assert settings.document_chunk_delimiter == "\n。；！？"
     assert settings.document_chunk_overlap_percent == 0
     assert settings.document_children_delimiter == ""
@@ -51,6 +52,7 @@ def test_settings_from_env_parses_document_chunking_values():
         "EMBEDDING_BASE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "EMBEDDING_API_KEY": "embedding-key",
         "EMBEDDING_MODEL": "text-embedding-v4",
+        "DOCUMENT_CHUNKER_TYPE": "table",
         "DOCUMENT_CHUNK_TOKEN_NUM": "256",
         "DOCUMENT_CHUNK_DELIMITER": "`###`",
         "DOCUMENT_CHUNK_OVERLAP_PERCENT": "15",
@@ -62,11 +64,29 @@ def test_settings_from_env_parses_document_chunking_values():
     settings = Settings.from_env(env)
 
     assert settings.document_chunk_token_num == 256
+    assert settings.document_chunker_type == "table"
     assert settings.document_chunk_delimiter == "`###`"
     assert settings.document_chunk_overlap_percent == 15
     assert settings.document_children_delimiter == r"\n"
     assert settings.document_table_context_size == 128
     assert settings.document_image_context_size == 96
+
+
+def test_settings_from_env_rejects_unknown_document_chunker_type():
+    """文档 chunker 类型必须是 RAGFlow 对齐范围内的显式值。"""
+    env = {
+        "DATABASE_URL": "postgresql://u:p@127.0.0.1:5432/db",
+        "CHAT_BASE_URL": "https://newapi.example.com/v1",
+        "CHAT_API_KEY": "chat-key",
+        "CHAT_MODEL": "deepseek-chat",
+        "EMBEDDING_BASE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "EMBEDDING_API_KEY": "embedding-key",
+        "EMBEDDING_MODEL": "text-embedding-v4",
+        "DOCUMENT_CHUNKER_TYPE": "lightweight",
+    }
+
+    with pytest.raises(SettingsError, match="DOCUMENT_CHUNKER_TYPE"):
+        Settings.from_env(env)
 
 
 def test_settings_load_applies_default_tenant_local_settings(tmp_path, monkeypatch):

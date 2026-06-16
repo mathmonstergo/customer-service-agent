@@ -227,6 +227,7 @@ def test_admin_app_settings_snapshot_exposes_runtime_config_for_local_modal(tmp_
             mineru_parse_timeout_seconds=600,
             mineru_use_kb_packager=True,
             document_chunk_token_num=512,
+            document_chunker_type="naive",
             document_chunk_delimiter="\n。；！？",
             document_chunk_overlap_percent=0,
             document_children_delimiter="",
@@ -249,6 +250,7 @@ def test_admin_app_settings_snapshot_exposes_runtime_config_for_local_modal(tmp_
     assert snapshot["rag_top_k"] == 6
     assert snapshot["wechat_token_file"].endswith("token.json")
     assert snapshot["document_chunk_token_num"] == 512
+    assert snapshot["document_chunker_type"] == "naive"
     assert snapshot["document_chunk_delimiter"] == "\n。；！？"
 
 
@@ -288,6 +290,7 @@ def test_admin_app_update_settings_persists_local_tenant_settings_and_refreshes_
             "mineru_parse_timeout_seconds": "600",
             "mineru_use_kb_packager": False,
             "document_chunk_token_num": "256",
+            "document_chunker_type": "table",
             "document_chunk_delimiter": "`###`",
             "document_chunk_overlap_percent": "10",
             "document_children_delimiter": r"\n",
@@ -310,6 +313,7 @@ def test_admin_app_update_settings_persists_local_tenant_settings_and_refreshes_
     assert "mineru_batch_result_url_template" not in saved_settings["tenants"]["default"]
     assert saved_settings["tenants"]["default"]["mineru_use_kb_packager"] is False
     assert saved_settings["tenants"]["default"]["document_chunk_token_num"] == 256
+    assert saved_settings["tenants"]["default"]["document_chunker_type"] == "table"
     assert saved_settings["tenants"]["default"]["document_chunk_delimiter"] == "`###`"
     assert saved_settings["tenants"]["default"]["document_chunk_overlap_percent"] == 10
     assert saved_settings["tenants"]["default"]["document_children_delimiter"] == r"\n"
@@ -331,6 +335,7 @@ def test_admin_app_update_settings_preserves_document_chunking_when_payload_omit
             "EMBEDDING_API_KEY": "old-embedding-key",
             "EMBEDDING_MODEL": "text-embedding-v4",
             "DOCUMENT_CHUNK_TOKEN_NUM": "384",
+            "DOCUMENT_CHUNKER_TYPE": "manual",
             "DOCUMENT_CHUNK_DELIMITER": "`@@`",
             "DOCUMENT_CHUNK_OVERLAP_PERCENT": "12",
             "DOCUMENT_CHILDREN_DELIMITER": r"\n+",
@@ -364,12 +369,14 @@ def test_admin_app_update_settings_preserves_document_chunking_when_payload_omit
     saved_settings = json.loads(settings_file.read_text(encoding="utf-8"))
     tenant = saved_settings["tenants"]["default"]
     assert snapshot["document_chunk_token_num"] == 384
+    assert snapshot["document_chunker_type"] == "manual"
     assert snapshot["document_chunk_delimiter"] == "`@@`"
     assert snapshot["document_chunk_overlap_percent"] == 12
     assert snapshot["document_children_delimiter"] == r"\n+"
     assert snapshot["document_table_context_size"] == 64
     assert snapshot["document_image_context_size"] == 32
     assert tenant["document_chunk_token_num"] == 384
+    assert tenant["document_chunker_type"] == "manual"
     assert tenant["document_children_delimiter"] == r"\n+"
 
 
@@ -544,6 +551,39 @@ def test_admin_app_create_import_file_parses_pdf_with_mineru(tmp_path, monkeypat
     assert result["status"] == "needs_review"
     assert calls[1][0] == "chunks"
     assert "账号登录" in calls[1][2][0]["source_text"]
+
+
+def test_admin_app_build_document_import_chunks_passes_configured_chunker_type(monkeypatch):
+    """后台生成文档审核切片时应把显式 chunker_type 传给解析层。"""
+    captured = {}
+
+    def fake_build_import_chunks(file_id, blocks, **kwargs):
+        captured.update({"file_id": file_id, "blocks": blocks, **kwargs})
+        return [{"id": "chunk_1", "source_text": "ok"}]
+
+    monkeypatch.setattr(
+        "customer_service_agent.admin_server.build_import_chunks_from_blocks",
+        fake_build_import_chunks,
+    )
+    app = AdminApp(
+        SimpleNamespace(
+            document_chunk_token_num=256,
+            document_chunker_type="manual",
+            document_chunk_delimiter="`###`",
+            document_chunk_overlap_percent=10,
+            document_children_delimiter=r"\n",
+            document_table_context_size=64,
+            document_image_context_size=32,
+        )
+    )
+
+    rows = app._build_document_import_chunks("imp_1", [{"text": "账号登录"}])
+
+    assert rows == [{"id": "chunk_1", "source_text": "ok"}]
+    assert captured["file_id"] == "imp_1"
+    assert captured["chunker_type"] == "manual"
+    assert captured["chunk_token_num"] == 256
+    assert captured["delimiter"] == "`###`"
 
 
 def test_admin_app_starts_mineru_parse_job_without_blocking_for_result(tmp_path, monkeypatch):

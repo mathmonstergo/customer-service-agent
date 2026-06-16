@@ -37,9 +37,9 @@
 ## 文档解析层长期口径
 
 1. [x] 撤回上一版“轻量 chunker 分流”实现，避免错误方向继续扩散。
-2. [ ] 重新对照 RAGFlow `naive/manual/qa/table` 的输入输出、元数据、表格行处理、QA 成对、标题层级、tokenize 和 parent-child 行为，形成更精确的移植清单。
-3. [ ] 设计“部署轻、规则不简化”的文档解析层：MinerU 可走 API，RAGFlow 作为参考代码库，不引入重型本地服务。
-4. [ ] 对每类解析/后处理/chunker 先定义验收样例和输出结构，再 TDD 实现；不要只靠启发式 `auto` 简化判断。
+2. [x] 重新对照 RAGFlow `naive/manual/qa/table` 的输入输出、元数据、表格行处理、QA 成对、标题层级、tokenize 和 parent-child 行为，形成更精确的移植清单。
+3. [x] 设计“部署轻、规则不简化”的文档解析层：MinerU 可走 API，RAGFlow 作为参考代码库，不引入重型本地服务。
+4. [x] 对每类解析/后处理/chunker 先定义验收样例和输出结构，再 TDD 实现；不要只靠启发式 `auto` 简化判断。
 5. [ ] 确认是否需要显式配置 chunker 类型、文件类型默认映射、以及审核界面展示 chunker 来源。
 
 ## 预期效果
@@ -54,6 +54,40 @@
 
 * 文档解析层需要重新确认精确设计后再继续多 chunker：chunker 类型选择由文件类型/用户配置/自动识别中的哪一种主导。
 * VLM 图片描述、本地 MinerU provider 和是否停用 parent embedding 后续单独确认。
+
+## 第二阶段设计记录
+
+* 已新增 `.trellis/tasks/06-16-mineru-ragflow-postprocessing/research/ragflow-chunker-behavior-map.md`，对照 RAGFlow `qa/table/manual/naive`、`rag/nlp` 和 parent-child 检索行为。
+* 已新增 `docs/changes/20260616-100139-mineru-ragflow-postprocessing/chunker-behavior-design.md`，记录本项目适配设计。
+* 设计结论：
+  * 不引入 RAGFlow 重服务或存储模型；
+  * MinerU 继续作为默认 API-first provider；
+  * chunker 类型采用“显式配置优先 + 文件类型默认 + 辅助推荐”的设计；
+  * `table` 每行一个 chunk，保留表头/行号/sheet 证据；
+  * `qa` 每个问答对一个 chunk，坏行按 RAGFlow 追加到当前 answer 或记录 skipped；
+  * `manual` 优先标题/outline/section 聚合，适合手册、SOP、政策类文档；
+  * `naive` 保持当前 RAGFlow 风格 fallback，并做回归保护。
+* 建议第二阶段 MVP：先不做 schema/UI 大改，`chunker_type` 可先落在 `source_offsets["chunker"]`；若需要正式字段或 UI 筛选，再单独确认。
+
+## 第二阶段实现记录
+
+* `customer_service_agent/document_parser.py`
+  * `build_import_chunks_from_blocks()` 新增 `chunker_type` 参数，支持 `naive`、`manual`、`qa`、`table`。
+  * `table` chunker 按 RAGFlow `table.py` 思路把每个数据行生成为一个审核切片，正文采用 `- 字段: 值`，并保留 `sheet_name`、`row_index`、`headers`、`field_map`、`table_html` 证据。
+  * `qa` chunker 按 RAGFlow `qa.py` 思路把每个 Q/A pair 生成为一个审核切片；txt/csv 风格坏行在已有 question 后追加到 answer。
+  * `manual` chunker 按标题/章节连续聚合 ParsedBlock，保留 `section_path`、页码和来源块证据。
+  * 非 naive chunker 会在 `source_offsets["chunker"]` 记录采用的 chunker 类型。
+* `customer_service_agent/config.py`
+  * 新增 `DOCUMENT_CHUNKER_TYPE` / `Settings.document_chunker_type`，默认 `naive`，只允许 `naive/manual/qa/table`。
+* `customer_service_agent/admin_server.py`
+  * 设置快照、租户设置持久化和文档解析入口均接入 `document_chunker_type`。
+
+## 第二阶段验证记录
+
+* `conda run -n customer-service-agent python -m pytest tests/test_document_parser.py::test_build_import_chunks_table_chunker_outputs_one_chunk_per_row_with_evidence tests/test_document_parser.py::test_build_import_chunks_qa_chunker_appends_malformed_rows_to_current_answer tests/test_document_parser.py::test_build_import_chunks_manual_chunker_groups_blocks_by_section_path -q`：先红灯，缺少 `chunker_type` 参数；实现后 3 passed。
+* `conda run -n customer-service-agent python -m pytest tests/test_config.py::test_settings_from_env_parses_required_values tests/test_config.py::test_settings_from_env_parses_document_chunking_values tests/test_config.py::test_settings_from_env_rejects_unknown_document_chunker_type tests/test_admin_server.py::test_admin_app_settings_snapshot_exposes_runtime_config_for_local_modal tests/test_admin_server.py::test_admin_app_update_settings_persists_local_tenant_settings_and_refreshes_runtime_config tests/test_admin_server.py::test_admin_app_update_settings_preserves_document_chunking_when_payload_omits_fields tests/test_admin_server.py::test_admin_app_build_document_import_chunks_passes_configured_chunker_type -q`：先红灯，配置/管理端未接入；实现后 7 passed。
+* `conda run -n customer-service-agent python -m pytest tests/test_document_parser.py tests/test_config.py tests/test_admin_server.py::test_admin_app_build_document_import_chunks_passes_configured_chunker_type tests/test_admin_server.py::test_admin_app_settings_snapshot_exposes_runtime_config_for_local_modal tests/test_admin_server.py::test_admin_app_update_settings_persists_local_tenant_settings_and_refreshes_runtime_config tests/test_admin_server.py::test_admin_app_update_settings_preserves_document_chunking_when_payload_omits_fields -q`：35 passed。
+* `conda run -n customer-service-agent python -m ruff check customer_service_agent/document_parser.py customer_service_agent/config.py customer_service_agent/admin_server.py tests/test_document_parser.py tests/test_config.py tests/test_admin_server.py`：All checks passed。
 
 ## 文档解析层纠偏记录
 

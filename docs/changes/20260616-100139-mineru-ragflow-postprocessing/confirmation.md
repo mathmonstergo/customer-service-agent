@@ -10,7 +10,8 @@
 
 ## 待确认
 
-* 文档解析层需要重新确认精确设计后再继续多 chunker：chunker 类型选择由文件类型/用户配置/自动识别中的哪一种主导。
+* 文档解析层第二阶段建议采用“显式配置优先 + 文件类型默认 + 辅助推荐”的 chunker 选择策略；等待用户确认后进入 TDD 实现。
+* 第二阶段 MVP 建议先把 `chunker_type` 放入 `source_offsets["chunker"]`，暂不做 schema/UI 大改；如需要正式字段或 UI 筛选需单独确认。
 * VLM 图片描述、本地 MinerU provider 和是否停用 parent embedding，后续单独确认。
 
 ## 2026-06-16 第一阶段实现后记录
@@ -34,3 +35,25 @@
 * 已撤回上一版 `feat(rag): 增加 MinerU 轻量 chunker 分流` 实现。
 * 后续文档解析层要重新以 MinerU/RAGFlow 真实行为为蓝本，先做精确设计和验收样例，再实现。
 * 本项目仍保持 MinerU 默认 API 接入和部署轻量，但解析、后处理和 chunker 目标是准确高效、尽量对齐 RAGFlow。
+
+## 2026-06-16 第二阶段设计待确认
+
+已按用户要求开始下一阶段前置设计，并完成 RAGFlow 行为对照：
+
+* `qa`：Q/A pair 一对一 chunk；txt/csv 坏行在已有 question 后追加到 answer；Markdown/Docx 标题栈形成 question path。
+* `table`：每个数据行一个 chunk；表头必须有语义；多级表头、合并单元格、坏行、重复表头都要有明确处理。
+* `manual`：面向手册/SOP/政策，按 outline、标题、章节和媒体上下文聚合。
+* `naive`：继续作为普通 fallback，现有实现已覆盖 RAGFlow-style merge、children_delimiter、证据保留和媒体上下文。
+* parent-child：继续 child 召回、parent 回填，不让 parent 和 child 同权竞争。
+
+用户已确认可以开始按 `docs/changes/20260616-100139-mineru-ragflow-postprocessing/chunker-behavior-design.md` 的第二阶段 MVP 进入 TDD 实现。
+
+## 2026-06-16 第二阶段实现记录
+
+* 已按 TDD 实现 `DOCUMENT_CHUNKER_TYPE` / `document_chunker_type`，默认 `naive`，允许 `naive/manual/qa/table`。
+* 已实现 `build_import_chunks_from_blocks(..., chunker_type=...)`：
+  * `table`：每个表格数据行一个审核切片，保留表头、行号、sheet、table_html 等证据。
+  * `qa`：每个问答对一个审核切片，txt/csv 风格坏行追加到当前 answer。
+  * `manual`：按标题/章节连续聚合 ParsedBlock，保留 section path 和页码证据。
+* 已接入 AdminApp 设置快照、租户配置持久化和文档解析构建入口。
+* 本阶段未改数据库 schema，chunker 来源先记录在 `source_offsets["chunker"]`。

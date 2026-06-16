@@ -242,6 +242,7 @@ def settings_payload_to_env(payload: dict[str, Any]) -> dict[str, str]:
         ).strip(),
         "MINERU_USE_KB_PACKAGER": "true" if payload.get("mineru_use_kb_packager") else "false",
         "DOCUMENT_CHUNK_TOKEN_NUM": str(payload.get("document_chunk_token_num", "")).strip(),
+        "DOCUMENT_CHUNKER_TYPE": str(payload.get("document_chunker_type", "")).strip(),
         "DOCUMENT_CHUNK_DELIMITER": str(payload.get("document_chunk_delimiter", "")),
         "DOCUMENT_CHUNK_OVERLAP_PERCENT": str(
             payload.get("document_chunk_overlap_percent", "")
@@ -281,6 +282,7 @@ def settings_to_tenant_settings(settings: Settings) -> dict[str, Any]:
         "mineru_parse_timeout_seconds": settings.mineru_parse_timeout_seconds,
         "mineru_use_kb_packager": settings.mineru_use_kb_packager,
         "document_chunk_token_num": settings.document_chunk_token_num,
+        "document_chunker_type": settings.document_chunker_type,
         "document_chunk_delimiter": settings.document_chunk_delimiter,
         "document_chunk_overlap_percent": settings.document_chunk_overlap_percent,
         "document_children_delimiter": settings.document_children_delimiter,
@@ -773,6 +775,7 @@ class AdminApp:
             "mineru_parse_timeout_seconds": self.settings.mineru_parse_timeout_seconds,
             "mineru_use_kb_packager": self.settings.mineru_use_kb_packager,
             "document_chunk_token_num": self.settings.document_chunk_token_num,
+            "document_chunker_type": self.settings.document_chunker_type,
             "document_chunk_delimiter": self.settings.document_chunk_delimiter,
             "document_chunk_overlap_percent": self.settings.document_chunk_overlap_percent,
             "document_children_delimiter": self.settings.document_children_delimiter,
@@ -1381,6 +1384,7 @@ class AdminApp:
             file_id,
             blocks,
             chunk_token_num=getattr(self.settings, "document_chunk_token_num", 512),
+            chunker_type=getattr(self.settings, "document_chunker_type", "naive"),
             delimiter=getattr(self.settings, "document_chunk_delimiter", "\n。；！？"),
             overlapped_percent=getattr(self.settings, "document_chunk_overlap_percent", 0),
             children_delimiter=getattr(self.settings, "document_children_delimiter", ""),
