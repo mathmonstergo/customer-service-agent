@@ -273,6 +273,7 @@ class KnowledgeMixin:
           AND (kc.embedding <=> %(embedding)s::vector) <= %(max_distance)s
           AND COALESCE(imp.is_disabled, false) = false
           AND COALESCE(ic.is_disabled, false) = false
+          AND (kc.source_type <> 'document' OR kc.chunk_level <> 'parent')
         ORDER BY kc.embedding <=> %(embedding)s::vector
         LIMIT %(top_k)s
         """
@@ -312,6 +313,7 @@ class KnowledgeMixin:
         WHERE COALESCE(fq.status, kc.status) = %(status)s
           AND COALESCE(imp.is_disabled, false) = false
           AND COALESCE(ic.is_disabled, false) = false
+          AND (kc.source_type <> 'document' OR kc.chunk_level <> 'parent')
           AND (
               kc.source_title ILIKE %(query_like)s
               OR kc.content ILIKE %(query_like)s

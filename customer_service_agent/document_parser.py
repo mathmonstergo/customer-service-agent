@@ -6,6 +6,7 @@ import re
 import time
 import uuid
 import zipfile
+from html import unescape
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -20,6 +21,25 @@ from customer_service_agent.chunking import (
 
 MINERU_BATCH_FILE_URL = "https://mineru.net/api/v4/file-urls/batch"
 MINERU_BATCH_RESULT_URL_TEMPLATE = "https://mineru.net/api/v4/extract-results/batch/{batch_id}"
+MINERU_PAGE_CHROME_TYPES = {
+    "discarded",
+    "footer",
+    "header",
+    "page_aside_text",
+    "page_footer",
+    "page_header",
+    "page_number",
+}
+MINERU_CONTENT_TYPES = {
+    "code",
+    "equation",
+    "equation_interline",
+    "image",
+    "list",
+    "table",
+    "text",
+    "title",
+}
 
 
 class MineruParseError(RuntimeError):
@@ -648,7 +668,7 @@ def _blocks_from_content_list(items: list[dict[str, Any]], *, source_file: str) 
     layout_counters: dict[str, int] = {}
     for item in items:
         block_type = str(item.get("type") or item.get("block_type") or "text").strip() or "text"
-        if block_type == "discarded":
+        if _is_ignored_mineru_block_type(block_type):
             continue
         text = _extract_item_text(item)
         asset_paths = _mineru_asset_paths(item)
@@ -658,7 +678,7 @@ def _blocks_from_content_list(items: list[dict[str, Any]], *, source_file: str) 
             continue
         page_number = _extract_page_number(item)
         position_tag = _ragflow_position_tag(item)
-        if block_type in {"title", "header"}:
+        if block_type == "title":
             current_section = text.splitlines()[0].strip()
         layout_type = re.sub(r"\s+", " ", block_type)
         layout_index = layout_counters.get(layout_type, 0)
@@ -728,7 +748,7 @@ def _markdown_block(text: str, source_file: str, section_title: str | None) -> P
 def _extract_item_text(item: dict[str, Any]) -> str:
     """从 MinerU 条目中抽取可读正文，兼容 text/html/table_body 等字段。"""
     block_type = str(item.get("type") or item.get("block_type") or "").strip()
-    if block_type == "discarded":
+    if _is_ignored_mineru_block_type(block_type):
         return ""
     if block_type == "table":
         return _extract_mineru_table_section(item)
@@ -743,7 +763,7 @@ def _extract_item_text(item: dict[str, Any]) -> str:
         ).strip()
     if block_type == "equation":
         value = item.get("text")
-        return str(value).strip() if value else ""
+        return _sanitize_mineru_inline_text(str(value)) if value else ""
     if block_type == "code":
         return "\n".join(
             part
@@ -762,23 +782,28 @@ def _extract_item_text(item: dict[str, Any]) -> str:
     for key in ("text", "content", "md", "html"):
         value = item.get(key)
         if isinstance(value, str) and value.strip():
-            return value.strip()
+            return _sanitize_mineru_inline_text(value)
     table_body = item.get("table_body")
     if isinstance(table_body, str) and table_body.strip():
-        return table_body.strip()
+        return _sanitize_mineru_inline_text(table_body)
     return ""
 
 
 def _extract_mineru_table_section(item: dict[str, Any]) -> str:
     """按 RAGFlow MinerU table 转 section 方式拼接表格正文、标题和脚注。"""
+    table_body = str(item.get("table_body") or "").strip()
+    if table_body and _looks_like_html_table(table_body):
+        body_text = _table_html_to_text(table_body)
+    else:
+        body_text = _sanitize_mineru_inline_text(table_body)
     parts = [
-        str(item.get("table_body") or "").strip(),
+        body_text,
         _content_items_text(item.get("table_caption", [])),
         _content_items_text(item.get("table_footnote", [])),
     ]
     text = "\n".join(part for part in parts if part).strip()
     if not text and isinstance(item.get("text"), str):
-        text = item["text"].strip()
+        text = _sanitize_mineru_inline_text(item["text"])
     return text or "FAILED TO PARSE TABLE"
 
 
@@ -911,7 +936,7 @@ def _extract_kb_text(block: dict[str, Any], block_type: str) -> str:
 def _content_items_text(items: Any) -> str:
     """从 MinerU content item 列表中抽取 text/equation_inline 文本。"""
     if isinstance(items, str):
-        return items.strip()
+        return _sanitize_mineru_inline_text(items)
     if not isinstance(items, list):
         return ""
     texts = []
@@ -924,7 +949,7 @@ def _content_items_text(items: Any) -> str:
         value = item.get("content") or item.get("text")
         if value:
             texts.append(str(value))
-    return "".join(texts).strip()
+    return _sanitize_mineru_inline_text("".join(texts))
 
 
 def _extract_kb_table_text(content: dict[str, Any]) -> str:
@@ -935,24 +960,49 @@ def _extract_kb_table_text(content: dict[str, Any]) -> str:
         parts.append(f"Table: {caption}")
     html = str(content.get("html", "") or "").strip()
     if html:
-        rows = []
-        for raw_row in re.findall(r"<tr>(.*?)</tr>", html, re.S):
-            cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", raw_row, re.S)
-            clean_cells = [
-                re.sub(r"<[^>]+>", "", cell).strip()
-                for cell in cells
-                if re.sub(r"<[^>]+>", "", cell).strip()
-            ]
-            if clean_cells:
-                rows.append(" | ".join(clean_cells))
-        if rows:
-            parts.extend(rows)
-        else:
-            parts.append(html)
+        table_text = _table_html_to_text(html)
+        parts.append(table_text or _sanitize_mineru_inline_text(html))
     footnote = _content_items_text(content.get("table_footnote", []))
     if footnote:
         parts.append(f"Note: {footnote}")
     return "\n".join(parts).strip()
+
+
+def _is_ignored_mineru_block_type(block_type: str) -> bool:
+    """判断原始 MinerU 块是否应跳过，关键约束是只过滤正文候选、不改写页码证据规则。"""
+    normalized = str(block_type or "").strip()
+    if normalized in MINERU_PAGE_CHROME_TYPES:
+        return True
+    return normalized not in MINERU_CONTENT_TYPES
+
+
+def _sanitize_mineru_inline_text(value: str) -> str:
+    """清洗 MinerU 文本中的 HTML 噪音，同时保留中文尖括号等非 HTML 字面量。"""
+    text = unescape(str(value or ""))
+    text = re.sub(r"<\s*br\s*/?\s*>", "\n", text, flags=re.I)
+    text = re.sub(r"</\s*(p|div|section|article|li|ul|ol|tr|table)\s*>", "\n", text, flags=re.I)
+    text = re.sub(r"<\s*/?\s*[A-Za-z][A-Za-z0-9:-]*(?:\s+[^<>]*)?\s*/?\s*>", "", text)
+    text = re.sub(r"[^\S\n]+", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _looks_like_html_table(value: str) -> bool:
+    """识别 MinerU table_body 是否是 HTML 表格，避免普通 markdown 表格被误处理。"""
+    return bool(re.search(r"<\s*table\b|<\s*tr\b|<\s*t[dh]\b", value, flags=re.I))
+
+
+def _table_html_to_text(html: str) -> str:
+    """把 HTML 表格转成行文本，供检索使用；原始 HTML 仍由 evidence.table_html 保留。"""
+    rows: list[str] = []
+    for raw_row in re.findall(r"<\s*tr\b[^>]*>(.*?)</\s*tr\s*>", html, re.S | re.I):
+        cells = re.findall(r"<\s*t[dh]\b[^>]*>(.*?)</\s*t[dh]\s*>", raw_row, re.S | re.I)
+        clean_cells = [_sanitize_mineru_inline_text(cell) for cell in cells]
+        clean_cells = [cell for cell in clean_cells if cell]
+        if clean_cells:
+            rows.append(" | ".join(clean_cells))
+    return "\n".join(rows).strip()
 
 
 def _kb_block_type(block_type: str) -> str:

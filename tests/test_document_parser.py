@@ -173,6 +173,67 @@ def test_extract_blocks_from_mineru_content_list_transfers_ragflow_content_types
     assert chunks[0]["source_blocks"][0]["asset_paths"] == {"table_img_path": "tables/t1.png"}
 
 
+def test_extract_blocks_from_mineru_content_list_filters_page_chrome_and_unknown_types():
+    """RAGFlow v0.26 口径下页眉页脚页码和未知块不应污染切片正文，但正文页码仍保留。"""
+    payload = {
+        "content_list": [
+            {"type": "header", "text": "Online Edition for Part no. 123", "page_idx": 76},
+            {"type": "text", "text": "打开和关闭", "page_idx": 76, "bbox": [10, 20, 100, 40]},
+            {"type": "page_number", "text": "77", "page_idx": 76},
+            {"type": "footer", "text": "BMW AG", "page_idx": 76},
+            {"type": "sidebar", "text": "不支持的侧栏不应重复正文", "page_idx": 76},
+        ]
+    }
+
+    blocks = extract_blocks_from_mineru_payload(
+        payload,
+        source_file="manual.pdf",
+        use_kb_packager=False,
+    )
+    chunks = build_import_chunks_from_blocks("imp_1", blocks, max_chars=1000)
+
+    assert [block.text for block in blocks] == ["打开和关闭"]
+    assert blocks[0].page_number == 77
+    assert chunks[0]["page_start"] == 77
+    assert chunks[0]["page_end"] == 77
+    assert "打开和关闭" in chunks[0]["source_text"]
+    assert "Online Edition" not in chunks[0]["source_text"]
+    assert "BMW AG" not in chunks[0]["source_text"]
+    assert "不支持的侧栏" not in chunks[0]["source_text"]
+    assert chunks[0]["source_offsets"]["pdf_positions"] == [[77, 10.0, 100.0, 20.0, 40.0]]
+
+
+def test_extract_blocks_from_mineru_content_list_sanitizes_html_without_losing_raw_table():
+    """HTML 标签应从正文清洗掉，原始表格 HTML 仍保留在 evidence 供前端预览。"""
+    payload = {
+        "content_list": [
+            {
+                "type": "table",
+                "table_body": "<table><tr><th>状态</th><th>处理</th></tr><tr><td>待发货</td><td>可退款</td></tr></table>",
+                "table_caption": ["&lt;退款规则&gt;"],
+                "page_idx": 0,
+            },
+            {
+                "type": "text",
+                "text": "<p>用户&nbsp;无法登录<br/>先检查账号状态。</p>",
+                "page_idx": 0,
+            },
+        ]
+    }
+
+    blocks = extract_blocks_from_mineru_payload(
+        payload,
+        source_file="manual.pdf",
+        use_kb_packager=False,
+    )
+
+    assert blocks[0].text == "状态 | 处理\n待发货 | 可退款\n<退款规则>"
+    assert blocks[0].evidence["table_html"].startswith("<table>")
+    assert blocks[1].text == "用户 无法登录\n先检查账号状态。"
+    assert "<td>" not in blocks[0].text
+    assert "<p>" not in blocks[1].text
+
+
 def test_mineru_client_standard_mode_extracts_zip_assets_to_evidence(tmp_path):
     """标准 API zip 里的图片资产会落到本地目录，并写入 MinerU block 证据。"""
     source = tmp_path / "manual.pdf"

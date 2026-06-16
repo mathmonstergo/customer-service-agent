@@ -236,6 +236,13 @@ def test_search_knowledge_sql_filters_disabled_files_and_chunks():
     assert "COALESCE(ic.is_disabled, false) = false" in sql
 
 
+def test_search_knowledge_sql_excludes_document_parent_from_direct_retrieval():
+    """文档 parent 只用于 child 命中后的上下文回填，不应参与普通向量候选竞争。"""
+    sql = Database._search_knowledge_sql()
+
+    assert "(kc.source_type <> 'document' OR kc.chunk_level <> 'parent')" in sql
+
+
 def test_search_knowledge_text_sql_filters_disabled_files_and_chunks():
     """关键词检索 SQL 同样要应用文件 / 切片级禁用过滤。"""
     sql = Database._search_knowledge_text_sql()
@@ -244,6 +251,13 @@ def test_search_knowledge_text_sql_filters_disabled_files_and_chunks():
     assert "LEFT JOIN import_chunks ic" in sql
     assert "COALESCE(imp.is_disabled, false) = false" in sql
     assert "COALESCE(ic.is_disabled, false) = false" in sql
+
+
+def test_search_knowledge_text_sql_excludes_document_parent_from_direct_retrieval():
+    """关键词召回同样不能让文档 parent 与 child 同权竞争。"""
+    sql = Database._search_knowledge_text_sql()
+
+    assert "(kc.source_type <> 'document' OR kc.chunk_level <> 'parent')" in sql
 
 
 def test_get_parent_context_chunks_sql_filters_disabled_files_and_chunks():
