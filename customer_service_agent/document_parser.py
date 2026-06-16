@@ -344,6 +344,7 @@ def build_import_chunks_from_blocks(
     blocks: list[ParsedBlock | dict[str, Any]],
     *,
     max_chars: int = 6000,
+    chunker_type: str = "auto",
     chunk_token_num: int | None = None,
     delimiter: str = "\n。；！？",
     overlapped_percent: int = 0,
@@ -369,8 +370,9 @@ def build_import_chunks_from_blocks(
         table_context_size=table_context_size,
         image_context_size=image_context_size,
     )
-    merged_chunks = ragflow_naive_merge_blocks(
+    merged_chunks = _route_import_chunks(
         source_blocks,
+        chunker_type=chunker_type,
         chunk_token_num=chunk_token_num or max_chars,
         delimiter=delimiter,
         overlapped_percent=overlapped_percent,
@@ -384,6 +386,178 @@ def build_import_chunks_from_blocks(
         )
         for index, chunk in enumerate(merged_chunks, start=1)
     ]
+
+
+def _route_import_chunks(
+    source_blocks: list[dict[str, Any]],
+    *,
+    chunker_type: str,
+    chunk_token_num: int,
+    delimiter: str,
+    overlapped_percent: int,
+) -> list[StructuredChunk]:
+    """按 RAGFlow parser_id 思路分流 chunker，关键约束是失败时回退 naive。"""
+    route = _select_chunker_type(source_blocks, chunker_type)
+    if route == "qa":
+        chunks = _qa_chunks_from_blocks(source_blocks)
+        if chunks:
+            return chunks
+    if route == "table":
+        chunks = _table_chunks_from_blocks(source_blocks)
+        if chunks:
+            return chunks
+    if route == "title_manual":
+        chunks = _title_manual_chunks_from_blocks(
+            source_blocks,
+            chunk_token_num=chunk_token_num,
+            delimiter=delimiter,
+            overlapped_percent=overlapped_percent,
+        )
+        if chunks:
+            return chunks
+    return ragflow_naive_merge_blocks(
+        source_blocks,
+        chunk_token_num=chunk_token_num,
+        delimiter=delimiter,
+        overlapped_percent=overlapped_percent,
+    )
+
+
+def _select_chunker_type(source_blocks: list[dict[str, Any]], chunker_type: str) -> str:
+    """选择轻量 chunker；auto 只做高置信分流，避免破坏现有导入行为。"""
+    requested = str(chunker_type or "auto").strip().lower().replace("-", "_")
+    if requested in {"qa", "table", "title_manual", "naive"}:
+        return requested
+    if _qa_chunks_from_blocks(source_blocks):
+        return "qa"
+    block_types = {str(block.get("block_type") or "").strip().lower() for block in source_blocks}
+    if block_types == {"table"} and _table_chunks_from_blocks(source_blocks):
+        return "table"
+    if "title" in block_types:
+        return "title_manual"
+    return "naive"
+
+
+def _qa_chunks_from_blocks(source_blocks: list[dict[str, Any]]) -> list[StructuredChunk]:
+    """参考 RAGFlow QA chunker，把明确的问题/答案行转换成一问一答 chunk。"""
+    chunks: list[StructuredChunk] = []
+    for block in source_blocks:
+        headers, rows = _parse_pipe_table(block.get("text", ""))
+        question_index, answer_index = _qa_column_indexes(headers)
+        if question_index is None or answer_index is None:
+            continue
+        for row in rows:
+            if max(question_index, answer_index) >= len(row):
+                continue
+            question = row[question_index].strip()
+            answer = row[answer_index].strip()
+            if not question or not answer:
+                continue
+            qa_block = {
+                **block,
+                "text": f"问题：{question}\n答案：{answer}",
+                "block_type": "qa",
+                "qa_pair": {"question": question, "answer": answer},
+            }
+            chunks.extend(ragflow_naive_merge_blocks([qa_block], chunk_token_num=0))
+    return chunks
+
+
+def _table_chunks_from_blocks(source_blocks: list[dict[str, Any]]) -> list[StructuredChunk]:
+    """参考 RAGFlow table chunker，把表格每个数据行转换为字段化 chunk。"""
+    chunks: list[StructuredChunk] = []
+    for block in source_blocks:
+        if str(block.get("block_type") or "").strip().lower() != "table":
+            continue
+        headers, rows = _parse_pipe_table(block.get("text", ""))
+        if not headers or not rows:
+            continue
+        for row in rows:
+            values = {
+                header: row[index].strip()
+                for index, header in enumerate(headers)
+                if index < len(row) and row[index].strip()
+            }
+            if not values:
+                continue
+            text = "\n".join(f"- {key}: {value}" for key, value in values.items())
+            table_block = {
+                **block,
+                "text": text,
+                "block_type": "table",
+                "table_row": values,
+            }
+            chunks.extend(ragflow_naive_merge_blocks([table_block], chunk_token_num=0))
+    return chunks
+
+
+def _title_manual_chunks_from_blocks(
+    source_blocks: list[dict[str, Any]],
+    *,
+    chunk_token_num: int,
+    delimiter: str,
+    overlapped_percent: int,
+) -> list[StructuredChunk]:
+    """参考 RAGFlow manual chunker，把短标题与后续正文绑定后再按 naive budget 合并。"""
+    groups: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    for block in source_blocks:
+        block_type = str(block.get("block_type") or "").strip().lower()
+        if block_type == "title":
+            if current:
+                groups.append(current)
+            current = [block]
+            continue
+        if current:
+            current.append(block)
+        else:
+            groups.append([block])
+    if current:
+        groups.append(current)
+
+    chunks: list[StructuredChunk] = []
+    for group in groups:
+        chunks.extend(
+            ragflow_naive_merge_blocks(
+                group,
+                chunk_token_num=chunk_token_num,
+                delimiter=delimiter,
+                overlapped_percent=overlapped_percent,
+            )
+        )
+    return chunks
+
+
+def _parse_pipe_table(text: Any) -> tuple[list[str], list[list[str]]]:
+    """解析 MinerU 已清洗的 `列 | 列` 表格文本，兼容 Markdown 对齐分隔行。"""
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    rows: list[list[str]] = []
+    for line in lines:
+        cells = [cell.strip() for cell in line.split("|")]
+        if len(cells) < 2:
+            continue
+        if all(re.fullmatch(r":?-{2,}:?", cell.replace(" ", "")) for cell in cells):
+            continue
+        rows.append(cells)
+    if len(rows) < 2:
+        return [], []
+    headers = rows[0]
+    return headers, rows[1:]
+
+
+def _qa_column_indexes(headers: list[str]) -> tuple[int | None, int | None]:
+    """按 RAGFlow QA 表格约定识别问题列和答案列。"""
+    question_names = {"q", "qa", "question", "问题", "问", "提问"}
+    answer_names = {"a", "answer", "答案", "答", "回答", "回复"}
+    question_index: int | None = None
+    answer_index: int | None = None
+    for index, header in enumerate(headers):
+        normalized = re.sub(r"\s+", "", str(header or "")).strip().lower()
+        if normalized in question_names or "问题" in normalized or "question" in normalized:
+            question_index = index
+        if normalized in answer_names or "答案" in normalized or "answer" in normalized:
+            answer_index = index
+    return question_index, answer_index
 
 
 def _check_response_status(response: Any) -> None:

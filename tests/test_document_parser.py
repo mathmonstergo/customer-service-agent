@@ -345,6 +345,104 @@ def test_build_import_chunks_from_blocks_applies_table_context_window():
     assert "待发货 | 可退款" in chunks[0]["source_text"]
 
 
+def test_build_import_chunks_from_blocks_can_route_qa_table_rows():
+    """QA chunker 参考 RAGFlow qa：表格里一行问答应成为一个审核 chunk。"""
+    blocks = [
+        ParsedBlock(
+            text="问题 | 答案\n如何退款？ | 在订单页申请。\n多久到账？ | 1-3 个工作日。",
+            block_type="table",
+            page_number=3,
+            section_title="售后 FAQ",
+            evidence={
+                "source_file": "faq.pdf",
+                "page_number": 3,
+                "block_type": "table",
+                "table_html": "<table><tr><th>问题</th><th>答案</th></tr></table>",
+            },
+        )
+    ]
+
+    chunks = build_import_chunks_from_blocks("imp_qa", blocks, chunker_type="qa")
+
+    assert [chunk["block_type"] for chunk in chunks] == ["qa", "qa"]
+    assert chunks[0]["source_text"] == "问题：如何退款？\n答案：在订单页申请。"
+    assert chunks[1]["source_text"] == "问题：多久到账？\n答案：1-3 个工作日。"
+    assert chunks[0]["section_path"] == ["售后 FAQ"]
+    assert chunks[0]["page_start"] == 3
+    assert chunks[0]["source_blocks"][0]["evidence"]["table_html"].startswith("<table>")
+    assert chunks[0]["source_blocks"][0]["qa_pair"] == {
+        "question": "如何退款？",
+        "answer": "在订单页申请。",
+    }
+
+
+def test_build_import_chunks_from_blocks_can_route_table_rows():
+    """Table chunker 参考 RAGFlow table：保留表头字段，每个数据行独立成 chunk。"""
+    blocks = [
+        ParsedBlock(
+            text="状态 | 处理\n待发货 | 可退款\n已签收 | 需走售后",
+            block_type="table",
+            page_number=4,
+            section_title="退款规则",
+            evidence={"source_file": "manual.pdf", "page_number": 4, "block_type": "table"},
+        )
+    ]
+
+    chunks = build_import_chunks_from_blocks("imp_table", blocks, chunker_type="table")
+
+    assert len(chunks) == 2
+    assert chunks[0]["block_type"] == "table"
+    assert chunks[0]["source_text"] == "- 状态: 待发货\n- 处理: 可退款"
+    assert chunks[1]["source_text"] == "- 状态: 已签收\n- 处理: 需走售后"
+    assert chunks[0]["source_blocks"][0]["table_row"] == {
+        "状态": "待发货",
+        "处理": "可退款",
+    }
+
+
+def test_build_import_chunks_from_blocks_can_route_title_manual_sections():
+    """Manual chunker 参考 RAGFlow manual：短标题不独立成块，应并入后续正文。"""
+    blocks = [
+        ParsedBlock(
+            text="账号登录",
+            block_type="title",
+            page_number=1,
+            section_title="账号登录",
+            evidence={"source_file": "manual.pdf", "page_number": 1, "block_type": "title"},
+        ),
+        ParsedBlock(
+            text="用户无法登录时，先检查账号状态，再重置密码。",
+            block_type="text",
+            page_number=1,
+            section_title="账号登录",
+            evidence={"source_file": "manual.pdf", "page_number": 1, "block_type": "text"},
+        ),
+        ParsedBlock(
+            text="退款规则",
+            block_type="title",
+            page_number=2,
+            section_title="退款规则",
+            evidence={"source_file": "manual.pdf", "page_number": 2, "block_type": "title"},
+        ),
+        ParsedBlock(
+            text="退款以订单状态为准，待发货可直接申请。",
+            block_type="text",
+            page_number=2,
+            section_title="退款规则",
+            evidence={"source_file": "manual.pdf", "page_number": 2, "block_type": "text"},
+        ),
+    ]
+
+    chunks = build_import_chunks_from_blocks("imp_manual", blocks, chunker_type="title_manual")
+
+    assert len(chunks) == 2
+    assert chunks[0]["source_text"] == "账号登录\n用户无法登录时，先检查账号状态，再重置密码。"
+    assert chunks[1]["source_text"] == "退款规则\n退款以订单状态为准，待发货可直接申请。"
+    assert chunks[0]["block_type"] == "mixed"
+    assert chunks[0]["source_blocks"][0]["block_type"] == "title"
+    assert chunks[0]["source_blocks"][1]["block_type"] == "text"
+
+
 def test_extract_blocks_from_mineru_payload_rejects_empty_result():
     """MinerU 没有可用正文时明确报错，避免保存空切块。"""
     with pytest.raises(MineruParseError, match="no parseable text"):
