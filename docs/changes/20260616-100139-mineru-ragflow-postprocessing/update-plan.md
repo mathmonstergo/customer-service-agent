@@ -20,6 +20,9 @@
 * 本项目不能机械复制 RAGFlow，因为数据模型、任务执行、存储和审核流程不同。
 * 用户要求宏观尊重 RAGFlow/MinerU 大团队的设计，有些地方可以调整本项目现有口径去同步。
 * page chrome 过滤不能导致切片抽屉丢失页码等来源证据。
+* 用户澄清：“轻量”指本地部署形态轻，能接 API 就接 API；不是指 chunker 规则做简化版。
+* 第二阶段目标是准确高效地贴近 RAGFlow chunker 行为，不能做“轻量分流”替代完整设计。
+* 上一版 `feat(rag): 增加 MinerU 轻量 chunker 分流` 已因方向错误撤回。
 
 ## 第一阶段步骤
 
@@ -31,6 +34,14 @@
 6. [x] 实现文档 parent 不参与普通向量/关键词候选竞争，保留 parent embedding 和 child 命中后的 parent 回填。
 7. [ ] 后续再抽象完整 `MineruPostProcessor` 管线和多 chunker 分流，不纳入第一阶段 MVP。
 
+## 第二阶段修正目标
+
+1. [x] 撤回上一版“轻量 chunker 分流”实现，避免错误方向继续扩散。
+2. [ ] 重新对照 RAGFlow `naive/manual/qa/table` 的输入输出、元数据、表格行处理、QA 成对、标题层级、tokenize 和 parent-child 行为，形成更精确的移植清单。
+3. [ ] 设计“部署轻、规则不简化”的实现：MinerU 仍可走 API，RAGFlow 仍只作为参考代码库，不引入重型本地服务。
+4. [ ] 对每类 chunker 先定义验收样例和输出结构，再 TDD 实现；不要只靠启发式 `auto` 简化判断。
+5. [ ] 确认是否需要显式配置 chunker 类型、文件类型默认映射、以及审核界面展示 chunker 来源。
+
 ## 预期效果
 
 * MinerU 输出解析更健壮，兼容更多 zip/json 结构。
@@ -41,7 +52,14 @@
 
 ## 需要用户确认的问题
 
-* 第一阶段无阻塞确认项；多 chunker 分流、VLM 图片描述、本地 MinerU provider 后续单独确认。
+* 第二阶段需要重新确认精确设计后再实现：chunker 类型选择由文件类型/用户配置/自动识别中的哪一种主导。
+* VLM 图片描述、本地 MinerU provider 和是否停用 parent embedding 后续单独确认。
+
+## 第二阶段纠偏记录
+
+* 2026-06-16：用户指出“不要做轻量分流”，准确高效优先。
+* 纠偏结论：撤回上一版简化分流实现；后续第二阶段必须先研究并对齐 RAGFlow 真实 chunker 行为，再做本项目适配。
+* 边界保持：轻量化仍指部署/依赖形态，优先 API 接入 MinerU；不引入 RAGFlow 重服务，但 chunker 规则不能因部署轻而降低质量。
 
 ## 第一阶段实现记录
 
