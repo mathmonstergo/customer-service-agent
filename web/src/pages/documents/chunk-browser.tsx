@@ -15,7 +15,7 @@ import {
 } from 'lucide-react'
 import type { ImportChunk } from '@/api/schemas'
 import { Button } from '@/components/ui/button'
-import { TONE_COLOR, embedDotTone, type DotTone } from '@/components/ui/status-dot'
+import { TONE_COLOR, embedDotTone, type DotTone } from '@/components/ui/status-dot-utils'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Textarea } from '@/components/ui/textarea'
@@ -25,7 +25,7 @@ import {
   useToggleImportChunkDisabled,
   useUpdateImportChunk,
 } from '@/api/hooks'
-import { toast } from '@/components/ui/toaster'
+import { toast } from '@/components/ui/toast'
 import { useUi } from '@/store/ui'
 import { cn } from '@/lib/cn'
 import { ease, dur } from '@/lib/motion'
@@ -35,8 +35,6 @@ import { useHorizontalWheelScroll } from '@/lib/use-horizontal-wheel-scroll'
 export function ChunkBrowser({ fileId, chunks, fileDisabled }: { fileId: string; chunks: ImportChunk[]; fileDisabled?: boolean }) {
   const { currentChunkIndex, setCurrentChunkIndex, chunkEditMode, setChunkEditMode } = useUi()
   const toggleDisabled = useToggleImportChunkDisabled()
-  const update = useUpdateImportChunk()
-  const [draft, setDraft] = useState('')
 
   useEffect(() => {
     // 文件切换时复位
@@ -45,10 +43,6 @@ export function ChunkBrowser({ fileId, chunks, fileDisabled }: { fileId: string;
 
   const safeIdx = Math.min(currentChunkIndex, Math.max(0, chunks.length - 1))
   const chunk = chunks[safeIdx]
-
-  useEffect(() => {
-    setDraft(chunk?.source_text || '')
-  }, [chunk?.id])
 
   if (!chunks.length) {
     return (
@@ -78,58 +72,84 @@ export function ChunkBrowser({ fileId, chunks, fileDisabled }: { fileId: string;
         }
       />
       {/* 切片正文：所有内容统一 px-6 与上方对齐 */}
-      <div className="min-h-0 flex-1 overflow-y-auto scroll-thin px-6 py-5">
-        <motion.div
-          key={chunk.id + (chunkEditMode ? '-edit' : '-view')}
-          initial={{ opacity: 0, y: 4 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: dur.base, ease: ease.out }}
-          className="flex flex-col gap-4"
-        >
-          {chunk.questions?.length > 0 && <QuestionsBlock questions={chunk.questions} />}
-          {chunkEditMode ? (
-            <div className="flex flex-col gap-2">
-              <Textarea value={draft} onChange={(e) => setDraft(e.target.value)} rows={14} />
-              <div className="flex items-center justify-end gap-2">
-                <span className="mr-auto text-[11px] text-(--color-text-faint)">
-                  保存后切片 embedding 会变 stale，需要重新生成
-                </span>
-                <Button
-                  variant="ghost"
-                  onClick={() => {
-                    setDraft(chunk.source_text || '')
-                    setChunkEditMode(false)
-                  }}
-                >
-                  取消
-                </Button>
-                <Button
-                  variant="primary"
-                  disabled={update.isPending || draft === chunk.source_text}
-                  onClick={async () => {
-                    try {
-                      await update.mutateAsync({ id: chunk.id, source_text: draft })
-                      toast.success('切片已保存，向量已标记过期，记得重新生成')
-                      setChunkEditMode(false)
-                    } catch (e) {
-                      toast.error((e as Error).message || '保存失败')
-                    }
-                  }}
-                >
-                  <Save className="size-3.5" />
-                  保存切片
-                </Button>
-              </div>
+      <ChunkContent
+        key={chunk.id}
+        chunk={chunk}
+        fileId={fileId}
+        editMode={chunkEditMode}
+        onExitEdit={() => setChunkEditMode(false)}
+      />
+    </div>
+  )
+}
+
+// 切片正文按 chunk id 初始化草稿，避免在 effect 中同步外部数据到本地编辑态。
+function ChunkContent({
+  chunk,
+  fileId,
+  editMode,
+  onExitEdit,
+}: {
+  chunk: ImportChunk
+  fileId: string
+  editMode: boolean
+  onExitEdit: () => void
+}) {
+  const update = useUpdateImportChunk()
+  const [draft, setDraft] = useState(chunk.source_text || '')
+
+  return (
+    <div className="min-h-0 flex-1 overflow-y-auto scroll-thin px-6 py-5">
+      <motion.div
+        key={chunk.id + (editMode ? '-edit' : '-view')}
+        initial={{ opacity: 0, y: 4 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: dur.base, ease: ease.out }}
+        className="flex flex-col gap-4"
+      >
+        {chunk.questions?.length > 0 && <QuestionsBlock questions={chunk.questions} />}
+        {editMode ? (
+          <div className="flex flex-col gap-2">
+            <Textarea value={draft} onChange={(e) => setDraft(e.target.value)} rows={14} />
+            <div className="flex items-center justify-end gap-2">
+              <span className="mr-auto text-[11px] text-(--color-text-faint)">
+                保存后切片 embedding 会变 stale，需要重新生成
+              </span>
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  setDraft(chunk.source_text || '')
+                  onExitEdit()
+                }}
+              >
+                取消
+              </Button>
+              <Button
+                variant="primary"
+                disabled={update.isPending || draft === chunk.source_text}
+                onClick={async () => {
+                  try {
+                    await update.mutateAsync({ id: chunk.id, source_text: draft })
+                    toast.success('切片已保存，向量已标记过期，记得重新生成')
+                    onExitEdit()
+                  } catch (e) {
+                    toast.error((e as Error).message || '保存失败')
+                  }
+                }}
+              >
+                <Save className="size-3.5" />
+                保存切片
+              </Button>
             </div>
-          ) : chunk.source_blocks?.length ? (
-            <SourceBlockPreview blocks={chunk.source_blocks} fileId={fileId} />
-          ) : (
-            <pre className="whitespace-pre-wrap text-[13px] text-(--color-text)">
-              {chunk.source_text}
-            </pre>
-          )}
-        </motion.div>
-      </div>
+          </div>
+        ) : chunk.source_blocks?.length ? (
+          <SourceBlockPreview blocks={chunk.source_blocks} fileId={fileId} />
+        ) : (
+          <pre className="whitespace-pre-wrap text-[13px] text-(--color-text)">
+            {chunk.source_text}
+          </pre>
+        )}
+      </motion.div>
     </div>
   )
 }

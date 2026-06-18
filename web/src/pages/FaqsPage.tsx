@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { ChevronLeft, ChevronRight, Loader2, Plus, Search, Waypoints, X } from 'lucide-react'
 import { useEmbedPendingFaqs, useFaqs } from '@/api/hooks'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
-import { toast } from '@/components/ui/toaster'
+import { toast } from '@/components/ui/toast'
 import { useUi } from '@/store/ui'
 import { cn } from '@/lib/cn'
 import { FaqStatsBar } from './faqs/faq-stats-bar'
@@ -34,11 +34,6 @@ export default function FaqsPage() {
   const [page, setPage] = useState(1)
   const { openFaqId, setOpenFaqId } = useUi()
 
-  // 任一筛选变化都跳回第 1 页，避免页码越界导致空列表。
-  useEffect(() => {
-    setPage(1)
-  }, [query, status, embedding])
-
   const { data, isPending, isError, isFetching, refetch } = useFaqs({
     query,
     status,
@@ -46,7 +41,7 @@ export default function FaqsPage() {
     page,
     pageSize: PAGE_SIZE,
   })
-  const items = data?.items || []
+  const items = useMemo(() => data?.items ?? [], [data?.items])
   const total = data?.total ?? items.length
   const counts = data?.status_counts || {}
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
@@ -82,22 +77,42 @@ export default function FaqsPage() {
           <Search className="absolute left-2 top-1/2 -translate-y-1/2 size-3.5 text-(--color-text-faint)" />
           <Input
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              setQuery(e.target.value)
+              setPage(1)
+            }}
             placeholder="搜问题 / 答案 / 标签…"
             className="pl-7"
           />
           {query && (
             <button
               type="button"
-              onClick={() => setQuery('')}
+              onClick={() => {
+                setQuery('')
+                setPage(1)
+              }}
               className="absolute right-1 top-1/2 -translate-y-1/2 inline-flex size-6 items-center justify-center rounded text-(--color-text-faint) hover:text-(--color-text)"
             >
               <X className="size-3" />
             </button>
           )}
         </div>
-        <SegmentedFilter value={status} onChange={setStatus} options={STATUS_OPTIONS} />
-        <SegmentedFilter value={embedding} onChange={setEmbedding} options={EMBED_OPTIONS} />
+        <SegmentedFilter
+          value={status}
+          onChange={(v) => {
+            setStatus(v)
+            setPage(1)
+          }}
+          options={STATUS_OPTIONS}
+        />
+        <SegmentedFilter
+          value={embedding}
+          onChange={(v) => {
+            setEmbedding(v)
+            setPage(1)
+          }}
+          options={EMBED_OPTIONS}
+        />
         <div className="ml-auto" />
         <Button
           variant="outline"

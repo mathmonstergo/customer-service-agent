@@ -4,7 +4,7 @@
 // 2) 暴露 abort()，让"停止生成"按钮通过 AbortController 中止 fetch，把已收到的内容保留下来。
 // 3) 用户没填会话级供应商时，发送 payload 里不带 chat_* 字段，让后端走全局默认。
 import { useCallback, useRef, useState } from 'react'
-import { toast } from '@/components/ui/toaster'
+import { toast } from '@/components/ui/toast'
 import { streamAssistantChat, type AssistantStepEvent } from '@/lib/sse-assistant'
 import type { AssistantSource, AssistantStreamPayload } from '@/api/schemas'
 import { useAssistant, type ChatMessage, type ProviderConfig } from '@/store/assistant'

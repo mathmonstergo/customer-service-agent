@@ -33,7 +33,7 @@ import {
   useToggleImportFileDisabled,
   type ParseStatusResponse,
 } from '@/api/hooks'
-import { toast } from '@/components/ui/toaster'
+import { toast } from '@/components/ui/toast'
 import { embeddingStatusLabel, parseStateLabel, tr } from '@/lib/labels'
 import { dur, ease } from '@/lib/motion'
 import { ChunkBrowser } from './chunk-browser'

@@ -12,7 +12,7 @@ import {
   DrawerTitle,
 } from '@/components/ui/drawer'
 import { Input } from '@/components/ui/input'
-import { toast } from '@/components/ui/toaster'
+import { toast } from '@/components/ui/toast'
 import { cn } from '@/lib/cn'
 import { joinListInput, splitListInput } from './helpers'
 

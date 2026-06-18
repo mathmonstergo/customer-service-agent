@@ -13,7 +13,7 @@ import {
   Sparkles,
   CheckCircle2,
 } from 'lucide-react'
-import { toast } from '@/components/ui/toaster'
+import { toast } from '@/components/ui/toast'
 import { cn } from '@/lib/cn'
 import { ease, dur } from '@/lib/motion'
 import { confidenceLabel, intentLabel, tr } from '@/lib/labels'

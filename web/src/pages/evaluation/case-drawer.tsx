@@ -11,7 +11,7 @@ import {
 } from '@/components/ui/drawer'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import { toast } from '@/components/ui/toaster'
+import { toast } from '@/components/ui/toast'
 import { useSaveRetrievalEvalCase } from '@/api/hooks'
 import { CASE_FORM_STATUS_OPTIONS, joinListInput, splitListInput } from './helpers'
 

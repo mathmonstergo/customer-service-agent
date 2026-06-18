@@ -3,7 +3,7 @@
 // - 三件套留空 = 走全局默认；填齐 = 当前会话 per-request override。
 // - 模型列表按 (base_url, api_key) 指纹缓存到 localStorage，下次同账户立刻可选。
 // - 操作必有反馈：拉取/测试都有 inline 状态条 + toast。
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { AnimatePresence } from 'framer-motion'
 import {
   CheckCircle2,
@@ -25,7 +25,7 @@ import {
 } from '@/components/ui/drawer'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { toast } from '@/components/ui/toaster'
+import { toast } from '@/components/ui/toast'
 import { cn } from '@/lib/cn'
 import {
   useAssistantDefaults,
@@ -34,6 +34,7 @@ import {
 } from '@/api/hooks'
 import {
   useAssistant,
+  EMPTY_PROVIDER,
   providerFingerprint,
   PROVIDER_PRESETS,
   type ProviderConfig,
@@ -52,6 +53,33 @@ interface ProbeState {
 
 export function ProviderDrawer({ open, onOpenChange, conversationId }: Props) {
   const conv = useAssistant((s) => s.conversations[conversationId])
+
+  return (
+    <Drawer open={open} onOpenChange={onOpenChange}>
+      <AnimatePresence>
+        {open && (
+          <ProviderDrawerForm
+            key={conversationId}
+            conversationId={conversationId}
+            onOpenChange={onOpenChange}
+            initialProvider={conv?.provider ?? EMPTY_PROVIDER}
+          />
+        )}
+      </AnimatePresence>
+    </Drawer>
+  )
+}
+
+// 子组件按会话 key 重建，让本地草稿在打开目标会话时初始化，避免 effect 同步 state。
+function ProviderDrawerForm({
+  conversationId,
+  onOpenChange,
+  initialProvider,
+}: {
+  conversationId: string
+  onOpenChange: (open: boolean) => void
+  initialProvider: ProviderConfig
+}) {
   const updateProvider = useAssistant((s) => s.updateProvider)
   const modelsCache = useAssistant((s) => s.modelsCache)
   const cacheModels = useAssistant((s) => s.cacheModels)
@@ -60,23 +88,9 @@ export function ProviderDrawer({ open, onOpenChange, conversationId }: Props) {
   const probe = useProbeChatProvider()
 
   // 抽屉打开时把会话的配置 copy 到本地 draft，确认保存时再写回。
-  const [draft, setDraft] = useState<ProviderConfig>(
-    conv?.provider ?? {
-      presetId: '',
-      chat_base_url: '',
-      chat_api_key: '',
-      chat_model: '',
-    },
-  )
+  const [draft, setDraft] = useState<ProviderConfig>(initialProvider)
   const [revealKey, setRevealKey] = useState(false)
   const [probeState, setProbeState] = useState<ProbeState>({ status: 'idle' })
-
-  useEffect(() => {
-    if (open && conv) {
-      setDraft(conv.provider)
-      setProbeState({ status: 'idle' })
-    }
-  }, [open, conv])
 
   const fingerprint = useMemo(
     () => providerFingerprint(draft.chat_base_url, draft.chat_api_key),
@@ -84,6 +98,9 @@ export function ProviderDrawer({ open, onOpenChange, conversationId }: Props) {
   )
   const cached = modelsCache[fingerprint]
   const hasCachedModels = !!cached && cached.items.length > 0
+  const modelHint = hasCachedModels
+    ? `共 ${cached.items.length} 个 · 上次拉取 ${formatAge(cached.fetchedAt)}`
+    : '点右侧"拉取模型"获取列表'
 
   const onChooseProvider = (presetId: string) => {
     const preset = PROVIDER_PRESETS.find((p) => p.id === presetId)
@@ -176,136 +193,118 @@ export function ProviderDrawer({ open, onOpenChange, conversationId }: Props) {
   }, [defaults.data])
 
   return (
-    <Drawer open={open} onOpenChange={onOpenChange}>
-      <AnimatePresence>
-        {open && (
-          <DrawerContent width={520}>
-            <DrawerHeader>
-              <div>
-                <DrawerTitle>会话级供应商</DrawerTitle>
-                <p className="mt-1 text-[12px] text-(--color-text-muted)">
-                  填齐三项 = 本会话覆盖；留空 = 走全局默认（
-                  <span className="font-mono text-(--color-text)">{globalLabel}</span>）
-                </p>
-              </div>
-            </DrawerHeader>
-            <DrawerBody>
-              <div className="flex flex-col gap-5">
-                <Field label="预设">
-                  <PresetSelect value={draft.presetId || ''} onChange={onChooseProvider} />
-                </Field>
+    <DrawerContent width={520}>
+      <DrawerHeader>
+        <div>
+          <DrawerTitle>会话级供应商</DrawerTitle>
+          <p className="mt-1 text-[12px] text-(--color-text-muted)">
+            填齐三项 = 本会话覆盖；留空 = 走全局默认（
+            <span className="font-mono text-(--color-text)">{globalLabel}</span>）
+          </p>
+        </div>
+      </DrawerHeader>
+      <DrawerBody>
+        <div className="flex flex-col gap-5">
+          <Field label="预设">
+            <PresetSelect value={draft.presetId || ''} onChange={onChooseProvider} />
+          </Field>
 
-                <Field label="Base URL">
-                  <Input
-                    value={draft.chat_base_url}
-                    onChange={(e) =>
-                      setDraft((d) => ({ ...d, chat_base_url: e.target.value }))
-                    }
-                    placeholder="https://api.openai.com/v1"
-                    spellCheck={false}
-                  />
-                </Field>
+          <Field label="Base URL">
+            <Input
+              value={draft.chat_base_url}
+              onChange={(e) =>
+                setDraft((d) => ({ ...d, chat_base_url: e.target.value }))
+              }
+              placeholder="https://api.openai.com/v1"
+              spellCheck={false}
+            />
+          </Field>
 
-                <Field label="API Key">
-                  <div className="relative">
-                    <Input
-                      type={revealKey ? 'text' : 'password'}
-                      value={draft.chat_api_key}
-                      onChange={(e) =>
-                        setDraft((d) => ({ ...d, chat_api_key: e.target.value }))
-                      }
-                      placeholder="sk-…"
-                      autoComplete="off"
-                      spellCheck={false}
-                      className="pr-8"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setRevealKey((v) => !v)}
-                      className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-(--radius-control) p-1 text-(--color-text-faint) hover:bg-(--color-surface-2) hover:text-(--color-text-muted)"
-                      aria-label={revealKey ? '隐藏' : '显示'}
-                    >
-                      {revealKey ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
-                    </button>
-                  </div>
-                </Field>
+          <Field label="API Key">
+            <div className="relative">
+              <Input
+                type={revealKey ? 'text' : 'password'}
+                value={draft.chat_api_key}
+                onChange={(e) =>
+                  setDraft((d) => ({ ...d, chat_api_key: e.target.value }))
+                }
+                placeholder="sk-…"
+                autoComplete="off"
+                spellCheck={false}
+                className="pr-8"
+              />
+              <button
+                type="button"
+                onClick={() => setRevealKey((v) => !v)}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-(--radius-control) p-1 text-(--color-text-faint) hover:bg-(--color-surface-2) hover:text-(--color-text-muted)"
+                aria-label={revealKey ? '隐藏' : '显示'}
+              >
+                {revealKey ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+              </button>
+            </div>
+          </Field>
 
-                <Field
-                  label="模型"
-                  hint={
-                    hasCachedModels
-                      ? `共 ${cached!.items.length} 个 · 上次拉取 ${formatAge(cached!.fetchedAt)}`
-                      : '点右侧"拉取模型"获取列表'
-                  }
-                >
-                  <div className="flex items-center gap-2">
-                    <ModelSelect
-                      value={draft.chat_model}
-                      onChange={(v) => setDraft((d) => ({ ...d, chat_model: v }))}
-                      models={cached?.items.map((m) => m.id) || []}
-                    />
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={onFetchModels}
-                      disabled={listModels.isPending}
-                    >
-                      {listModels.isPending ? (
-                        <Loader2 className="size-3.5 animate-spin" />
-                      ) : (
-                        <Download className="size-3.5" />
-                      )}
-                      拉取模型
-                    </Button>
-                  </div>
-                </Field>
-
-                <div className="rounded-(--radius-control) border border-(--color-border-soft) bg-(--color-surface) px-3 py-2.5">
-                  <div className="flex items-center gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={onTest}
-                      disabled={probe.isPending}
-                    >
-                      {probe.isPending ? (
-                        <Loader2 className="size-3.5 animate-spin" />
-                      ) : (
-                        <Plug className="size-3.5" />
-                      )}
-                      测试连通
-                    </Button>
-                    {probeState.status === 'ok' && (
-                      <span className="inline-flex items-center gap-1 text-[12px] text-(--color-success)">
-                        <CheckCircle2 className="size-3.5" />
-                        {probeState.message}
-                      </span>
-                    )}
-                    {probeState.status === 'fail' && (
-                      <span className="inline-flex min-w-0 items-center gap-1 text-[12px] text-(--color-danger)">
-                        <XCircle className="size-3.5 shrink-0" />
-                        <span className="truncate">{probeState.message}</span>
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </DrawerBody>
-            <DrawerFooter>
-              <Button variant="ghost" onClick={onClear}>
-                清空（走全局）
+          <Field label="模型" hint={modelHint}>
+            <div className="flex items-center gap-2">
+              <ModelSelect
+                value={draft.chat_model}
+                onChange={(v) => setDraft((d) => ({ ...d, chat_model: v }))}
+                models={cached?.items.map((m) => m.id) || []}
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onFetchModels}
+                disabled={listModels.isPending}
+              >
+                {listModels.isPending ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Download className="size-3.5" />
+                )}
+                拉取模型
               </Button>
-              <Button variant="ghost" onClick={() => onOpenChange(false)}>
-                取消
+            </div>
+          </Field>
+
+          <div className="rounded-(--radius-control) border border-(--color-border-soft) bg-(--color-surface) px-3 py-2.5">
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={onTest} disabled={probe.isPending}>
+                {probe.isPending ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Plug className="size-3.5" />
+                )}
+                测试连通
               </Button>
-              <Button variant="primary" onClick={onSave}>
-                应用到本会话
-              </Button>
-            </DrawerFooter>
-          </DrawerContent>
-        )}
-      </AnimatePresence>
-    </Drawer>
+              {probeState.status === 'ok' && (
+                <span className="inline-flex items-center gap-1 text-[12px] text-(--color-success)">
+                  <CheckCircle2 className="size-3.5" />
+                  {probeState.message}
+                </span>
+              )}
+              {probeState.status === 'fail' && (
+                <span className="inline-flex min-w-0 items-center gap-1 text-[12px] text-(--color-danger)">
+                  <XCircle className="size-3.5 shrink-0" />
+                  <span className="truncate">{probeState.message}</span>
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      </DrawerBody>
+      <DrawerFooter>
+        <Button variant="ghost" onClick={onClear}>
+          清空（走全局）
+        </Button>
+        <Button variant="ghost" onClick={() => onOpenChange(false)}>
+          取消
+        </Button>
+        <Button variant="primary" onClick={onSave}>
+          应用到本会话
+        </Button>
+      </DrawerFooter>
+    </DrawerContent>
   )
 }
 

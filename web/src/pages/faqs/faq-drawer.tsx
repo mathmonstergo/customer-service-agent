@@ -17,10 +17,11 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import { StatusDot, embedDotTone } from '@/components/ui/status-dot'
+import { StatusDot } from '@/components/ui/status-dot'
+import { embedDotTone } from '@/components/ui/status-dot-utils'
 import { Skeleton } from '@/components/ui/skeleton'
 import { TagInput } from '@/components/shared/tag-input'
-import { toast } from '@/components/ui/toaster'
+import { toast } from '@/components/ui/toast'
 import {
   useEmbedFaq,
   useFaq,
@@ -65,7 +66,7 @@ export function FaqDrawer({ faqId, onClose, onCreated }: Props) {
       {open && (
         <Drawer key={faqId} open={open} onOpenChange={(o) => !o && onClose()}>
           <DrawerContent width={680}>
-            <DrawerInner faqId={faqId!} onClose={onClose} onCreated={onCreated} />
+            <DrawerInner faqId={faqId} onClose={onClose} onCreated={onCreated} />
           </DrawerContent>
         </Drawer>
       )}
@@ -84,44 +85,46 @@ function DrawerInner({
 }) {
   const isNew = faqId === 'new'
   const { data: faq, isPending } = useFaq(isNew ? null : faqId)
+
+  const baseline = useMemo<FaqDraft>(() => faqToDraft(faq, isNew), [faq, isNew])
+
+  if (isPending && !isNew) return <DrawerInnerSkeleton />
+
+  return (
+    <FaqEditor
+      key={faqId}
+      faqId={faqId}
+      isNew={isNew}
+      faq={faq}
+      baseline={baseline}
+      onClose={onClose}
+      onCreated={onCreated}
+    />
+  )
+}
+
+// FAQ 编辑器在数据就绪后挂载，用 baseline 初始化本地草稿，避免 effect 覆盖编辑中内容。
+function FaqEditor({
+  faqId,
+  isNew,
+  faq,
+  baseline,
+  onClose,
+  onCreated,
+}: {
+  faqId: string
+  isNew: boolean
+  faq?: Faq
+  baseline: FaqDraft
+  onClose: () => void
+  onCreated?: (id: string) => void
+}) {
   const save = useSaveFaq()
   const embed = useEmbedFaq()
   const optimize = useOptimizeFaq()
   const { setFaqDirty } = useUi()
 
-  const [draft, setDraft] = useState<FaqDraft>(EMPTY_DRAFT)
-
-  useEffect(() => {
-    if (isNew) {
-      setDraft(EMPTY_DRAFT)
-      return
-    }
-    if (faq) {
-      setDraft({
-        question: faq.question || '',
-        answer: faq.answer || '',
-        question_variants: faq.question_variants || [],
-        tags: faq.tags || [],
-        category: faq.category || '',
-        status: faq.status || 'usable',
-        confidence: faq.confidence || 'medium',
-      })
-    }
-  }, [faq, isNew])
-
-  const baseline = useMemo<FaqDraft>(() => {
-    if (isNew) return EMPTY_DRAFT
-    if (!faq) return EMPTY_DRAFT
-    return {
-      question: faq.question || '',
-      answer: faq.answer || '',
-      question_variants: faq.question_variants || [],
-      tags: faq.tags || [],
-      category: faq.category || '',
-      status: faq.status || 'usable',
-      confidence: faq.confidence || 'medium',
-    }
-  }, [faq, isNew])
+  const [draft, setDraft] = useState<FaqDraft>(baseline)
 
   const dirty = useMemo(() => JSON.stringify(draft) !== JSON.stringify(baseline), [draft, baseline])
 
@@ -191,8 +194,6 @@ function DrawerInner({
       toast.error((e as Error).message)
     }
   }
-
-  if (isPending && !isNew) return <DrawerInnerSkeleton />
 
   return (
     <>
@@ -335,6 +336,20 @@ function DrawerInner({
       </div>
     </>
   )
+}
+
+// 把服务端 FAQ 记录规整成编辑草稿；新建态和数据缺失时使用空草稿。
+function faqToDraft(faq: Faq | undefined, isNew: boolean): FaqDraft {
+  if (isNew || !faq) return EMPTY_DRAFT
+  return {
+    question: faq.question || '',
+    answer: faq.answer || '',
+    question_variants: faq.question_variants || [],
+    tags: faq.tags || [],
+    category: faq.category || '',
+    status: faq.status || 'usable',
+    confidence: faq.confidence || 'medium',
+  }
 }
 
 function Field({
