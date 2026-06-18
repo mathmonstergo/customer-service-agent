@@ -63,7 +63,10 @@
 
 ### Main Changes
 
-(Add details)
+- Fixed `.trellis/scripts/common/*` ruff failures while preserving the shared script re-export API.
+- Split non-component UI exports into sibling utility modules so React Fast Refresh lint passes.
+- Reworked page draft/page-reset state to avoid synchronous `setState` inside effects.
+- Recorded the Fast Refresh export convention in `.trellis/spec/frontend/quality.md`.
 
 ### Git Commits
 
@@ -73,7 +76,12 @@
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `conda run -n customer-service-agent python -m ruff check .`
+- [OK] `npm run lint` in `web/`
+- [OK] `npm run build` in `web/`
+- [OK] `conda run --no-capture-output -n customer-service-agent python -m pytest -q` (242 passed)
+- [OK] `conda run -n customer-service-agent python -m customer_service_agent.cli check-config`
+- [OK] `git diff --check`
 
 ### Status
 
@@ -104,6 +112,40 @@ Implemented file-level document chunker persistence, parse-job override, UI sele
 |------|---------|
 | `8a5b174` | (see git log) |
 | `4992b1a` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 4: Lint and ruff quality gate cleanup
+
+**Date**: 2026-06-18
+**Task**: Lint and ruff quality gate cleanup
+**Branch**: `main`
+
+### Summary
+
+Restored full backend ruff and frontend lint/build quality gates, documented Fast Refresh export convention, and archived the cleanup task.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ca07f01` | (see git log) |
+| `e992a98` | (see git log) |
 
 ### Testing
 
