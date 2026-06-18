@@ -145,7 +145,9 @@ Restored full backend ruff and frontend lint/build quality gates, documented Fas
 
 ### Main Changes
 
-(Add details)
+- Added readable provenance fields to retrieval evaluation candidate payloads.
+- Added one-click expected source/chunk labeling from TopK candidates in the evaluation workbench.
+- Moved raw expected ID inputs into an advanced drawer section and documented the contract in code-spec.
 
 ### Git Commits
 
@@ -156,7 +158,12 @@ Restored full backend ruff and frontend lint/build quality gates, documented Fas
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `conda run -n customer-service-agent python -m ruff check .`
+- [OK] `conda run --no-capture-output -n customer-service-agent python -m pytest -q`
+- [OK] `conda run -n customer-service-agent python -m customer_service_agent.cli check-config`
+- [OK] `npm run lint` in `web/`
+- [OK] `npm run build` in `web/`
+- [OK] `git diff --check`
 
 ### Status
 
@@ -179,7 +186,10 @@ Restored full backend ruff and frontend lint/build quality gates, documented Fas
 
 ### Main Changes
 
-(Add details)
+- Added `EvaluationBatchPanel` with progress, aggregate metrics, and diagnostic cards.
+- Added `batch-diagnostics.ts` with pure summary/diagnosis rules and Node test coverage.
+- Reused the existing single-case run API for sequential active-case batch runs.
+- Added frontend code-spec for the batch regression MVP contract.
 
 ### Git Commits
 
@@ -190,7 +200,14 @@ Restored full backend ruff and frontend lint/build quality gates, documented Fas
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `conda run -n customer-service-agent python -m ruff check .`
+- [OK] `conda run --no-capture-output -n customer-service-agent python -m pytest -q`
+- [OK] `conda run -n customer-service-agent python -m customer_service_agent.cli check-config`
+- [OK] `npm test` in `web/`
+- [OK] `npm run lint` in `web/`
+- [OK] `npm run build` in `web/`
+- [OK] `git diff --check`
+- [OK] Playwright snapshot verified `/#/evaluation` batch panel rendering
 
 ### Status
 
