@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 2
-- **Last Active**: 2026-06-16
+- **Total Sessions**: 3
+- **Last Active**: 2026-06-18
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~75 | Active |
+| `journal-1.md` | ~109 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 3 | 2026-06-18 | Document file chunker selection | `8a5b174`, `4992b1a` | `main` |
 | 2 | 2026-06-16 | MinerU RAGFlow 多 chunker 后解析 | `3283818` | `main` |
 | 1 | 2026-06-15 | 平台问答页正确性修复 | `cbac7d3`, `3f2f1b6`, `8d7f32f` | `main` |
 <!-- @@@/auto:session-history -->
