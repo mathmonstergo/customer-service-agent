@@ -140,3 +140,106 @@ WHERE COALESCE(fq.status, kc.status) = %(status)s
 ```
 
 Direct recall stays child-first for documents, while parent context remains available through explicit backfill.
+
+## Scenario: Retrieval Evaluation Candidate Labeling Payload
+
+### 1. Scope / Trigger
+
+- Trigger: code modifies `AdminApp.run_retrieval_eval_case()`, `retrieval_eval_item_payload()`, frontend evaluation candidate rendering, or expected hit labeling behavior.
+- Reason: evaluation users must be able to label expected hits from readable candidates. Raw `source_id` / `chunk_id` alone is not enough because document drawer display numbers such as `#1` are UI-relative and do not equal knowledge chunk ids.
+
+### 2. Signatures
+
+- Python function: `retrieval_eval_item_payload(candidate: Any) -> dict[str, Any]`
+- Admin API:
+  - `GET /api/retrieval/eval-cases`
+  - `POST /api/retrieval/eval-cases`
+  - `POST /api/retrieval/eval-cases/{case_id}/run`
+- Frontend types:
+  - `RetrievalEvalItem`
+  - `RetrievalEvalCase.expected_source_ids`
+  - `RetrievalEvalCase.expected_chunk_ids`
+
+### 3. Contracts
+
+- Every retrieved candidate stored in `retrieval_eval_runs.retrieved_items` must keep machine ids:
+  - `id` = knowledge chunk id used for chunk-level expected hit matching.
+  - `source_id` = FAQ id or import file id used for source-level expected hit matching.
+  - `source_type` = `faq`, `document`, or other known source class.
+- Candidate payloads should also expose readable/provenance fields when available:
+  - `source_title`
+  - `source_chunk_id`
+  - `parent_chunk_id`
+  - `chunk_level`
+  - `section_path`
+  - `page_start`
+  - `page_end`
+  - `block_type`
+  - `content`
+  - `metadata`
+- Frontend labeling should prefer "run first, label from candidate" over manual id entry.
+- One-click labeling should use one evaluation granularity at a time:
+  - Source labeling writes `expected_source_ids` and clears `expected_chunk_ids`.
+  - Chunk labeling writes `expected_chunk_ids` and clears `expected_source_ids`.
+- Manual id entry may remain as an advanced path, but it must not be the primary workflow.
+
+### 4. Validation & Error Matrix
+
+- Candidate missing readable fields -> UI falls back to ids, but backend must still include ids.
+- Candidate missing `source_id` -> source-level label action must not add an empty id.
+- Candidate missing `id` -> chunk-level label action must not add an empty id.
+- Existing source-level expectation + user labels chunk -> source expectations are cleared to avoid hidden priority confusion.
+- Existing chunk-level expectation + user labels source -> chunk expectations are cleared for the same reason.
+
+### 5. Good/Base/Bad Cases
+
+- Good: user runs an eval case, sees document title, page range, section path, excerpt, and clicks "expected chunk"; the case stores the knowledge chunk id.
+- Good: user wants broad document/FAQ acceptance, clicks "expected source"; the case stores the FAQ/import file id.
+- Base: older run rows without readable fields still render ids and scores.
+- Bad: UI asks the user to type `kc_doc_child_...` without showing how to find it.
+- Bad: UI displays document drawer `#3` as if it were the chunk id used by evaluation metrics.
+- Bad: source and chunk expectations are both set by one-click UI while metrics silently use only chunk ids.
+
+### 6. Tests Required
+
+- Unit test for `retrieval_eval_item_payload()` asserting readable fields are emitted.
+- Admin run test should continue to assert metrics are recorded and candidate ids are present.
+- Frontend lint/build must cover changed `RetrievalEvalItem` type and candidate labeling UI.
+- Manual UI verification should cover:
+  - run eval case;
+  - mark a candidate as expected source;
+  - mark a candidate as expected chunk;
+  - confirm labels update without hand-copying ids.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```json
+{
+  "id": "kc_doc_child_1",
+  "source_id": "imp_1",
+  "source_type": "document"
+}
+```
+
+This is technically enough for metrics but not enough for a human to know which document block is being labeled.
+
+#### Correct
+
+```json
+{
+  "id": "kc_doc_child_1",
+  "source_id": "imp_1",
+  "source_type": "document",
+  "source_title": "售后手册.pdf",
+  "source_chunk_id": "chunk_1",
+  "chunk_level": "child",
+  "section_path": ["售后", "报告导出"],
+  "page_start": 3,
+  "page_end": 4,
+  "content": "报告导出失败时，先检查账号权限和网络状态。"
+}
+```
+
+The UI can now let users label the expected source/chunk from a readable candidate row instead of asking them to discover internal ids.
