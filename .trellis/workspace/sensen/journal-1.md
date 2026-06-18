@@ -199,3 +199,37 @@ Restored full backend ruff and frontend lint/build quality gates, documented Fas
 ### Next Steps
 
 - None - task complete
+
+
+## Session 6: 评测批量回归诊断 MVP
+
+**Date**: 2026-06-18
+**Task**: 评测批量回归诊断 MVP
+**Branch**: `main`
+
+### Summary
+
+完成评测工作台批量回归 MVP：前端顺序运行 active 用例、实时进度、汇总指标、失败诊断卡、纯函数测试和前端 code-spec。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `7689b92` | (see git log) |
+| `41b5e2b` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
