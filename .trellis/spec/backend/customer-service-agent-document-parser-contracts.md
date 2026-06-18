@@ -240,3 +240,81 @@ chunks = build_import_chunks_from_blocks(
 ```
 
 The route is explicit, validated, and persisted in chunk metadata for non-naive chunkers.
+
+## Scenario: Document File-Level Chunker Selection
+
+### 1. Scope / Trigger
+
+- Trigger: code modifies `import_files.chunker_type`, document parse job payloads, document management UI chunker selection, or `AdminApp._finish_mineru_parse_job()`.
+- Reason: global `DOCUMENT_CHUNKER_TYPE` is only a default. Mixed imports need each file to preserve the selected RAGFlow-derived post-parser route so parsing is auditable and repeatable.
+
+### 2. Signatures
+
+- Database field: `import_files.chunker_type TEXT NOT NULL DEFAULT 'naive'`
+- Python method:
+  - `AdminApp.create_import_file(filename, content, *, auto_parse=True, chunker_type=None)`
+  - `AdminApp.start_import_parse_job(file_id, payload)`
+  - `AdminApp.reparse_import_file(file_id, payload)`
+  - `AdminApp._build_document_import_chunks(file_id, blocks, *, chunker_type=None)`
+- HTTP payload:
+  - `POST /api/import/files/<id>/parse-jobs`
+  - optional JSON field: `chunker_type`
+- Frontend type:
+  - `ImportFile.chunker_type: string`
+
+### 3. Contracts
+
+- New import file rows must persist a `chunker_type`; omitted values use `settings.document_chunker_type`, then `naive`.
+- Parse job payload may override the file's `chunker_type`; the backend must validate and persist it before MinerU job progress is saved.
+- MinerU finish/reparse paths must pass the file record's `chunker_type` into `build_import_chunks_from_blocks()`.
+- The global `DOCUMENT_CHUNKER_TYPE` remains only the default/fallback, not the final source of truth for existing file records.
+- Document management UI must display the current file chunker and submit the selected value when starting parse.
+- Markdown chat imports do not use document chunkers; their message chunking remains `parse_mode` / `chunk_days` based.
+
+### 4. Validation & Error Matrix
+
+- Missing `chunker_type` in payload -> keep the file's stored value; if absent on legacy rows, fallback to settings/default.
+- `chunker_type` in `{naive, manual, qa, table}` -> persist on `import_files` and use for MinerU chunk building.
+- Unknown values such as `auto`, `lightweight`, or `ragflow` -> raise `AdminValidationError("chunker_type must be one of...")`.
+- Existing DB without the column -> `sql/001_init.sql` must add `chunker_type TEXT NOT NULL DEFAULT 'naive'`.
+- File status polling completion -> must not silently switch back to global settings.
+
+### 5. Good/Base/Bad Cases
+
+- Good: PDF manual row has `chunker_type='manual'`; MinerU completion builds manual chunks even when global setting is `naive`.
+- Good: FAQ-like source row has `chunker_type='qa'`; parse job payload persists `qa` before background polling.
+- Base: old row lacks explicit application-provided value; migration/default makes it `naive`.
+- Bad: UI only sends parser name and backend always reads `settings.document_chunker_type`.
+- Bad: chunker choice is stored only in `import_chunks.source_offsets` after parsing, leaving the file list/audit trail unable to show which route will be used on reparse.
+
+### 6. Tests Required
+
+- `tests/test_db.py` must assert `sql/001_init.sql` adds `import_files.chunker_type`.
+- `tests/test_admin_server.py` must assert:
+  - file creation writes the default chunker;
+  - parse job payload persists `chunker_type`;
+  - unknown chunker payloads are rejected;
+  - MinerU finish uses the file-level chunker instead of global settings.
+- Frontend changes must pass TypeScript build and at least lint the modified files.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+chunk_rows = self._build_document_import_chunks(record["id"], blocks)
+```
+
+This lets the builder fall back to global settings, so a file-level user choice is ignored when the long MinerU task finishes.
+
+#### Correct
+
+```python
+chunk_rows = self._build_document_import_chunks(
+    record["id"],
+    blocks,
+    chunker_type=self._document_chunker_type_from_record(record),
+)
+```
+
+The route is persisted on the import file and then explicitly passed into the RAGFlow-derived post-processing layer.
