@@ -104,7 +104,9 @@ Implemented file-level document chunker persistence, parse-job override, UI sele
 
 ### Main Changes
 
-(Add details)
+- Added readable provenance fields to retrieval evaluation candidate payloads.
+- Added one-click expected source/chunk labeling from TopK candidates in the evaluation workbench.
+- Moved raw expected ID inputs into an advanced drawer section and documented the contract in code-spec.
 
 ### Git Commits
 
@@ -115,7 +117,12 @@ Implemented file-level document chunker persistence, parse-job override, UI sele
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `conda run -n customer-service-agent python -m ruff check .`
+- [OK] `conda run --no-capture-output -n customer-service-agent python -m pytest -q`
+- [OK] `conda run -n customer-service-agent python -m customer_service_agent.cli check-config`
+- [OK] `npm run lint` in `web/`
+- [OK] `npm run build` in `web/`
+- [OK] `git diff --check`
 
 ### Status
 
@@ -146,6 +153,40 @@ Restored full backend ruff and frontend lint/build quality gates, documented Fas
 |------|---------|
 | `ca07f01` | (see git log) |
 | `e992a98` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 5: 评测候选标注逻辑优化
+
+**Date**: 2026-06-18
+**Task**: 评测候选标注逻辑优化
+**Branch**: `main`
+
+### Summary
+
+完成评测工作台从候选结果一键标注期望来源/切片，补充候选可读来源字段、前端展示和代码规格记录。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ccd9615` | (see git log) |
+| `04e3543` | (see git log) |
 
 ### Testing
 
