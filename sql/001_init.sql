@@ -146,6 +146,7 @@ CREATE TABLE IF NOT EXISTS import_files (
     stored_path TEXT NOT NULL,
     file_type TEXT NOT NULL,
     parser TEXT NOT NULL,
+    chunker_type TEXT NOT NULL DEFAULT 'naive',
     status TEXT NOT NULL,
     message_count INTEGER NOT NULL DEFAULT 0,
     chunk_count INTEGER NOT NULL DEFAULT 0,
@@ -162,6 +163,7 @@ ALTER TABLE import_files
     ADD COLUMN IF NOT EXISTS parse_batch_id TEXT,
     ADD COLUMN IF NOT EXISTS parse_file_name TEXT,
     ADD COLUMN IF NOT EXISTS parse_progress JSONB NOT NULL DEFAULT '{}'::jsonb,
+    ADD COLUMN IF NOT EXISTS chunker_type TEXT NOT NULL DEFAULT 'naive',
     ADD COLUMN IF NOT EXISTS is_disabled BOOLEAN NOT NULL DEFAULT false;
 
 CREATE TABLE IF NOT EXISTS import_chunks (

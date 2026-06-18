@@ -6,6 +6,7 @@ export interface ImportFile {
   original_name: string
   file_type: string
   parser: string
+  chunker_type: string
   status:
     | 'pending'
     | 'processing'

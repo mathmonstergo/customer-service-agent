@@ -37,6 +37,11 @@ import { toast } from '@/components/ui/toaster'
 import { embeddingStatusLabel, parseStateLabel, tr } from '@/lib/labels'
 import { dur, ease } from '@/lib/motion'
 import { ChunkBrowser } from './chunk-browser'
+import {
+  DOCUMENT_CHUNKER_OPTIONS,
+  documentChunkerLabel,
+  normalizeDocumentChunkerType,
+} from './chunker-options'
 
 interface Props {
   fileId: string | null
@@ -67,6 +72,7 @@ function DrawerInner({ fileId, onClose }: { fileId: string; onClose: () => void 
   })
   const status = statusQ.data
   const file = status?.file
+  const chunkerSelectRef = useRef<HTMLSelectElement | null>(null)
 
   const isParsing = file?.status === 'processing'
   const chunksQ = useImportFileChunks(fileId, {
@@ -110,7 +116,10 @@ function DrawerInner({ fileId, onClose }: { fileId: string; onClose: () => void 
 
   const onParse = async () => {
     try {
-      const r = await parseJob.mutateAsync({ id: fileId })
+      const selectedChunker = normalizeDocumentChunkerType(
+        chunkerSelectRef.current?.value ?? file?.chunker_type,
+      )
+      const r = await parseJob.mutateAsync({ id: fileId, chunker_type: selectedChunker })
       fireMessages(r.messages?.length ? r.messages : ['已开始解析'])
     } catch (e) {
       toast.error((e as Error).message)
@@ -156,6 +165,7 @@ function DrawerInner({ fileId, onClose }: { fileId: string; onClose: () => void 
           <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[12px] text-(--color-text-muted)">
             <Badge tone="muted">{file.file_type}</Badge>
             <Badge tone="muted">{file.parser}</Badge>
+            <Badge tone="primary">{documentChunkerLabel(file.chunker_type)}</Badge>
             <StatusDot
               tone={fileEmbedDotTone(file.embedding_summary, file.is_disabled)}
               label={file.is_disabled ? '已禁用' : tr(embeddingStatusLabel, file.embedding_summary?.status, '未索引')}
@@ -166,6 +176,22 @@ function DrawerInner({ fileId, onClose }: { fileId: string; onClose: () => void 
 
       {/* 操作按钮组 */}
       <div className="flex shrink-0 flex-wrap gap-2 border-b border-(--color-border) px-6 py-3">
+        <label className="flex h-8 items-center gap-2 rounded-(--radius-control) border border-(--color-border) bg-(--color-surface-2) px-2.5 text-[12px] text-(--color-text-muted)">
+          <span>Chunker</span>
+          <select
+            key={`${file.id}-${file.chunker_type}`}
+            ref={chunkerSelectRef}
+            defaultValue={normalizeDocumentChunkerType(file.chunker_type)}
+            disabled={pending.parse || isParsing}
+            className="h-6 rounded-(--radius-control) border border-(--color-border) bg-(--color-surface-1) px-2 text-[12px] text-(--color-text) focus:border-(--color-primary)/60 focus:outline-none disabled:opacity-60"
+          >
+            {DOCUMENT_CHUNKER_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
         <Button onClick={onParse} disabled={pending.parse || isParsing}>
           {isParsing || pending.parse ? (
             <Loader2 className="size-3.5 animate-spin" />

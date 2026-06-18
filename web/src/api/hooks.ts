@@ -149,10 +149,10 @@ export function useStartImportParseJob() {
   const qc = useQueryClient()
   return useMutation({
     mutationKey: ['start-parse-job'],
-    mutationFn: ({ id, parser }: { id: string; parser?: string }) =>
+    mutationFn: ({ id, chunker_type, parser }: { id: string; chunker_type?: string; parser?: string }) =>
       requestJson<MessagesResponse>(
         `/api/import/files/${encodeURIComponent(id)}/parse-jobs`,
-        { method: 'POST', body: parser ? { parser } : {} },
+        { method: 'POST', body: { ...(parser ? { parser } : {}), ...(chunker_type ? { chunker_type } : {}) } },
       ),
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: ['import-files'] })

@@ -22,16 +22,18 @@ class ImportMixin:
         """创建导入文件记录，保存原件路径和格式识别结果。"""
         sql = """
         INSERT INTO import_files (
-            id, original_name, stored_path, file_type, parser, status,
+            id, original_name, stored_path, file_type, parser, chunker_type, status,
             message_count, chunk_count, candidate_count, error
         )
         VALUES (
             %(id)s, %(original_name)s, %(stored_path)s, %(file_type)s, %(parser)s,
+            %(chunker_type)s,
             %(status)s, %(message_count)s, %(chunk_count)s, %(candidate_count)s, %(error)s
         )
         RETURNING *
         """
         payload = {
+            "chunker_type": "naive",
             "message_count": 0,
             "chunk_count": 0,
             "candidate_count": 0,
@@ -52,6 +54,7 @@ class ImportMixin:
             "parse_batch_id",
             "parse_file_name",
             "parse_progress",
+            "chunker_type",
         }
         updates = {key: value for key, value in fields.items() if key in allowed}
         if not updates:

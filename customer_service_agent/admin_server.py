@@ -21,7 +21,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from customer_service_agent.ai_assist import AiAssistant, AiSuggestionError
 from customer_service_agent.chunking import normalize_children_delimiter, split_with_pattern
-from customer_service_agent.config import Settings
+from customer_service_agent.config import DOCUMENT_CHUNKER_TYPES, Settings
 from customer_service_agent.db import (
     Database,
     build_document_knowledge_chunk_row,
@@ -78,6 +78,17 @@ REMOTE_ADMIN_ENV = "ALLOW_REMOTE_ADMIN"
 
 VALID_FAQ_STATUSES = {"usable", "needs_review", "disabled"}
 VALID_IMPORT_PARSE_MODES = {"by_days", "by_gap"}
+
+
+def normalize_document_chunker_type(value: Any, *, default: str = "naive") -> str:
+    """规范化文档 chunker 名称；关键约束是未知路线必须显式报错，不能静默降级。"""
+    selected = str(value if value is not None else default).strip().lower()
+    if not selected:
+        selected = str(default or "naive").strip().lower() or "naive"
+    if selected not in DOCUMENT_CHUNKER_TYPES:
+        allowed = ", ".join(sorted(DOCUMENT_CHUNKER_TYPES))
+        raise AdminValidationError(f"chunker_type must be one of: {allowed}")
+    return selected
 RETRIEVAL_EVAL_STRATEGY = "retrieval_hybrid_v1"
 DOCUMENT_CHILD_INDEX_OFFSET = 1
 
@@ -1175,8 +1186,15 @@ class AdminApp:
             offset=max(int(params.get("offset", ["0"])[0]), 0),
         )
 
-    def create_import_file(self, filename: str, content: bytes, *, auto_parse: bool = True) -> dict[str, Any]:
-        """保存上传原件；文档管理可选择先只入库，后续由用户手动解析。"""
+    def create_import_file(
+        self,
+        filename: str,
+        content: bytes,
+        *,
+        auto_parse: bool = True,
+        chunker_type: str | None = None,
+    ) -> dict[str, Any]:
+        """保存上传原件；文档类文件记录默认 chunker，后续解析任务可按文件覆盖。"""
         if not content:
             raise AdminValidationError("uploaded file is empty")
         file_type, parser = detect_file_type(filename)
@@ -1189,6 +1207,10 @@ class AdminApp:
         stored_path.write_bytes(content)
 
         status = "pending" if parser != "unsupported" else "unsupported"
+        selected_chunker = normalize_document_chunker_type(
+            chunker_type,
+            default=getattr(self.settings, "document_chunker_type", "naive"),
+        )
         record = self.database().create_import_file(
             {
                 "id": file_id,
@@ -1196,6 +1218,7 @@ class AdminApp:
                 "stored_path": str(stored_path),
                 "file_type": file_type,
                 "parser": parser,
+                "chunker_type": selected_chunker,
                 "status": status,
             }
         )
@@ -1253,7 +1276,11 @@ class AdminApp:
         """调用 MinerU 解析上传文件，并生成导入审核切块。"""
         try:
             blocks = self._mineru_client(record["id"]).parse_file(stored_path)
-            chunk_rows = self._build_document_import_chunks(record["id"], blocks)
+            chunk_rows = self._build_document_import_chunks(
+                record["id"],
+                blocks,
+                chunker_type=self._document_chunker_type_from_record(record),
+            )
         except MineruParseError as exc:
             self.database().update_import_file_summary(
                 record["id"],
@@ -1300,17 +1327,20 @@ class AdminApp:
         stored_path = Path(record["stored_path"])
         if not stored_path.exists():
             raise AdminValidationError("stored upload file is missing")
+        chunker_update = self._document_chunker_update_from_payload(record, payload)
 
         status = self._mineru_client(record["id"]).start_file(stored_path)
         progress = self._mineru_progress_payload(status)
-        summary = self.database().update_import_file_summary(
-            file_id,
-            status="processing",
-            parse_batch_id=status.batch_id,
-            parse_file_name=status.file_name,
-            parse_progress=progress,
-            error=None,
-        )
+        summary_fields = {
+            "status": "processing",
+            "parse_batch_id": status.batch_id,
+            "parse_file_name": status.file_name,
+            "parse_progress": progress,
+            "error": None,
+        }
+        if chunker_update is not None:
+            summary_fields["chunker_type"] = chunker_update
+        summary = self.database().update_import_file_summary(file_id, **summary_fields)
         return self._import_parse_status_payload({**record, **summary}, state=status.state, progress=progress)
 
     def get_import_parse_status(self, file_id: str) -> dict[str, Any]:
@@ -1356,7 +1386,11 @@ class AdminApp:
                 source_file=record.get("original_name") or status.file_name,
                 use_kb_packager=getattr(self.settings, "mineru_use_kb_packager", True),
             )
-            chunk_rows = self._build_document_import_chunks(record["id"], blocks)
+            chunk_rows = self._build_document_import_chunks(
+                record["id"],
+                blocks,
+                chunker_type=self._document_chunker_type_from_record(record),
+            )
         except MineruParseError as exc:
             summary = self.database().update_import_file_summary(
                 record["id"],
@@ -1378,18 +1412,48 @@ class AdminApp:
         )
         return self._import_parse_status_payload({**record, **summary}, state=status.state, progress=progress)
 
-    def _build_document_import_chunks(self, file_id: str, blocks: list[Any]) -> list[dict[str, Any]]:
-        """按 RAGFlow naive chunk 配置生成文档导入审核切片。"""
+    def _build_document_import_chunks(
+        self,
+        file_id: str,
+        blocks: list[Any],
+        *,
+        chunker_type: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """按显式 RAGFlow 风格 chunker 配置生成文档导入审核切片。"""
+        selected_chunker = normalize_document_chunker_type(
+            chunker_type,
+            default=getattr(self.settings, "document_chunker_type", "naive"),
+        )
         return build_import_chunks_from_blocks(
             file_id,
             blocks,
             chunk_token_num=getattr(self.settings, "document_chunk_token_num", 512),
-            chunker_type=getattr(self.settings, "document_chunker_type", "naive"),
+            chunker_type=selected_chunker,
             delimiter=getattr(self.settings, "document_chunk_delimiter", "\n。；！？"),
             overlapped_percent=getattr(self.settings, "document_chunk_overlap_percent", 0),
             children_delimiter=getattr(self.settings, "document_children_delimiter", ""),
             table_context_size=getattr(self.settings, "document_table_context_size", 0),
             image_context_size=getattr(self.settings, "document_image_context_size", 0),
+        )
+
+    def _document_chunker_type_from_record(self, record: dict[str, Any]) -> str:
+        """从文件记录读取 chunker；旧数据缺字段时回退到当前全局配置。"""
+        return normalize_document_chunker_type(
+            record.get("chunker_type"),
+            default=getattr(self.settings, "document_chunker_type", "naive"),
+        )
+
+    def _document_chunker_update_from_payload(
+        self,
+        record: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> str | None:
+        """解析任务 payload 可覆盖文件 chunker；未提供时不写库，避免无意义更新时间。"""
+        if "chunker_type" not in payload:
+            return None
+        return normalize_document_chunker_type(
+            payload.get("chunker_type"),
+            default=self._document_chunker_type_from_record(record),
         )
 
     def _mineru_progress_payload(self, status: Any) -> dict[str, Any]:
@@ -1439,6 +1503,13 @@ class AdminApp:
         if not stored_path.exists():
             raise AdminValidationError("stored upload file is missing")
         if record.get("parser") == "mineru":
+            chunker_update = self._document_chunker_update_from_payload(record, payload)
+            if chunker_update is not None:
+                summary = self.database().update_import_file_summary(
+                    file_id,
+                    chunker_type=chunker_update,
+                )
+                record = {**record, **summary}
             return self._parse_mineru_import(record, stored_path)
         options = normalize_import_parse_options(payload)
         return self._parse_markdown_import(

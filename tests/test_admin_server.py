@@ -440,6 +440,7 @@ def test_admin_app_create_import_file_can_store_without_parsing(tmp_path):
                 "stored_path": str(tmp_path / f"{result['id']}_manual.pdf"),
                 "file_type": "pdf",
                 "parser": "mineru",
+                "chunker_type": "naive",
                 "status": "pending",
             },
         )
@@ -663,6 +664,97 @@ def test_admin_app_starts_mineru_parse_job_without_blocking_for_result(tmp_path,
     ]
 
 
+def test_admin_app_start_mineru_parse_job_persists_payload_chunker_type(tmp_path, monkeypatch):
+    """解析任务 payload 指定 chunker_type 时，应先保存到文件记录并用于后续轮询完成阶段。"""
+    source = tmp_path / "manual.pdf"
+    source.write_bytes(b"%PDF")
+    calls = []
+
+    class FakeDatabase:
+        def get_import_file(self, file_id):
+            assert file_id == "imp_1"
+            return {
+                "id": "imp_1",
+                "original_name": "manual.pdf",
+                "stored_path": str(source),
+                "file_type": "pdf",
+                "parser": "mineru",
+                "status": "pending",
+                "chunker_type": "naive",
+            }
+
+        def update_import_file_summary(self, file_id, **fields):
+            calls.append(("summary", file_id, fields))
+            return {
+                "id": file_id,
+                "original_name": "manual.pdf",
+                "stored_path": str(source),
+                "file_type": "pdf",
+                "parser": "mineru",
+                "chunker_type": fields.get("chunker_type", "naive"),
+                **fields,
+            }
+
+    class FakeMineruClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start_file(self, path):
+            assert path == source
+            return SimpleNamespace(
+                batch_id="batch_1",
+                file_name="manual.pdf",
+                state="waiting-file",
+                progress={},
+                error=None,
+                result={},
+                zip_url=None,
+            )
+
+    monkeypatch.setattr("customer_service_agent.admin_server.MineruClient", FakeMineruClient)
+
+    app = AdminApp(
+        SimpleNamespace(
+            database_url="postgresql://unused",
+            upload_dir=tmp_path,
+            mineru_api_token="mineru-token",
+            mineru_parse_timeout_seconds=30,
+            mineru_use_kb_packager=True,
+        ),
+        db=FakeDatabase(),
+    )
+
+    result = app.start_import_parse_job("imp_1", {"chunker_type": "table"})
+
+    assert result["file"]["chunker_type"] == "table"
+    assert calls[0][2]["chunker_type"] == "table"
+
+
+def test_admin_app_start_mineru_parse_job_rejects_unknown_chunker_type(tmp_path):
+    """chunker_type 必须显式受控，避免出现不可审计的 auto/lightweight 路线。"""
+    source = tmp_path / "manual.pdf"
+    source.write_bytes(b"%PDF")
+
+    class FakeDatabase:
+        def get_import_file(self, file_id):
+            return {
+                "id": file_id,
+                "original_name": "manual.pdf",
+                "stored_path": str(source),
+                "file_type": "pdf",
+                "parser": "mineru",
+                "status": "pending",
+            }
+
+    app = AdminApp(
+        SimpleNamespace(database_url="postgresql://unused", upload_dir=tmp_path),
+        db=FakeDatabase(),
+    )
+
+    with pytest.raises(AdminValidationError, match="chunker_type"):
+        app.start_import_parse_job("imp_1", {"chunker_type": "lightweight"})
+
+
 def test_admin_app_polling_mineru_parse_status_updates_progress(tmp_path, monkeypatch):
     """解析中状态需要回写页面可读进度，避免用户只能看到阻塞后的结果。"""
     source = tmp_path / "manual.pdf"
@@ -840,6 +932,66 @@ def test_admin_app_polling_mineru_done_downloads_result_and_replaces_chunks(tmp_
     )
     assert asset_dirs
     assert all(asset_dir == tmp_path / "mineru-assets" / "imp_1" for asset_dir in asset_dirs)
+
+
+def test_admin_app_finish_mineru_parse_job_uses_file_chunker_type(tmp_path, monkeypatch):
+    """MinerU 完成后构建切片必须使用文件记录上的 chunker_type，而不是只读全局配置。"""
+    captured = {}
+
+    def fake_build_import_chunks(file_id, blocks, **kwargs):
+        captured.update({"file_id": file_id, "blocks": blocks, **kwargs})
+        return [{"id": "chunk_1", "source_text": "账号登录"}]
+
+    class FakeDatabase:
+        def replace_import_chunks(self, file_id, chunks):
+            return chunks
+
+        def update_import_file_summary(self, file_id, **fields):
+            return {"id": file_id, **fields}
+
+    class FakeMineruClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def download_task_result(self, status):
+            return {
+                "content_list": [
+                    {"type": "title", "text": "账号登录", "page_idx": 0},
+                    {"type": "text", "text": "先检查账号状态。", "page_idx": 0},
+                ]
+            }
+
+    monkeypatch.setattr("customer_service_agent.admin_server.MineruClient", FakeMineruClient)
+    monkeypatch.setattr(
+        "customer_service_agent.admin_server.build_import_chunks_from_blocks",
+        fake_build_import_chunks,
+    )
+
+    app = AdminApp(
+        SimpleNamespace(
+            database_url="postgresql://unused",
+            upload_dir=tmp_path,
+            mineru_api_token="mineru-token",
+            mineru_parse_timeout_seconds=30,
+            mineru_use_kb_packager=True,
+            document_chunker_type="naive",
+        ),
+        db=FakeDatabase(),
+    )
+
+    app._finish_mineru_parse_job(
+        {
+            "id": "imp_1",
+            "original_name": "manual.pdf",
+            "parser": "mineru",
+            "chunker_type": "manual",
+        },
+        SimpleNamespace(file_name="manual.pdf", state="done"),
+        {"state": "done"},
+    )
+
+    assert captured["file_id"] == "imp_1"
+    assert captured["chunker_type"] == "manual"
 
 
 def test_admin_app_delete_import_file_removes_record_and_local_upload(tmp_path):

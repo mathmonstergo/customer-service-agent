@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/cn'
 import { ease, dur } from '@/lib/motion'
 import { embeddingStatusLabel, tr } from '@/lib/labels'
+import { documentChunkerLabel } from './chunker-options'
 
 interface Props {
   items: ImportFile[]
@@ -41,11 +42,11 @@ export function DocumentList({ items, isPending, isError, onRetry, onSelect }: P
       variants={{ animate: { transition: { staggerChildren: 0.025 } } }}
       className="surface overflow-hidden rounded-(--radius-card)"
     >
-      <div className="grid grid-cols-[1fr_120px_140px_120px_80px] gap-2 border-b border-(--color-border) bg-(--color-surface-2) px-4 py-2 text-[11px] uppercase tracking-wider text-(--color-text-faint)">
+      <div className="grid grid-cols-[1fr_120px_140px_160px_80px] gap-2 border-b border-(--color-border) bg-(--color-surface-2) px-4 py-2 text-[11px] uppercase tracking-wider text-(--color-text-faint)">
         <div>名称</div>
         <div>状态</div>
         <div>切片 / Embedding</div>
-        <div>解析器</div>
+        <div>解析 / Chunker</div>
         <div className="text-right">禁用</div>
       </div>
       {items.map((f) => (
@@ -58,7 +59,7 @@ export function DocumentList({ items, isPending, isError, onRetry, onSelect }: P
           type="button"
           onClick={() => onSelect(f.id)}
           className={cn(
-            'grid w-full grid-cols-[1fr_120px_140px_120px_80px] gap-2 border-b border-(--color-border-soft) px-4 py-3 text-left text-[13px] transition-colors',
+            'grid w-full grid-cols-[1fr_120px_140px_160px_80px] gap-2 border-b border-(--color-border-soft) px-4 py-3 text-left text-[13px] transition-colors',
             'hover:bg-(--color-surface-2)',
             f.is_disabled && 'opacity-55',
           )}
@@ -82,8 +83,9 @@ export function DocumentList({ items, isPending, isError, onRetry, onSelect }: P
             </span>
             <EmbeddingMini summary={f.embedding_summary} />
           </div>
-          <div className="text-(--color-text-muted)">
+          <div className="flex flex-wrap items-center gap-1.5 text-(--color-text-muted)">
             <Badge tone="muted">{f.parser}</Badge>
+            <Badge tone="primary">{documentChunkerLabel(f.chunker_type)}</Badge>
           </div>
           <div className="flex items-center justify-end text-[12px] text-(--color-text-faint)">
             {f.is_disabled ? '已禁' : ''}

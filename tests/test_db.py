@@ -280,6 +280,13 @@ def test_import_files_schema_supports_disabled_toggle():
     assert schema.count("is_disabled BOOLEAN NOT NULL DEFAULT false") >= 2
 
 
+def test_import_files_schema_persists_document_chunker_type():
+    """import_files 必须持久化 chunker_type，让文件级后解析路线可追溯。"""
+    schema = Path("sql/001_init.sql").read_text(encoding="utf-8")
+
+    assert "ADD COLUMN IF NOT EXISTS chunker_type TEXT NOT NULL DEFAULT 'naive'" in schema
+
+
 def test_search_knowledge_text_sql_reads_keyword_fields():
     """关键词召回应读取统一知识单元的 search_text、标题和正文。"""
     sql = Database._search_knowledge_text_sql()
