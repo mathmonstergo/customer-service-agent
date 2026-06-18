@@ -26,6 +26,7 @@
 | [directory-structure.md](./directory-structure.md)                             | Project structure conventions                   | Reference     |
 | [css-design.md](./css-design.md)                                               | CSS organization and design tokens              | Reference     |
 | [quality.md](./quality.md)                                                     | Code quality and performance standards          | Reference     |
+| [customer-service-agent-evaluation-workbench.md](./customer-service-agent-evaluation-workbench.md) | Project-specific retrieval evaluation workbench contracts | Modifying evaluation batch runs, diagnostics, or labeling UI |
 
 ---
 
