@@ -12,8 +12,10 @@ import { Input } from '@/components/ui/input'
 import { toast } from '@/components/ui/toast'
 import { cn } from '@/lib/cn'
 import { AliasPanel } from './evaluation/alias-panel'
+import { EvaluationBatchPanel, type EvaluationBatchRunState } from './evaluation/batch-panel'
 import { CaseDrawer } from './evaluation/case-drawer'
 import { EvaluationCaseList } from './evaluation/case-list'
+import { buildEvaluationBatchSummary } from './evaluation/batch-diagnostics'
 import { EvaluationResultPanel } from './evaluation/result-panel'
 import { CASE_STATUS_OPTIONS, formatPercent } from './evaluation/helpers'
 
@@ -27,6 +29,7 @@ export default function EvaluationPage() {
   const [editingCase, setEditingCase] = useState<RetrievalEvalCase | null>(null)
   const [runOverrides, setRunOverrides] = useState<Record<string, RetrievalEvalRun>>({})
   const [caseOverrides, setCaseOverrides] = useState<Record<string, RetrievalEvalCase>>({})
+  const [batchRunState, setBatchRunState] = useState<EvaluationBatchRunState>(EMPTY_BATCH_RUN_STATE)
   const params = useMemo(
     () => ({ status: status || undefined, limit: 100, offset: 0 }),
     [status],
@@ -36,10 +39,12 @@ export default function EvaluationPage() {
   const saveCase = useSaveRetrievalEvalCase()
   const items = useMemo(
     () =>
-      (casesQuery.data?.items || []).map((item) =>
-        caseOverrides[item.id] ? mergeEvalCase(item, caseOverrides[item.id]) : item,
-      ),
-    [casesQuery.data?.items, caseOverrides],
+      (casesQuery.data?.items || []).map((item) => {
+        const mergedCase = caseOverrides[item.id] ? mergeEvalCase(item, caseOverrides[item.id]) : item
+        const runOverride = runOverrides[item.id]
+        return runOverride ? { ...mergedCase, latest_run: runOverride } : mergedCase
+      }),
+    [casesQuery.data?.items, caseOverrides, runOverrides],
   )
 
   const filteredItems = useMemo(() => {
@@ -63,6 +68,15 @@ export default function EvaluationPage() {
   const selectedRun = selectedCase ? runOverrides[selectedCase.id] || null : null
   const effectiveRun = selectedRun || selectedCase?.latest_run || null
   const stats = useMemo(() => computeStats(items), [items])
+  const batchCases = useMemo(
+    () => filteredItems.filter((item) => item.status === 'active'),
+    [filteredItems],
+  )
+  const batchSummary = useMemo(
+    () => buildEvaluationBatchSummary(filteredItems),
+    [filteredItems],
+  )
+  const isBatchRunning = batchRunState.status === 'running'
   const runningSelected = runCase.isPending && runCase.variables === selectedCase?.id
 
   // 打开新建用例抽屉；主页面不固定承载编辑表单。
@@ -85,6 +99,47 @@ export default function EvaluationPage() {
       toast.success('评测运行完成')
     } catch (error) {
       toast.error((error as Error).message || '运行评测失败')
+    }
+  }
+
+  // 顺序运行当前筛选范围内的启用用例；MVP 不创建持久化批次，只刷新 latest run。
+  const handleRunBatch = async () => {
+    if (isBatchRunning || batchCases.length === 0) return
+    let succeeded = 0
+    let failed = 0
+    setBatchRunState({
+      status: 'running',
+      total: batchCases.length,
+      completed: 0,
+      succeeded: 0,
+      failed: 0,
+      currentQuestion: batchCases[0]?.question,
+    })
+    for (const [index, item] of batchCases.entries()) {
+      setBatchRunState((current) => ({ ...current, currentQuestion: item.question }))
+      try {
+        const run = await runCase.mutateAsync(item.id)
+        succeeded += 1
+        setRunOverrides((current) => ({ ...current, [item.id]: run }))
+      } catch (error) {
+        failed += 1
+        toast.error(`${item.question}：${(error as Error).message || '运行失败'}`)
+      } finally {
+        const completed = index + 1
+        setBatchRunState({
+          status: completed === batchCases.length ? 'done' : 'running',
+          total: batchCases.length,
+          completed,
+          succeeded,
+          failed,
+          currentQuestion: batchCases[index + 1]?.question,
+        })
+      }
+    }
+    if (failed > 0) {
+      toast.error(`批量运行完成：成功 ${succeeded}，失败 ${failed}`)
+    } else {
+      toast.success(`批量运行完成：${succeeded} 个用例`)
     }
   }
 
@@ -203,7 +258,7 @@ export default function EvaluationPage() {
             variant="primary"
             size="sm"
             onClick={() => selectedCase && void handleRun(selectedCase.id)}
-            disabled={!selectedCase || runningSelected || selectedCase.status !== 'active'}
+            disabled={!selectedCase || runningSelected || isBatchRunning || selectedCase.status !== 'active'}
             title={selectedCase?.status === 'active' ? '运行单条评测' : '禁用用例不可运行'}
           >
             {runningSelected ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
@@ -212,12 +267,23 @@ export default function EvaluationPage() {
         </header>
 
         <div className="min-h-0 flex-1">
-          <EvaluationResultPanel
-            evalCase={selectedCase}
-            runOverride={selectedRun}
-            onMarkExpected={handleMarkExpected}
-            markingExpected={saveCase.isPending}
-          />
+          <div className="flex h-full min-h-0 flex-col">
+            <EvaluationBatchPanel
+              summary={batchSummary}
+              runState={batchRunState}
+              batchCaseCount={batchCases.length}
+              onRunBatch={() => void handleRunBatch()}
+              onSelectCase={setSelectedId}
+            />
+            <div className="min-h-0 flex-1">
+              <EvaluationResultPanel
+                evalCase={selectedCase}
+                runOverride={selectedRun}
+                onMarkExpected={handleMarkExpected}
+                markingExpected={saveCase.isPending}
+              />
+            </div>
+          </div>
         </div>
       </main>
 
@@ -231,6 +297,14 @@ export default function EvaluationPage() {
       />
     </div>
   )
+}
+
+const EMPTY_BATCH_RUN_STATE: EvaluationBatchRunState = {
+  status: 'idle',
+  total: 0,
+  completed: 0,
+  succeeded: 0,
+  failed: 0,
 }
 
 // 合并服务端保存后的用例快照；保存接口不返回 latest_run 时保留当前运行结果。
