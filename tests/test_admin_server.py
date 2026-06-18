@@ -11,6 +11,7 @@ from customer_service_agent.admin_server import (
     format_sse_event,
     parse_sse_event,
     normalize_faq_payload,
+    retrieval_eval_item_payload,
     settings_payload_to_env,
     settings_to_tenant_settings,
     static_path,
@@ -204,6 +205,46 @@ def test_admin_app_run_retrieval_eval_case_records_hybrid_result():
     assert result["analysis"]["intent"] == "troubleshooting"
     assert calls[0] == ("embed", "报告导出失败怎么办？")
     assert calls[-1][0] == "run"
+
+
+def test_retrieval_eval_item_payload_exposes_readable_source_fields():
+    """评测候选应带可读来源信息，避免用户只能靠内部 id 标注期望命中。"""
+    candidate = SimpleNamespace(
+        channels=["vector", "keyword"],
+        fused_score=0.91,
+        vector_score=0.88,
+        keyword_score=0.42,
+        document=SimpleNamespace(
+            id="kc_doc_child_1",
+            source_id="imp_1",
+            source_type="document",
+            source_chunk_id="chunk_1",
+            parent_chunk_id="kc_doc_parent_1",
+            chunk_level="child",
+            source_title="售后手册.pdf",
+            section_path=["售后", "报告导出"],
+            page_start=3,
+            page_end=4,
+            block_type="text",
+            content="报告导出失败时，先检查账号权限和网络状态。",
+            metadata={"source_excerpt": "检查账号权限"},
+        ),
+    )
+
+    payload = retrieval_eval_item_payload(candidate)
+
+    assert payload["id"] == "kc_doc_child_1"
+    assert payload["source_id"] == "imp_1"
+    assert payload["source_title"] == "售后手册.pdf"
+    assert payload["source_chunk_id"] == "chunk_1"
+    assert payload["parent_chunk_id"] == "kc_doc_parent_1"
+    assert payload["chunk_level"] == "child"
+    assert payload["section_path"] == ["售后", "报告导出"]
+    assert payload["page_start"] == 3
+    assert payload["page_end"] == 4
+    assert payload["block_type"] == "text"
+    assert payload["content"] == "报告导出失败时，先检查账号权限和网络状态。"
+    assert payload["metadata"]["source_excerpt"] == "检查账号权限"
 
 
 def test_admin_app_settings_snapshot_exposes_runtime_config_for_local_modal(tmp_path):

@@ -4,6 +4,7 @@ import type { RetrievalEvalCase, RetrievalEvalRun } from '@/api/schemas'
 import {
   useRetrievalEvalCases,
   useRunRetrievalEvalCase,
+  useSaveRetrievalEvalCase,
 } from '@/api/hooks'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -25,13 +26,21 @@ export default function EvaluationPage() {
   const [aliasOpen, setAliasOpen] = useState(false)
   const [editingCase, setEditingCase] = useState<RetrievalEvalCase | null>(null)
   const [runOverrides, setRunOverrides] = useState<Record<string, RetrievalEvalRun>>({})
+  const [caseOverrides, setCaseOverrides] = useState<Record<string, RetrievalEvalCase>>({})
   const params = useMemo(
     () => ({ status: status || undefined, limit: 100, offset: 0 }),
     [status],
   )
   const casesQuery = useRetrievalEvalCases(params)
   const runCase = useRunRetrievalEvalCase()
-  const items = useMemo(() => casesQuery.data?.items || [], [casesQuery.data?.items])
+  const saveCase = useSaveRetrievalEvalCase()
+  const items = useMemo(
+    () =>
+      (casesQuery.data?.items || []).map((item) =>
+        caseOverrides[item.id] ? mergeEvalCase(item, caseOverrides[item.id]) : item,
+      ),
+    [casesQuery.data?.items, caseOverrides],
+  )
 
   const filteredItems = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -81,7 +90,41 @@ export default function EvaluationPage() {
 
   // 保存后选中新用例；列表刷新由 mutation 的 query invalidation 负责。
   const handleSaved = (item: RetrievalEvalCase) => {
+    setCaseOverrides((current) => ({ ...current, [item.id]: item }))
     setSelectedId(item.id)
+  }
+
+  // 从运行候选直接写入期望命中，避免用户手填内部 source/chunk id。
+  const handleMarkExpected = async (
+    candidate: RetrievalEvalRun['retrieved_items'][number],
+    level: 'source' | 'chunk',
+  ) => {
+    if (!selectedCase) return
+    const nextSourceIds =
+      level === 'source'
+        ? appendUnique(selectedCase.expected_source_ids || [], candidate.source_id)
+        : []
+    const nextChunkIds =
+      level === 'chunk'
+        ? appendUnique(selectedCase.expected_chunk_ids || [], candidate.id)
+        : []
+    try {
+      const saved = await saveCase.mutateAsync({
+        id: selectedCase.id,
+        question: selectedCase.question,
+        intent: selectedCase.intent,
+        expected_source_ids: nextSourceIds,
+        expected_chunk_ids: nextChunkIds,
+        tags: selectedCase.tags,
+        note: selectedCase.note,
+        status: selectedCase.status,
+      })
+      const merged = mergeEvalCase(selectedCase, saved)
+      setCaseOverrides((current) => ({ ...current, [merged.id]: merged }))
+      toast.success(level === 'source' ? '已设为期望来源' : '已设为期望切片')
+    } catch (error) {
+      toast.error((error as Error).message || '保存期望命中失败')
+    }
   }
 
   return (
@@ -172,6 +215,8 @@ export default function EvaluationPage() {
           <EvaluationResultPanel
             evalCase={selectedCase}
             runOverride={selectedRun}
+            onMarkExpected={handleMarkExpected}
+            markingExpected={saveCase.isPending}
           />
         </div>
       </main>
@@ -186,6 +231,22 @@ export default function EvaluationPage() {
       />
     </div>
   )
+}
+
+// 合并服务端保存后的用例快照；保存接口不返回 latest_run 时保留当前运行结果。
+function mergeEvalCase(current: RetrievalEvalCase, saved: RetrievalEvalCase): RetrievalEvalCase {
+  return {
+    ...current,
+    ...saved,
+    latest_run: saved.latest_run ?? current.latest_run,
+  }
+}
+
+// 追加唯一 id；空值不写入，避免候选缺字段时污染评测口径。
+function appendUnique(values: string[], value: string | undefined | null): string[] {
+  const clean = String(value || '').trim()
+  if (!clean || values.includes(clean)) return values
+  return [...values, clean]
 }
 
 // 统计顶部工具栏指标；只读用例快照，不在这里触发数据请求。

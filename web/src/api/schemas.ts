@@ -220,6 +220,16 @@ export interface RetrievalEvalItem {
   id: string
   source_id: string
   source_type: string
+  source_chunk_id?: string | null
+  parent_chunk_id?: string | null
+  chunk_level?: string | null
+  source_title?: string | null
+  section_path?: string[] | null
+  page_start?: number | null
+  page_end?: number | null
+  block_type?: string | null
+  content?: string | null
+  metadata?: Record<string, unknown> | null
   channels: string[]
   fused_score?: number
   vector_score?: number | null

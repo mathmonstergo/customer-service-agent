@@ -491,12 +491,22 @@ def parent_context_documents(database: Any, docs: list[Any]) -> list[Any]:
 
 
 def retrieval_eval_item_payload(candidate: Any) -> dict[str, Any]:
-    """把融合候选转换为评测运行可回放的精简结构。"""
+    """把融合候选转换为评测运行可回放结构，关键约束是带可读来源字段。"""
     doc = candidate.document
     return {
         "id": getattr(doc, "id", ""),
         "source_id": getattr(doc, "source_id", ""),
         "source_type": getattr(doc, "source_type", ""),
+        "source_chunk_id": getattr(doc, "source_chunk_id", None),
+        "parent_chunk_id": getattr(doc, "parent_chunk_id", None),
+        "chunk_level": getattr(doc, "chunk_level", None),
+        "source_title": getattr(doc, "source_title", None),
+        "section_path": getattr(doc, "section_path", None),
+        "page_start": getattr(doc, "page_start", None),
+        "page_end": getattr(doc, "page_end", None),
+        "block_type": getattr(doc, "block_type", None),
+        "content": getattr(doc, "content", None),
+        "metadata": getattr(doc, "metadata", None),
         "channels": list(candidate.channels),
         "fused_score": candidate.fused_score,
         "vector_score": candidate.vector_score,

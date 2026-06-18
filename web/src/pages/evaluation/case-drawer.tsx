@@ -123,7 +123,7 @@ function CaseDrawerForm({
         <div>
           <DrawerTitle>{item ? '编辑评测用例' : '新建评测用例'}</DrawerTitle>
           <p className="mt-1 text-[12px] text-(--color-text-muted)">
-            用例编辑以抽屉呈现，不占用主工作台布局。
+            先填写问题并运行评测，再从候选来源中标注期望命中；内部 ID 输入仅用于高级排查。
           </p>
         </div>
       </DrawerHeader>
@@ -145,20 +145,30 @@ function CaseDrawerForm({
               placeholder="troubleshooting"
             />
           </Field>
-          <Field label="期望 source ids">
-            <Textarea
-              value={form.expectedSourceIds}
-              onChange={(event) => update('expectedSourceIds', event.target.value)}
-              placeholder="DOC_10023&#10;FAQ_2056"
-            />
-          </Field>
-          <Field label="期望 chunk ids（可选）">
-            <Textarea
-              value={form.expectedChunkIds}
-              onChange={(event) => update('expectedChunkIds', event.target.value)}
-              placeholder="CHUNK_045&#10;CHUNK_002"
-            />
-          </Field>
+          <details className="rounded-(--radius-control) border border-(--color-border-soft) bg-(--color-surface-2) px-3 py-2">
+            <summary className="cursor-pointer select-none text-[12px] text-(--color-text-muted) [&::-webkit-details-marker]:hidden">
+              高级：手动填写期望 ID
+            </summary>
+            <div className="mt-3 space-y-3">
+              <Field label="期望 source ids">
+                <Textarea
+                  value={form.expectedSourceIds}
+                  onChange={(event) => update('expectedSourceIds', event.target.value)}
+                  placeholder="faq_2056&#10;imp_10023"
+                />
+              </Field>
+              <Field label="期望 chunk ids（可选）">
+                <Textarea
+                  value={form.expectedChunkIds}
+                  onChange={(event) => update('expectedChunkIds', event.target.value)}
+                  placeholder="kc_faq_2056&#10;kc_doc_child_10023"
+                />
+              </Field>
+              <p className="text-[11px] leading-5 text-(--color-text-faint)">
+                一般不用手填。运行用例后，在右侧候选来源里点击“设为期望来源/切片”会自动写入正确 ID。
+              </p>
+            </div>
+          </details>
           <Field label="标签">
             <Input
               value={form.tags}

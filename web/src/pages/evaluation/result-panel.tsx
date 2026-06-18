@@ -21,9 +21,16 @@ import {
 export function EvaluationResultPanel({
   evalCase,
   runOverride,
+  onMarkExpected,
+  markingExpected,
 }: {
   evalCase: RetrievalEvalCase | null
   runOverride: RetrievalEvalRun | null
+  onMarkExpected?: (
+    item: RetrievalEvalRun['retrieved_items'][number],
+    level: 'source' | 'chunk',
+  ) => void
+  markingExpected?: boolean
 }) {
   if (!evalCase) {
     return (
@@ -56,7 +63,12 @@ export function EvaluationResultPanel({
           keywordCount={analysis?.keyword_count}
         />
         <TraceBlock run={run} />
-        <CandidateTable evalCase={evalCase} items={items} />
+        <CandidateTable
+          evalCase={evalCase}
+          items={items}
+          onMarkExpected={onMarkExpected}
+          markingExpected={markingExpected}
+        />
     </div>
   )
 }
@@ -164,9 +176,16 @@ function TraceField({ label, value }: { label: string; value?: string }) {
 function CandidateTable({
   evalCase,
   items,
+  onMarkExpected,
+  markingExpected,
 }: {
   evalCase: RetrievalEvalCase
   items: RetrievalEvalRun['retrieved_items']
+  onMarkExpected?: (
+    item: RetrievalEvalRun['retrieved_items'][number],
+    level: 'source' | 'chunk',
+  ) => void
+  markingExpected?: boolean
 }) {
   return (
     <section className="mt-4 rounded-(--radius-control) border border-(--color-border) bg-(--color-surface)">
@@ -185,21 +204,26 @@ function CandidateTable({
         </div>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[760px] text-left text-[12px]">
+          <table className="w-full min-w-[980px] text-left text-[12px]">
             <thead className="border-b border-(--color-border-soft) text-[10px] uppercase tracking-wide text-(--color-text-faint)">
               <tr>
                 <th className="w-12 px-3 py-2 font-[500]">rank</th>
                 <th className="w-16 px-3 py-2 font-[500]">命中</th>
-                <th className="w-24 px-3 py-2 font-[500]">source_type</th>
-                <th className="px-3 py-2 font-[500]">source_id</th>
-                <th className="px-3 py-2 font-[500]">chunk_id</th>
+                <th className="w-28 px-3 py-2 font-[500]">类型</th>
+                <th className="px-3 py-2 font-[500]">来源</th>
+                <th className="px-3 py-2 font-[500]">位置 / 摘要</th>
                 <th className="w-20 px-3 py-2 font-[500]">score</th>
                 <th className="px-3 py-2 font-[500]">channels</th>
+                <th className="w-36 px-3 py-2 font-[500]">标注</th>
               </tr>
             </thead>
             <tbody>
               {items.map((item, index) => {
                 const hit = isExpectedHit(item, evalCase)
+                const location = candidateLocationLabel(item)
+                const excerpt = candidateExcerpt(item)
+                const isExpectedSource = (evalCase.expected_source_ids || []).includes(item.source_id)
+                const isExpectedChunk = (evalCase.expected_chunk_ids || []).includes(item.id)
                 return (
                   <tr
                     key={`${item.id}-${index}`}
@@ -218,12 +242,32 @@ function CandidateTable({
                         <AlertTriangle className="size-3.5 text-(--color-warning)" />
                       )}
                     </td>
-                    <td className="px-3 py-2 text-(--color-text-muted)">{item.source_type}</td>
-                    <td className="max-w-36 truncate px-3 py-2 font-mono text-[11px] text-(--color-text)">
-                      {item.source_id || '--'}
+                    <td className="px-3 py-2 text-(--color-text-muted)">
+                      <div>{sourceTypeLabel(item.source_type)}</div>
+                      {item.chunk_level && (
+                        <div className="mt-0.5 font-mono text-[10px] text-(--color-text-faint)">
+                          {item.chunk_level}
+                        </div>
+                      )}
                     </td>
-                    <td className="max-w-36 truncate px-3 py-2 font-mono text-[11px] text-(--color-text-muted)">
-                      {item.id || '--'}
+                    <td className="max-w-64 px-3 py-2">
+                      <div
+                        className="truncate text-[12px] text-(--color-text)"
+                        title={candidateSourceLabel(item)}
+                      >
+                        {candidateSourceLabel(item)}
+                      </div>
+                      <div className="mt-0.5 truncate font-mono text-[10px] text-(--color-text-faint)">
+                        source {item.source_id || '--'} · chunk {item.id || '--'}
+                      </div>
+                    </td>
+                    <td className="max-w-80 px-3 py-2">
+                      <div className="truncate text-[11px] text-(--color-text-muted)" title={location}>
+                        {location}
+                      </div>
+                      <div className="mt-1 line-clamp-2 text-[12px] leading-5 text-(--color-text)">
+                        {excerpt}
+                      </div>
                     </td>
                     <td className="px-3 py-2 font-mono text-[11px] text-(--color-text)">
                       {formatScore(candidateScore(item))}
@@ -237,6 +281,36 @@ function CandidateTable({
                         ))}
                       </div>
                     </td>
+                    <td className="px-3 py-2">
+                      <div className="flex flex-col gap-1">
+                        <button
+                          type="button"
+                          disabled={!onMarkExpected || markingExpected || isExpectedSource}
+                          onClick={() => onMarkExpected?.(item, 'source')}
+                          className={cn(
+                            'rounded-(--radius-control) border px-2 py-1 text-[11px] transition-colors disabled:pointer-events-none disabled:opacity-50',
+                            isExpectedSource
+                              ? 'border-(--color-success)/40 bg-(--color-success)/10 text-(--color-success)'
+                              : 'border-(--color-border) text-(--color-text-muted) hover:bg-(--color-surface-2) hover:text-(--color-text)',
+                          )}
+                        >
+                          {isExpectedSource ? '已是期望来源' : '设为期望来源'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!onMarkExpected || markingExpected || isExpectedChunk}
+                          onClick={() => onMarkExpected?.(item, 'chunk')}
+                          className={cn(
+                            'rounded-(--radius-control) border px-2 py-1 text-[11px] transition-colors disabled:pointer-events-none disabled:opacity-50',
+                            isExpectedChunk
+                              ? 'border-(--color-success)/40 bg-(--color-success)/10 text-(--color-success)'
+                              : 'border-(--color-border) text-(--color-text-muted) hover:bg-(--color-surface-2) hover:text-(--color-text)',
+                          )}
+                        >
+                          {isExpectedChunk ? '已是期望切片' : '设为期望切片'}
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                 )
               })}
@@ -246,6 +320,44 @@ function CandidateTable({
       )}
     </section>
   )
+}
+
+// 候选来源标题优先展示业务可读字段，缺失时才退回内部 source id。
+function candidateSourceLabel(item: RetrievalEvalRun['retrieved_items'][number]): string {
+  const title = String(item.source_title || '').trim()
+  if (title) return title
+  return item.source_id || '--'
+}
+
+// 候选位置合并页码、章节、审核切片 id，帮助用户确认“是哪一块”。
+function candidateLocationLabel(item: RetrievalEvalRun['retrieved_items'][number]): string {
+  const parts: string[] = []
+  if (item.page_start) {
+    parts.push(
+      item.page_end && item.page_end !== item.page_start
+        ? `页 ${item.page_start}-${item.page_end}`
+        : `页 ${item.page_start}`,
+    )
+  }
+  if (item.section_path?.length) parts.push(item.section_path.join(' > '))
+  if (item.source_chunk_id) parts.push(`审核切片 ${item.source_chunk_id}`)
+  if (item.block_type) parts.push(item.block_type)
+  return parts.join(' · ') || '--'
+}
+
+// 候选摘要优先使用正文，正文缺失时尝试 metadata 里的 source_excerpt。
+function candidateExcerpt(item: RetrievalEvalRun['retrieved_items'][number]): string {
+  const content = String(item.content || '').trim()
+  if (content) return content
+  const excerpt = item.metadata?.source_excerpt
+  return typeof excerpt === 'string' && excerpt.trim() ? excerpt.trim() : '--'
+}
+
+// 将内部 source_type 转成工作台读得懂的短标签。
+function sourceTypeLabel(value: string): string {
+  if (value === 'faq') return 'FAQ'
+  if (value === 'document') return '文档'
+  return value || '--'
 }
 
 // 候选表图例，约束只表达命中/未命中两种评测态。
