@@ -60,6 +60,35 @@ pnpm lint
 
 ---
 
+## Fast Refresh Component Exports
+
+React Fast Refresh expects component modules to export React components only. When a
+`.tsx` file also exports constants, variants, singleton APIs, or helper functions,
+`react-refresh/only-export-components` will fail and hot reload can become
+unreliable.
+
+```tsx
+// Bad - component file exports a non-component API.
+export const toast = createToastApi();
+export function Toaster() {
+  return <ToastProvider />;
+}
+
+// Good - keep the component file component-only.
+export function Toaster() {
+  return <ToastProvider />;
+}
+
+// toast.ts
+export const toast = createToastApi();
+```
+
+Use sibling `*-utils.ts`, `*.ts`, or domain utility files for non-component values
+such as variant maps, tone colors, and imperative APIs. Type-only exports are
+acceptable when they do not create runtime exports.
+
+---
+
 ## Non-null Assertion Fix
 
 ```typescript
