@@ -247,6 +247,42 @@ def test_retrieval_eval_item_payload_exposes_readable_source_fields():
     assert payload["metadata"]["source_excerpt"] == "检查账号权限"
 
 
+def test_retrieval_eval_item_payload_exposes_faq_question_answer_fields():
+    """FAQ 候选应显式带问题和答案，避免前端只能从 content 中猜摘要。"""
+    candidate = SimpleNamespace(
+        channels=["vector"],
+        fused_score=0.72,
+        vector_score=0.72,
+        keyword_score=None,
+        document=SimpleNamespace(
+            id="kc_faq_1",
+            source_id="faq_1",
+            source_type="faq",
+            source_chunk_id=None,
+            parent_chunk_id=None,
+            chunk_level="chunk",
+            source_title="报告导出失败怎么办？",
+            section_path=[],
+            page_start=None,
+            page_end=None,
+            block_type="faq",
+            content="问题：报告导出失败怎么办？\n答案：先检查账号权限，再重新生成报告。",
+            metadata={"category": "报表"},
+            question="报告导出失败怎么办？",
+            answer="先检查账号权限，再重新生成报告。",
+            category="报表",
+            tags=["报告", "导出"],
+        ),
+    )
+
+    payload = retrieval_eval_item_payload(candidate)
+
+    assert payload["question"] == "报告导出失败怎么办？"
+    assert payload["answer"] == "先检查账号权限，再重新生成报告。"
+    assert payload["category"] == "报表"
+    assert payload["tags"] == ["报告", "导出"]
+
+
 def test_admin_app_settings_snapshot_exposes_runtime_config_for_local_modal(tmp_path):
     """设置中心读取当前运行配置，密钥只经本地管理接口返回给弹窗。"""
     app = AdminApp(

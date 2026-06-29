@@ -80,7 +80,68 @@ export function isExpectedHit(item: RetrievalEvalItem, evalCase: RetrievalEvalCa
 export function summarizeExpected(evalCase: RetrievalEvalCase): string {
   const chunkCount = evalCase.expected_chunk_ids?.length || 0
   const sourceCount = evalCase.expected_source_ids?.length || 0
-  if (chunkCount > 0) return `${chunkCount} 个 chunk`
-  if (sourceCount > 0) return `${sourceCount} 个 source`
-  return '未标注'
+  if (chunkCount > 0) return `${chunkCount} 个期望切片`
+  if (sourceCount > 0) return `${sourceCount} 个期望来源`
+  return '待设置期望命中'
+}
+
+// 候选来源标题优先展示业务可读字段，缺失时才退回内部来源 id。
+export function candidateSourceLabel(item: RetrievalEvalItem): string {
+  const title = String(item.source_title || '').trim()
+  if (title) return title
+  const question = String(item.question || '').trim()
+  if (question) return question
+  const metadataTitle = item.metadata?.source_title
+  if (typeof metadataTitle === 'string' && metadataTitle.trim()) return metadataTitle.trim()
+  return item.source_id || '--'
+}
+
+// 候选位置合并页码、章节、审核切片 id，FAQ 则显示来源类型。
+export function candidateLocationLabel(item: RetrievalEvalItem): string {
+  const parts: string[] = []
+  if (item.page_start) {
+    parts.push(
+      item.page_end && item.page_end !== item.page_start
+        ? `页 ${item.page_start}-${item.page_end}`
+        : `页 ${item.page_start}`,
+    )
+  }
+  if (item.section_path?.length) parts.push(item.section_path.join(' > '))
+  if (item.source_chunk_id) parts.push(`审核切片 ${item.source_chunk_id}`)
+  if (item.block_type && item.block_type !== 'faq') parts.push(item.block_type)
+  if (parts.length > 0) return parts.join(' · ')
+  if (item.source_type === 'faq') return 'FAQ'
+  return '--'
+}
+
+// 候选摘要优先使用答案/正文；FAQ content 为空时也能展示可读答案。
+export function candidateExcerpt(item: RetrievalEvalItem): string {
+  const answer = String(item.answer || '').trim()
+  if (answer) return answer
+  const content = String(item.content || '').trim()
+  if (content) return content
+  const excerpt = item.metadata?.source_excerpt
+  return typeof excerpt === 'string' && excerpt.trim() ? excerpt.trim() : '--'
+}
+
+// 将内部 source_type 转成工作台读得懂的短标签。
+export function sourceTypeLabel(value: string): string {
+  if (value === 'faq') return 'FAQ'
+  if (value === 'document') return '文档'
+  return value || '--'
+}
+
+// 将内部策略名转成中文展示；未知策略保留原值，便于排查。
+export function displayStrategyLabel(value: string | undefined | null): string {
+  if (!value) return '未运行'
+  if (value === 'retrieval_hybrid_v1') return '混合检索 v1'
+  return value
+}
+
+// 将召回通道短码转成中文徽章，避免候选表暴露 raw channel。
+export function retrievalChannelLabel(value: string): string {
+  if (value === 'vector') return '向量'
+  if (value === 'keyword') return '关键词'
+  if (value === 'fused') return '融合'
+  return value || '--'
 }

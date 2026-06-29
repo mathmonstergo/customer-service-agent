@@ -1,12 +1,14 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useQueryClient } from '@tanstack/react-query'
 import {
+  Check,
+  ChevronDown,
   Download,
   Loader2,
+  Play,
   PowerOff,
   Power,
-  RotateCw,
   Trash2,
   Wand2,
   Waypoints,
@@ -18,8 +20,18 @@ import {
   DrawerHeader,
   DrawerTitle,
 } from '@/components/ui/drawer'
+import { DRAWER_WIDTH_MEDIUM } from '@/components/ui/drawer-constants'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { StatusDot, type DotTone } from '@/components/ui/status-dot'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
@@ -39,6 +51,7 @@ import { dur, ease } from '@/lib/motion'
 import { ChunkBrowser } from './chunk-browser'
 import {
   DOCUMENT_CHUNKER_OPTIONS,
+  type DocumentChunkerType,
   documentChunkerLabel,
   normalizeDocumentChunkerType,
 } from './chunker-options'
@@ -50,12 +63,13 @@ interface Props {
 
 export function DocumentDrawer({ fileId, onClose }: Props) {
   const open = !!fileId
+  const activeFileId = fileId
   return (
     <AnimatePresence>
-      {open && (
-        <Drawer key={fileId} open={open} onOpenChange={(o) => !o && onClose()}>
-          <DrawerContent width={820}>
-            <DrawerInner fileId={fileId!} onClose={onClose} />
+      {open && activeFileId && (
+        <Drawer key={activeFileId} open={open} onOpenChange={(o) => !o && onClose()}>
+          <DrawerContent width={DRAWER_WIDTH_MEDIUM}>
+            <DrawerInner fileId={activeFileId} onClose={onClose} />
           </DrawerContent>
         </Drawer>
       )}
@@ -72,7 +86,10 @@ function DrawerInner({ fileId, onClose }: { fileId: string; onClose: () => void 
   })
   const status = statusQ.data
   const file = status?.file
-  const chunkerSelectRef = useRef<HTMLSelectElement | null>(null)
+  const [selectedChunkerOverride, setSelectedChunkerOverride] = useState<DocumentChunkerType | null>(null)
+  const [chunkerOpen, setChunkerOpen] = useState(false)
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const selectedChunker = selectedChunkerOverride ?? normalizeDocumentChunkerType(file?.chunker_type)
 
   const isParsing = file?.status === 'processing'
   const chunksQ = useImportFileChunks(fileId, {
@@ -116,9 +133,6 @@ function DrawerInner({ fileId, onClose }: { fileId: string; onClose: () => void 
 
   const onParse = async () => {
     try {
-      const selectedChunker = normalizeDocumentChunkerType(
-        chunkerSelectRef.current?.value ?? file?.chunker_type,
-      )
       const r = await parseJob.mutateAsync({ id: fileId, chunker_type: selectedChunker })
       fireMessages(r.messages?.length ? r.messages : ['已开始解析'])
     } catch (e) {
@@ -146,10 +160,10 @@ function DrawerInner({ fileId, onClose }: { fileId: string; onClose: () => void 
     toggleDisabled.mutate({ id: fileId, is_disabled: !file.is_disabled })
   }
   const onDelete = async () => {
-    if (!confirm(`确认删除「${file?.original_name || fileId}」？`)) return
     try {
       const r = await del.mutateAsync(fileId)
       fireMessages(r.messages)
+      setDeleteOpen(false)
       onClose()
     } catch (e) {
       toast.error((e as Error).message)
@@ -175,33 +189,57 @@ function DrawerInner({ fileId, onClose }: { fileId: string; onClose: () => void 
       </DrawerHeader>
 
       {/* 操作按钮组 */}
-      <div className="flex shrink-0 flex-wrap gap-2 border-b border-(--color-border) px-6 py-3">
-        <label className="flex h-8 items-center gap-2 rounded-(--radius-control) border border-(--color-border) bg-(--color-surface-2) px-2.5 text-[12px] text-(--color-text-muted)">
-          <span>Chunker</span>
-          <select
-            key={`${file.id}-${file.chunker_type}`}
-            ref={chunkerSelectRef}
-            defaultValue={normalizeDocumentChunkerType(file.chunker_type)}
-            disabled={pending.parse || isParsing}
-            className="h-6 rounded-(--radius-control) border border-(--color-border) bg-(--color-surface-1) px-2 text-[12px] text-(--color-text) focus:border-(--color-primary)/60 focus:outline-none disabled:opacity-60"
-          >
-            {DOCUMENT_CHUNKER_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-(--color-border) px-6 py-3">
+        <Popover open={chunkerOpen} onOpenChange={setChunkerOpen}>
+          <PopoverTrigger asChild>
+            <Button
+              variant="outline"
+              size="sm"
+              className="cursor-pointer"
+              disabled={pending.parse || isParsing}
+              title="选择解析后的切块策略"
+            >
+              <span className="text-(--color-text-faint)">Chunker</span>
+              {documentChunkerLabel(selectedChunker)}
+              <ChevronDown className="size-3.5 text-(--color-text-faint)" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="start" className="w-44 p-1.5">
+            <div className="px-1.5 pb-1.5 text-[11px] text-(--color-text-faint)">切块策略</div>
+            <div className="flex flex-col">
+              {DOCUMENT_CHUNKER_OPTIONS.map((option) => {
+                const checked = selectedChunker === option.value
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => {
+                      setSelectedChunkerOverride(option.value)
+                      setChunkerOpen(false)
+                    }}
+                    className="flex cursor-pointer items-center gap-2 rounded-(--radius-control) px-2 py-1.5 text-[12px] text-(--color-text) hover:bg-(--color-surface-2)"
+                  >
+                    <span className="flex size-3.5 shrink-0 items-center justify-center">
+                      {checked && <Check className="size-3.5 text-(--color-primary-hi)" />}
+                    </span>
+                    <span>{option.label}</span>
+                  </button>
+                )
+              })}
+            </div>
+          </PopoverContent>
+        </Popover>
         <Button onClick={onParse} disabled={pending.parse || isParsing}>
           {isParsing || pending.parse ? (
             <Loader2 className="size-3.5 animate-spin" />
           ) : (
-            <RotateCw className="size-3.5" />
+            <Play className="size-3.5" />
           )}
           {isParsing ? '解析中…' : pending.parse ? '提交中…' : '开始解析'}
         </Button>
         <Button
           variant="primary"
+          className="relative cursor-pointer"
           onClick={onEmbed}
           disabled={!isParsed || pending.embed || (!!chunksQ.data && nonGreenCount === 0)}
           title={
@@ -215,39 +253,48 @@ function DrawerInner({ fileId, onClose }: { fileId: string; onClose: () => void 
           ) : (
             <Waypoints className="size-3.5" />
           )}
-          {pending.embed ? '生成中…' : 'Embedding'}
+          Embedding
           {nonGreenCount > 0 && !pending.embed && (
-            <span className="ml-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-(--radius-control) bg-(--color-warning)/20 px-1 font-mono text-[10px] text-(--color-warning)">
+            <span className="absolute -right-1 -top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-(--radius-control) bg-(--color-warning)/20 px-1 font-mono text-[10px] text-(--color-warning)">
               {nonGreenCount}
             </span>
           )}
         </Button>
-        <Button onClick={onGenerate} disabled={!isParsed || pending.questions}>
+        <Button
+          size="icon"
+          className="cursor-pointer"
+          onClick={onGenerate}
+          disabled={!isParsed || pending.questions}
+          title="生成假设问题"
+        >
           {pending.questions ? (
             <Loader2 className="size-3.5 animate-spin" />
           ) : (
             <Wand2 className="size-3.5" />
           )}
-          {pending.questions ? '生成中…' : '生成假设问题'}
         </Button>
         <div className="ml-auto" />
-        <Button asChild variant="ghost">
+        <Button asChild variant="ghost" size="icon" title="下载原文件">
           <a
             href={`/api/import/files/${encodeURIComponent(fileId)}/download`}
             target="_blank"
             rel="noreferrer"
+            className="cursor-pointer"
           >
             <Download className="size-3.5" />
-            下载
           </a>
         </Button>
-        <Button variant="ghost" onClick={onToggleDisabled}>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="cursor-pointer"
+          onClick={onToggleDisabled}
+          title={file.is_disabled ? '启用文档' : '禁用文档'}
+        >
           {file.is_disabled ? <Power className="size-3.5" /> : <PowerOff className="size-3.5" />}
-          {file.is_disabled ? '启用' : '禁用'}
         </Button>
-        <Button variant="danger" onClick={onDelete}>
+        <Button variant="danger" size="icon" className="cursor-pointer" onClick={() => setDeleteOpen(true)} title="删除文档">
           <Trash2 className="size-3.5" />
-          删除
         </Button>
       </div>
 
@@ -281,6 +328,26 @@ function DrawerInner({ fileId, onClose }: { fileId: string; onClose: () => void 
           <ChunkBrowser fileId={fileId} chunks={chunksQ.data?.items || []} fileDisabled={file.is_disabled} />
         )}
       </DrawerBody>
+
+      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>删除文档</DialogTitle>
+            <DialogDescription>
+              确认删除「{file.original_name || fileId}」？删除后相关切片和向量也会移除。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setDeleteOpen(false)}>
+              取消
+            </Button>
+            <Button variant="danger" onClick={() => void onDelete()} disabled={del.isPending}>
+              {del.isPending ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
+              删除
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   )
 }

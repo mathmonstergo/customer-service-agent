@@ -11,6 +11,7 @@ import {
   DrawerHeader,
   DrawerTitle,
 } from '@/components/ui/drawer'
+import { DRAWER_WIDTH_COMPACT } from '@/components/ui/drawer-constants'
 import { Input } from '@/components/ui/input'
 import { toast } from '@/components/ui/toast'
 import { cn } from '@/lib/cn'
@@ -83,7 +84,7 @@ export function AliasPanel({
 
   return (
     <Drawer open={open} onOpenChange={onOpenChange}>
-      <DrawerContent width={520}>
+      <DrawerContent width={DRAWER_WIDTH_COMPACT}>
         <DrawerHeader>
           <div className="min-w-0">
             <div className="flex items-center gap-2">

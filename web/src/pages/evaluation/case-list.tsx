@@ -7,6 +7,7 @@ import {
   formatDateTime,
   formatMetric,
   formatPercent,
+  displayStrategyLabel,
   summarizeExpected,
 } from './helpers'
 
@@ -96,6 +97,7 @@ function CaseRow({
 }) {
   const run = item.latest_run
   const metrics = run?.metrics
+  const expectedSummary = summarizeExpected(item)
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault()
@@ -133,8 +135,8 @@ function CaseRow({
                 {tag}
               </Badge>
             ))}
-            <Badge tone={summarizeExpected(item) === '未标注' ? 'warning' : 'muted'}>
-              期望 {summarizeExpected(item)}
+            <Badge tone={expectedSummary === '待设置期望命中' ? 'warning' : 'muted'}>
+              {expectedSummary}
             </Badge>
           </div>
         </div>
@@ -158,7 +160,7 @@ function CaseRow({
       </div>
       <div className="mt-1 flex items-center gap-1 text-[10px] text-(--color-text-faint)">
         <MoreHorizontal className="size-3" />
-        <span className="truncate">{run?.strategy || '未运行'}</span>
+        <span className="truncate">{displayStrategyLabel(run?.strategy)}</span>
       </div>
     </div>
   )

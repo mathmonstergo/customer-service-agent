@@ -229,6 +229,10 @@ export interface RetrievalEvalItem {
   page_end?: number | null
   block_type?: string | null
   content?: string | null
+  question?: string | null
+  answer?: string | null
+  category?: string | null
+  tags?: string[] | null
   metadata?: Record<string, unknown> | null
   channels: string[]
   fused_score?: number

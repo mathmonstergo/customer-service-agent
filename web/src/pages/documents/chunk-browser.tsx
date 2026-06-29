@@ -8,9 +8,10 @@ import {
   EyeOff,
   Eye,
   ListFilter,
+  Loader2,
   MessageCircleQuestion,
-  RefreshCw,
   Save,
+  Waypoints,
   X,
 } from 'lucide-react'
 import type { ImportChunk } from '@/api/schemas'
@@ -33,13 +34,29 @@ import { embeddingStatusLabel, tr } from '@/lib/labels'
 import { useHorizontalWheelScroll } from '@/lib/use-horizontal-wheel-scroll'
 
 export function ChunkBrowser({ fileId, chunks, fileDisabled }: { fileId: string; chunks: ImportChunk[]; fileDisabled?: boolean }) {
-  const { currentChunkIndex, setCurrentChunkIndex, chunkEditMode, setChunkEditMode } = useUi()
+  const {
+    currentChunkIndex,
+    setCurrentChunkIndex,
+    chunkEditMode,
+    setChunkEditMode,
+    openImportChunkId,
+    setOpenImportChunkId,
+  } = useUi()
   const toggleDisabled = useToggleImportChunkDisabled()
 
   useEffect(() => {
     // 文件切换时复位
     setCurrentChunkIndex(0)
   }, [fileId, setCurrentChunkIndex])
+
+  useEffect(() => {
+    if (!openImportChunkId) return
+    const targetIndex = chunks.findIndex((item) => item.id === openImportChunkId)
+    if (targetIndex >= 0) {
+      setCurrentChunkIndex(targetIndex)
+      setOpenImportChunkId(null)
+    }
+  }, [chunks, openImportChunkId, setCurrentChunkIndex, setOpenImportChunkId])
 
   const safeIdx = Math.min(currentChunkIndex, Math.max(0, chunks.length - 1))
   const chunk = chunks[safeIdx]
@@ -236,8 +253,9 @@ function ChunkNav({
       <Button
         variant="ghost"
         size="icon"
-        className="size-6"
+        className="size-6 cursor-pointer"
         disabled={prevTarget === undefined}
+        title="上一个切片"
         onClick={() => {
           if (prevTarget !== undefined) onJump(prevTarget)
         }}
@@ -303,8 +321,9 @@ function ChunkNav({
       <Button
         variant="ghost"
         size="icon"
-        className="size-6"
+        className="size-6 cursor-pointer"
         disabled={nextTarget === undefined}
+        title="下一个切片"
         onClick={() => {
           if (nextTarget !== undefined) onJump(nextTarget)
         }}
@@ -317,7 +336,7 @@ function ChunkNav({
           <Button
             variant={filtering ? 'primary' : 'ghost'}
             size="icon"
-            className="size-6 shrink-0"
+            className="size-6 shrink-0 cursor-pointer"
             title="按状态筛选切片"
           >
             <ListFilter className="size-3.5" />
@@ -418,6 +437,7 @@ function ChunkToolbar({
         <Button
           variant={needsEmbed ? 'primary' : 'ghost'}
           size="sm"
+          className="cursor-pointer"
           disabled={isEmbedding || editMode}
           onClick={async () => {
             try {
@@ -430,20 +450,30 @@ function ChunkToolbar({
           }}
           title={needsEmbed ? '切片原文有改动，向量已 stale' : '重新生成该切片向量'}
         >
-          <RefreshCw className={isEmbedding ? 'size-3.5 animate-spin' : 'size-3.5'} />
-          {isEmbedding ? '生成中' : '重新向量'}
+          {isEmbedding ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <Waypoints className="size-3.5" />
+          )}
+          Embedding
         </Button>
         <Button
           variant={chunk.is_disabled ? 'default' : 'ghost'}
-          size="sm"
+          size="icon"
+          className="size-7 cursor-pointer"
           onClick={onToggleDisabled}
+          title={chunk.is_disabled ? '启用切片' : '禁用切片'}
         >
           {chunk.is_disabled ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
-          {chunk.is_disabled ? '启用' : '禁用'}
         </Button>
-        <Button variant={editMode ? 'primary' : 'ghost'} size="sm" onClick={onEditToggle}>
+        <Button
+          variant={editMode ? 'primary' : 'ghost'}
+          size="icon"
+          className="size-7 cursor-pointer"
+          onClick={onEditToggle}
+          title={editMode ? '退出编辑' : '编辑原文'}
+        >
           {editMode ? <X className="size-3.5" /> : <Edit3 className="size-3.5" />}
-          {editMode ? '退出编辑' : '编辑原文'}
         </Button>
       </div>
     </div>

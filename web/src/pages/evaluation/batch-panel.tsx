@@ -36,7 +36,7 @@ export function EvaluationBatchPanel({
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <Target className="size-4 text-(--color-primary-hi)" />
           <div className="text-[13px] font-[540] text-(--color-text)">批量回归</div>
-          <Badge tone="muted">active {summary.activeCaseCount}</Badge>
+          <Badge tone="muted">{summary.activeCaseCount} 个启用用例</Badge>
           {runState.status !== 'idle' && (
             <Badge tone={runState.failed > 0 ? 'warning' : 'success'}>
               {runState.completed}/{runState.total}
@@ -51,7 +51,7 @@ export function EvaluationBatchPanel({
           title={batchCaseCount > 0 ? '顺序运行当前筛选范围内的启用用例' : '当前筛选范围没有启用用例'}
         >
           {isRunning ? <Loader2 className="size-3.5 animate-spin" /> : <Target className="size-3.5" />}
-          {isRunning ? '批量运行中' : `运行 active ${batchCaseCount}`}
+          {isRunning ? '批量运行中' : `运行 ${batchCaseCount} 个启用用例`}
         </Button>
       </div>
 
@@ -71,9 +71,9 @@ export function EvaluationBatchPanel({
       )}
 
       <div className="mt-3 grid grid-cols-6 gap-2">
-        <BatchMetric label="Recall@K" value={formatPercent(summary.averageRecall)} tone={summary.averageRecall && summary.averageRecall > 0 ? 'success' : 'muted'} />
-        <BatchMetric label="MRR" value={formatMetric(summary.averageMrr)} tone={summary.averageMrr && summary.averageMrr > 0 ? 'success' : 'muted'} />
-        <BatchMetric label="Top1" value={formatPercent(summary.top1Rate)} tone={summary.top1Rate && summary.top1Rate > 0 ? 'success' : 'muted'} />
+        <BatchMetric label="Recall@K" title="TopK 是否找回期望来源或切片" value={formatPercent(summary.averageRecall)} tone={summary.averageRecall && summary.averageRecall > 0 ? 'success' : 'muted'} />
+        <BatchMetric label="MRR" title="Mean Reciprocal Rank：正确候选越靠前分数越高" value={formatMetric(summary.averageMrr)} tone={summary.averageMrr && summary.averageMrr > 0 ? 'success' : 'muted'} />
+        <BatchMetric label="Top1" title="第一名是否就是期望命中" value={formatPercent(summary.top1Rate)} tone={summary.top1Rate && summary.top1Rate > 0 ? 'success' : 'muted'} />
         <BatchMetric label="命中" value={String(summary.hitCount)} tone="success" />
         <BatchMetric label="未召回" value={String(summary.missedCount)} tone={summary.missedCount > 0 ? 'warning' : 'muted'} />
         <BatchMetric label="待标注" value={String(summary.missingExpectedCount)} tone={summary.missingExpectedCount > 0 ? 'warning' : 'muted'} />
@@ -103,7 +103,7 @@ export function EvaluationBatchPanel({
                 )}
                 <span className="text-[11px] text-(--color-text-muted)">
                   {reasonLabel(item.reason)}
-                  {item.rank ? ` · rank ${item.rank}` : ''}
+                  {item.rank ? ` · 第 ${item.rank} 名` : ''}
                 </span>
               </div>
               <div className="mt-1 truncate text-[12px] text-(--color-text)" title={item.question}>
@@ -118,9 +118,12 @@ export function EvaluationBatchPanel({
 }
 
 // 指标小块使用固定高度和等宽数值，避免批量运行过程中布局跳动。
-function BatchMetric({ label, value, tone }: { label: string; value: string; tone: 'success' | 'warning' | 'muted' }) {
+function BatchMetric({ label, title, value, tone }: { label: string; title?: string; value: string; tone: 'success' | 'warning' | 'muted' }) {
   return (
-    <div className="rounded-(--radius-control) border border-(--color-border-soft) bg-(--color-surface-2) px-2.5 py-2">
+    <div
+      className="rounded-(--radius-control) border border-(--color-border-soft) bg-(--color-surface-2) px-2.5 py-2"
+      title={title}
+    >
       <div className="text-[10px] text-(--color-text-faint)">{label}</div>
       <div
         className={cn(

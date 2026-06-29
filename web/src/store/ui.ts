@@ -6,7 +6,9 @@ interface UiState {
 
   // 当前打开的文档抽屉对应 file id（null = 关闭）
   openImportFileId: string | null
-  setOpenImportFileId: (id: string | null) => void
+  openImportChunkId: string | null
+  setOpenImportFileId: (id: string | null, chunkId?: string | null) => void
+  setOpenImportChunkId: (id: string | null) => void
 
   // 当前选中的切片下标（per file 局部）
   currentChunkIndex: number
@@ -30,7 +32,15 @@ export const useUi = create<UiState>((set) => ({
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
 
   openImportFileId: null,
-  setOpenImportFileId: (id) => set({ openImportFileId: id, currentChunkIndex: 0, chunkEditMode: false }),
+  openImportChunkId: null,
+  setOpenImportFileId: (id, chunkId = null) =>
+    set({
+      openImportFileId: id,
+      openImportChunkId: id ? chunkId : null,
+      currentChunkIndex: 0,
+      chunkEditMode: false,
+    }),
+  setOpenImportChunkId: (id) => set({ openImportChunkId: id }),
 
   currentChunkIndex: 0,
   setCurrentChunkIndex: (i) => set({ currentChunkIndex: i, chunkEditMode: false }),

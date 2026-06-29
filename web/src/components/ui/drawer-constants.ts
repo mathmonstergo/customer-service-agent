@@ -1,0 +1,2 @@
+export const DRAWER_WIDTH_COMPACT = 520
+export const DRAWER_WIDTH_MEDIUM = 560

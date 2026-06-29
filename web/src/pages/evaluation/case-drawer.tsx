@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from 'react'
+import { Save } from 'lucide-react'
 import type { RetrievalEvalCase } from '@/api/schemas'
 import { Button } from '@/components/ui/button'
 import {
@@ -9,6 +10,7 @@ import {
   DrawerHeader,
   DrawerTitle,
 } from '@/components/ui/drawer'
+import { DRAWER_WIDTH_COMPACT } from '@/components/ui/drawer-constants'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { toast } from '@/components/ui/toast'
@@ -118,7 +120,7 @@ function CaseDrawerForm({
   }
 
   return (
-    <DrawerContent width={520}>
+    <DrawerContent width={DRAWER_WIDTH_COMPACT}>
       <DrawerHeader>
         <div>
           <DrawerTitle>{item ? '编辑评测用例' : '新建评测用例'}</DrawerTitle>
@@ -150,14 +152,14 @@ function CaseDrawerForm({
               高级：手动填写期望 ID
             </summary>
             <div className="mt-3 space-y-3">
-              <Field label="期望 source ids">
+              <Field label="期望来源 ID">
                 <Textarea
                   value={form.expectedSourceIds}
                   onChange={(event) => update('expectedSourceIds', event.target.value)}
                   placeholder="faq_2056&#10;imp_10023"
                 />
               </Field>
-              <Field label="期望 chunk ids（可选）">
+              <Field label="期望切片 ID（可选）">
                 <Textarea
                   value={form.expectedChunkIds}
                   onChange={(event) => update('expectedChunkIds', event.target.value)}
@@ -165,7 +167,7 @@ function CaseDrawerForm({
                 />
               </Field>
               <p className="text-[11px] leading-5 text-(--color-text-faint)">
-                一般不用手填。运行用例后，在右侧候选来源里点击“设为期望来源/切片”会自动写入正确 ID。
+                一般不用手填。运行用例后，在右侧候选来源里点击“设为期望来源 / 设为期望切片”会自动写入正确 ID。
               </p>
             </div>
           </details>
@@ -208,6 +210,7 @@ function CaseDrawerForm({
           onClick={onSubmit}
           disabled={saveCase.isPending || !form.question.trim()}
         >
+          <Save className="size-3.5" />
           保存
         </Button>
       </DrawerFooter>

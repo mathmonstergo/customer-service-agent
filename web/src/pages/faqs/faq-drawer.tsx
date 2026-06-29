@@ -5,6 +5,7 @@ import {
   Save,
   Wand2,
   Waypoints,
+  X,
 } from 'lucide-react'
 import {
   Drawer,
@@ -13,6 +14,7 @@ import {
   DrawerHeader,
   DrawerTitle,
 } from '@/components/ui/drawer'
+import { DRAWER_WIDTH_COMPACT } from '@/components/ui/drawer-constants'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -65,7 +67,7 @@ export function FaqDrawer({ faqId, onClose, onCreated }: Props) {
     <AnimatePresence>
       {open && (
         <Drawer key={faqId} open={open} onOpenChange={(o) => !o && onClose()}>
-          <DrawerContent width={680}>
+          <DrawerContent width={DRAWER_WIDTH_COMPACT}>
             <DrawerInner faqId={faqId} onClose={onClose} onCreated={onCreated} />
           </DrawerContent>
         </Drawer>
@@ -127,6 +129,7 @@ function FaqEditor({
   const [draft, setDraft] = useState<FaqDraft>(baseline)
 
   const dirty = useMemo(() => JSON.stringify(draft) !== JSON.stringify(baseline), [draft, baseline])
+  const needsEmbed = !isNew && faq?.embedding_status !== 'ready'
 
   useEffect(() => {
     setFaqDirty(dirty)
@@ -317,14 +320,23 @@ function FaqEditor({
           {dirty ? '有未保存的修改' : isNew ? '新建一条 FAQ' : '所有修改已保存'}
         </span>
         <div className="ml-auto" />
-        <Button variant="ghost" onClick={onClose}>
-          关闭
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-7 cursor-pointer"
+          onClick={onClose}
+          title="关闭"
+          aria-label="关闭"
+        >
+          <X className="size-3.5" />
         </Button>
         <Button
-          variant="outline"
+          variant={needsEmbed ? 'primary' : 'ghost'}
+          size="sm"
+          className="cursor-pointer"
           onClick={onEmbed}
           disabled={isNew || embed.isPending}
-          title={isNew ? '保存后才能生成' : ''}
+          title={isNew ? '保存后才能生成 FAQ 向量' : '生成 FAQ 向量'}
         >
           {embed.isPending ? <Loader2 className="size-3.5 animate-spin" /> : <Waypoints className="size-3.5" />}
           Embedding

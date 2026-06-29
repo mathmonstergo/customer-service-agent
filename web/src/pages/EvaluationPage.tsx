@@ -11,13 +11,16 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { toast } from '@/components/ui/toast'
 import { cn } from '@/lib/cn'
+import { useUi } from '@/store/ui'
+import { DocumentDrawer } from './documents/document-drawer'
+import { FaqDrawer } from './faqs/faq-drawer'
 import { AliasPanel } from './evaluation/alias-panel'
 import { EvaluationBatchPanel, type EvaluationBatchRunState } from './evaluation/batch-panel'
 import { CaseDrawer } from './evaluation/case-drawer'
 import { EvaluationCaseList } from './evaluation/case-list'
 import { buildEvaluationBatchSummary } from './evaluation/batch-diagnostics'
 import { EvaluationResultPanel } from './evaluation/result-panel'
-import { CASE_STATUS_OPTIONS, formatPercent } from './evaluation/helpers'
+import { CASE_STATUS_OPTIONS, displayStrategyLabel, formatPercent } from './evaluation/helpers'
 
 // 效果验收工作台主页面；对齐智能问答页的左栏宽度和主面板 header 位置。
 export default function EvaluationPage() {
@@ -30,6 +33,7 @@ export default function EvaluationPage() {
   const [runOverrides, setRunOverrides] = useState<Record<string, RetrievalEvalRun>>({})
   const [caseOverrides, setCaseOverrides] = useState<Record<string, RetrievalEvalCase>>({})
   const [batchRunState, setBatchRunState] = useState<EvaluationBatchRunState>(EMPTY_BATCH_RUN_STATE)
+  const { openFaqId, setOpenFaqId, openImportFileId, setOpenImportFileId } = useUi()
   const params = useMemo(
     () => ({ status: status || undefined, limit: 100, offset: 0 }),
     [status],
@@ -182,6 +186,17 @@ export default function EvaluationPage() {
     }
   }
 
+  // 从评测候选打开已有 FAQ/文档抽屉；文档候选同时带上目标审核切片 id。
+  const handleOpenCandidate = (candidate: RetrievalEvalRun['retrieved_items'][number]) => {
+    if (candidate.source_type === 'faq') {
+      setOpenFaqId(candidate.source_id)
+      return
+    }
+    if (candidate.source_type === 'document') {
+      setOpenImportFileId(candidate.source_id, candidate.source_chunk_id || null)
+    }
+  }
+
   return (
     <div className="flex h-full min-h-0">
       <aside className="flex h-full w-[240px] shrink-0 flex-col border-r border-(--color-border) bg-(--color-surface)">
@@ -247,7 +262,7 @@ export default function EvaluationPage() {
             </div>
             <div className="mt-0.5 truncate text-[11px] text-(--color-text-faint)">
               用例 {casesQuery.data?.total ?? items.length} · 命中率 {formatPercent(stats.averageRecall)} · 待补期望 {stats.missingExpected}
-              {effectiveRun?.strategy ? ` · ${effectiveRun.strategy}` : ''}
+              {effectiveRun?.strategy ? ` · ${displayStrategyLabel(effectiveRun.strategy)}` : ''}
             </div>
           </div>
           <Button variant="outline" size="sm" onClick={() => setAliasOpen(true)}>
@@ -280,6 +295,7 @@ export default function EvaluationPage() {
                 evalCase={selectedCase}
                 runOverride={selectedRun}
                 onMarkExpected={handleMarkExpected}
+                onOpenCandidate={handleOpenCandidate}
                 markingExpected={saveCase.isPending}
               />
             </div>
@@ -294,6 +310,15 @@ export default function EvaluationPage() {
         item={editingCase}
         onOpenChange={setDrawerOpen}
         onSaved={handleSaved}
+      />
+      <FaqDrawer
+        faqId={openFaqId}
+        onClose={() => setOpenFaqId(null)}
+        onCreated={(id) => setOpenFaqId(id)}
+      />
+      <DocumentDrawer
+        fileId={openImportFileId}
+        onClose={() => setOpenImportFileId(null)}
       />
     </div>
   )
