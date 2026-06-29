@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 6
-- **Last Active**: 2026-06-18
+- **Total Sessions**: 7
+- **Last Active**: 2026-06-29
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~235 | Active |
+| `journal-1.md` | ~286 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 7 | 2026-06-29 | 评测来源追溯 UI 收尾 | `25d6b6f`, `d249822` | `main` |
 | 6 | 2026-06-18 | 评测批量回归诊断 MVP | `7689b92`, `41b5e2b` | `main` |
 | 5 | 2026-06-18 | 评测候选标注逻辑优化 | `ccd9615`, `04e3543` | `main` |
 | 4 | 2026-06-18 | Lint and ruff quality gate cleanup | `ca07f01`, `e992a98` | `main` |

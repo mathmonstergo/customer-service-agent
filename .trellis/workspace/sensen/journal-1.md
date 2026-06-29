@@ -250,3 +250,37 @@ Restored full backend ruff and frontend lint/build quality gates, documented Fas
 ### Next Steps
 
 - None - task complete
+
+
+## Session 7: 评测来源追溯 UI 收尾
+
+**Date**: 2026-06-29
+**Task**: 评测来源追溯 UI 收尾
+**Branch**: `main`
+
+### Summary
+
+完成评测候选可读来源、FAQ/文档抽屉追溯、复制 ID、抽屉与按钮一致性规则，并记录验证结果。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `25d6b6f` | (see git log) |
+| `d249822` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
