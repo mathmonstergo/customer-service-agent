@@ -207,6 +207,357 @@ def test_admin_app_run_retrieval_eval_case_records_hybrid_result():
     assert calls[-1][0] == "run"
 
 
+def test_admin_app_run_retrieval_eval_case_uses_kg_only_when_enabled():
+    """检索评测只有显式 use_kg 时才读取 KG 投影，默认客服链路不受影响。"""
+    calls = []
+
+    class FakeEmbedding:
+        def embed(self, text):
+            calls.append(("embed", text))
+            return [0.1, 0.2, 0.3]
+
+    class FakeChat:
+        def complete(self, system_prompt, user_prompt):
+            return '{"intent":"faq_exact","confidence":"medium","query_rewrite":"报告导出","preferred_sources":["faq","document"]}'
+
+    class FakeDatabase:
+        def get_retrieval_eval_case(self, case_id):
+            return {
+                "id": case_id,
+                "question": "报告导出失败怎么办？",
+                "expected_chunk_ids": ["kc_kg_relation_1"],
+                "expected_source_ids": [],
+            }
+
+        def list_retrieval_aliases(self, status="active"):
+            return []
+
+        def search_knowledge(self, query_embedding, *, top_k, min_score):
+            return []
+
+        def search_knowledge_text(self, query_text, *, top_k, query_terms):
+            return []
+
+        def search_kg_knowledge_text(self, query_text, *, top_k, query_terms):
+            calls.append(("kg", query_text, top_k, tuple(query_terms)))
+            return [
+                SimpleNamespace(
+                    id="kc_kg_relation_1",
+                    source_id="kg_rel_1",
+                    source_type="kg_relation",
+                    score=0.77,
+                )
+            ]
+
+        def record_retrieval_eval_run(self, row):
+            calls.append(("run", row))
+            return {**row, "id": "eval_run_kg"}
+
+    app = AdminApp(
+        SimpleNamespace(database_url="postgresql://unused", rag_top_k=3, rag_min_score=0.4),
+        db=FakeDatabase(),
+        embeddings=FakeEmbedding(),
+        chat=FakeChat(),
+    )
+
+    result = app.run_retrieval_eval_case("eval_kg", {"use_kg": True})
+
+    assert any(call[0] == "kg" for call in calls)
+    assert result["strategy"] == "retrieval_hybrid_v1_kg_debug"
+    assert result["analysis"]["use_kg"] is True
+    assert result["analysis"]["kg_count"] == 1
+    assert result["retrieved_items"][0]["source_type"] == "kg_relation"
+    assert "kg" in result["retrieved_items"][0]["channels"]
+
+
+def test_admin_app_kg_subgraph_passes_filters_to_database():
+    """局部子图接口应把中心实体、跳数、类型和数量限制透传给数据库。"""
+    calls = []
+
+    class FakeDatabase:
+        def get_kg_subgraph(
+            self,
+            *,
+            center_entity_id,
+            hops,
+            entity_types,
+            relation_types,
+            status,
+            limit,
+        ):
+            calls.append(
+                {
+                    "center_entity_id": center_entity_id,
+                    "hops": hops,
+                    "entity_types": entity_types,
+                    "relation_types": relation_types,
+                    "status": status,
+                    "limit": limit,
+                }
+            )
+            return {"nodes": [{"id": center_entity_id}], "edges": []}
+
+    app = AdminApp(SimpleNamespace(database_url="postgresql://unused"), db=FakeDatabase())
+
+    result = app.kg_subgraph(
+        {
+            "center_entity_id": ["kg_ent_abc"],
+            "hops": ["1"],
+            "entity_type": ["feature_ui_action,error_symptom"],
+            "relation_type": ["requires"],
+            "status": ["usable"],
+            "limit": ["80"],
+        }
+    )
+
+    assert result["nodes"][0]["id"] == "kg_ent_abc"
+    assert calls == [
+        {
+            "center_entity_id": "kg_ent_abc",
+            "hops": 1,
+            "entity_types": ["feature_ui_action", "error_symptom"],
+            "relation_types": ["requires"],
+            "status": "usable",
+            "limit": 80,
+        }
+    ]
+
+
+def test_admin_app_list_kg_entities_passes_review_filters():
+    """KG 实体审核列表接口应把状态、类型和分页过滤交给数据库。"""
+    calls = []
+
+    class FakeDatabase:
+        def list_kg_entities(self, *, status, entity_type, limit, offset):
+            calls.append((status, entity_type, limit, offset))
+            return {"items": [{"id": "kg_ent_1"}], "total": 1}
+
+    app = AdminApp(SimpleNamespace(database_url="postgresql://unused"), db=FakeDatabase())
+
+    result = app.list_kg_entities(
+        {"status": ["needs_review"], "entity_type": ["feature_ui_action"], "limit": ["20"], "offset": ["5"]}
+    )
+
+    assert result["items"][0]["id"] == "kg_ent_1"
+    assert calls == [("needs_review", "feature_ui_action", 20, 5)]
+
+
+def test_admin_app_list_kg_relations_passes_review_filters():
+    """KG 关系审核列表接口应把状态、类型和分页过滤交给数据库。"""
+    calls = []
+
+    class FakeDatabase:
+        def list_kg_relations(self, *, status, relation_type, limit, offset):
+            calls.append((status, relation_type, limit, offset))
+            return {"items": [{"id": "kg_rel_1"}], "total": 1}
+
+    app = AdminApp(SimpleNamespace(database_url="postgresql://unused"), db=FakeDatabase())
+
+    result = app.list_kg_relations(
+        {"status": ["needs_review"], "relation_type": ["requires"], "limit": ["30"], "offset": ["0"]}
+    )
+
+    assert result["items"][0]["id"] == "kg_rel_1"
+    assert calls == [("needs_review", "requires", 30, 0)]
+
+
+def test_admin_app_confirm_kg_entity_delegates_to_database():
+    """确认 KG 实体接口应调用数据库确认投影，并返回 item 包装。"""
+
+    class FakeDatabase:
+        def confirm_kg_entity(self, entity_id):
+            assert entity_id == "kg_ent_1"
+            return {"id": entity_id, "status": "usable"}
+
+    app = AdminApp(SimpleNamespace(database_url="postgresql://unused"), db=FakeDatabase())
+
+    assert app.confirm_kg_entity("kg_ent_1") == {"item": {"id": "kg_ent_1", "status": "usable"}}
+
+
+def test_admin_app_set_kg_relation_status_validates_status():
+    """KG 状态接口只允许 needs_review / usable / disabled。"""
+    app = AdminApp(SimpleNamespace(database_url="postgresql://unused"))
+
+    with pytest.raises(AdminValidationError, match="status"):
+        app.set_kg_relation_status("kg_rel_1", {"status": "archived"})
+
+
+def test_admin_app_set_kg_entity_status_delegates_to_database():
+    """禁用 KG 实体接口应调用数据库同步实体和投影状态。"""
+    calls = []
+
+    class FakeDatabase:
+        def set_kg_entity_status(self, entity_id, status):
+            calls.append((entity_id, status))
+            return {"id": entity_id, "status": status}
+
+    app = AdminApp(SimpleNamespace(database_url="postgresql://unused"), db=FakeDatabase())
+
+    result = app.set_kg_entity_status("kg_ent_1", {"status": "disabled"})
+
+    assert result == {"item": {"id": "kg_ent_1", "status": "disabled"}}
+    assert calls == [("kg_ent_1", "disabled")]
+
+
+def test_admin_app_create_kg_extraction_job_extracts_faq_candidates():
+    """KG 抽取入口应读取已审核 FAQ，调用模型，保存待审核候选并更新任务状态。"""
+    calls = []
+
+    class FakeChat:
+        model = "mimo-v2.5-pro"
+
+        def complete(self, system_prompt, user_prompt):
+            calls.append(("chat", system_prompt, user_prompt))
+            return """
+            {"entities":[{"name":"报告导出","entity_type":"feature_ui_action","evidence":[{"excerpt":"报告导出失败先检查权限。"}]}],
+             "relations":[{"head":"报告导出","head_type":"feature_ui_action","relation_type":"requires","tail":"账号权限","tail_type":"role_permission_channel","evidence":[{"excerpt":"先检查权限。"}]}]}
+            """
+
+    class FakeDatabase:
+        def create_kg_extraction_job(self, row):
+            calls.append(("create_job", row))
+            return {**row, "id": "kg_job_1", "status": "queued"}
+
+        def update_kg_extraction_job(self, job_id, **fields):
+            calls.append(("update_job", job_id, fields))
+            return {"id": job_id, **fields}
+
+        def get_faq(self, faq_id):
+            assert faq_id == "faq_1"
+            return {
+                "id": "faq_1",
+                "question": "报告导出失败怎么办？",
+                "answer": "先检查账号权限。",
+                "category": "报告",
+                "tags": ["报告", "权限"],
+                "status": "usable",
+            }
+
+        def save_kg_extraction_candidates(self, extraction):
+            calls.append(("save", extraction))
+            return {"entity_count": 2, "relation_count": 1, "evidence_count": 3}
+
+    app = AdminApp(
+        SimpleNamespace(database_url="postgresql://unused", chat_model="mimo-v2.5-pro"),
+        db=FakeDatabase(),
+        chat=FakeChat(),
+    )
+
+    result = app.create_kg_extraction_job({"source_type": "faq", "source_id": "faq_1"})
+
+    assert result["id"] == "kg_job_1"
+    assert result["status"] == "completed"
+    assert result["entity_count"] == 2
+    assert calls[0][0] == "create_job"
+    assert calls[1][2]["status"] == "processing"
+    assert calls[-1][2]["status"] == "completed"
+    assert calls[-2][0] == "save"
+
+
+def test_admin_app_create_kg_extraction_job_rejects_unknown_source_type():
+    """KG 抽取入口只允许 faq 和 document_chunk，避免扫全库误触发。"""
+    app = AdminApp(SimpleNamespace(database_url="postgresql://unused"))
+
+    with pytest.raises(AdminValidationError, match="source_type"):
+        app.create_kg_extraction_job({"source_type": "all", "source_id": "x"})
+
+
+def test_admin_app_create_kg_extraction_job_extracts_document_chunk_candidates():
+    """KG 抽取入口应支持单个文档切片，并保留文件名、章节和页码来源。"""
+    saved = []
+
+    class FakeChat:
+        model = "mimo-v2.5-pro"
+
+        def complete(self, system_prompt, user_prompt):
+            assert "平台使用手册.pdf" in user_prompt
+            assert "报告 > 导出" in user_prompt
+            assert "报告导出失败时，先检查账号权限。" in user_prompt
+            return """
+            {"entities":[{"name":"报告导出","entity_type":"feature_ui_action","evidence":[{"excerpt":"报告导出失败时，先检查账号权限。"}]}],
+             "relations":[]}
+            """
+
+    class FakeDatabase:
+        def create_kg_extraction_job(self, row):
+            return {**row, "id": "kg_job_doc", "status": "queued"}
+
+        def update_kg_extraction_job(self, job_id, **fields):
+            return {"id": job_id, **fields}
+
+        def get_import_chunk(self, chunk_id):
+            return {
+                "id": chunk_id,
+                "file_id": "imp_1",
+                "source_text": "报告导出失败时，先检查账号权限。",
+                "section_path": ["报告", "导出"],
+                "page_start": 3,
+                "page_end": 4,
+                "is_disabled": False,
+            }
+
+        def get_import_file(self, file_id):
+            return {"id": file_id, "original_name": "平台使用手册.pdf"}
+
+        def save_kg_extraction_candidates(self, extraction):
+            saved.append(extraction)
+            return {"entity_count": 1, "relation_count": 0, "evidence_count": 1}
+
+    app = AdminApp(
+        SimpleNamespace(database_url="postgresql://unused", chat_model="mimo-v2.5-pro"),
+        db=FakeDatabase(),
+        chat=FakeChat(),
+    )
+
+    result = app.create_kg_extraction_job({"source_type": "document_chunk", "source_id": "chunk_1"})
+
+    assert result["status"] == "completed"
+    assert saved[0]["entities"][0]["evidence"][0]["source_type"] == "document"
+    assert saved[0]["entities"][0]["evidence"][0]["source_id"] == "imp_1"
+    assert saved[0]["entities"][0]["evidence"][0]["source_chunk_id"] == "chunk_1"
+    assert saved[0]["entities"][0]["evidence"][0]["page_start"] == 3
+
+
+def test_admin_app_create_kg_extraction_job_marks_failed_when_model_output_invalid():
+    """模型输出解析失败时应更新任务为 failed，方便后续重试。"""
+    updates = []
+
+    class FakeChat:
+        model = "mimo-v2.5-pro"
+
+        def complete(self, system_prompt, user_prompt):
+            return '{"entities":[{"name":"报告导出","entity_type":"random_type","evidence":[{"excerpt":"x"}]}],"relations":[]}'
+
+    class FakeDatabase:
+        def create_kg_extraction_job(self, row):
+            return {**row, "id": "kg_job_bad", "status": "queued"}
+
+        def update_kg_extraction_job(self, job_id, **fields):
+            updates.append(fields)
+            return {"id": job_id, **fields}
+
+        def get_faq(self, faq_id):
+            return {
+                "id": faq_id,
+                "question": "报告导出失败怎么办？",
+                "answer": "先检查账号权限。",
+                "status": "usable",
+            }
+
+    app = AdminApp(
+        SimpleNamespace(database_url="postgresql://unused", chat_model="mimo-v2.5-pro"),
+        db=FakeDatabase(),
+        chat=FakeChat(),
+    )
+
+    result = app.create_kg_extraction_job({"source_type": "faq", "source_id": "faq_1"})
+
+    assert result["status"] == "failed"
+    assert "entity_type" in result["error"]
+    assert updates[0]["status"] == "processing"
+    assert updates[-1]["status"] == "failed"
+
+
 def test_retrieval_eval_item_payload_exposes_readable_source_fields():
     """评测候选应带可读来源信息，避免用户只能靠内部 id 标注期望命中。"""
     candidate = SimpleNamespace(
@@ -1880,29 +2231,36 @@ def test_admin_app_iter_assistant_chat_events_streams_hybrid_retrieval_trace():
 
     assert [event["type"] for event in events] == [
         "meta",
-        "step",
-        "step",
-        "step",
-        "step",
-        "step",
-        "step",
+        "step",  # input_question
+        "step",  # intent_detection
+        "step",  # query_embedding
+        "step",  # vector_search
+        "step",  # keyword_search
+        "step",  # hybrid_retrieval
+        "step",  # source_context
+        "step",  # answer_generation (running)
         "delta",
         "delta",
-        "step",
+        "step",  # answer_generation (completed)
         "done",
     ]
     assert events[0]["flow_id"] == "basic_rag"
     assert events[0]["stream"] is True
     assert "intent_detection" in events[0]["available_nodes"]
     assert "intent_detection" in events[0]["enabled_nodes"]
+    assert "vector_search" in events[0]["enabled_nodes"]
     assert "keyword_search" in events[0]["enabled_nodes"]
     assert events[2]["step_id"] == "intent_detection"
     assert events[2]["analysis"]["intent"] == "troubleshooting"
-    assert events[4]["step_id"] == "hybrid_retrieval"
-    assert events[4]["status"] == "completed"
-    assert events[4]["documents"][0]["id"] == "faq_1"
-    assert events[4]["documents"][0]["retrieval_channels"] == ["vector", "keyword"]
-    assert events[5]["title"] == "命中来源"
+    assert events[4]["step_id"] == "vector_search"
+    assert events[5]["step_id"] == "keyword_search"
+    assert isinstance(events[4]["duration_ms"], int)
+    assert isinstance(events[5]["duration_ms"], int)
+    assert events[6]["step_id"] == "hybrid_retrieval"
+    assert events[6]["status"] == "completed"
+    assert events[6]["documents"][0]["id"] == "faq_1"
+    assert events[6]["documents"][0]["retrieval_channels"] == ["vector", "keyword"]
+    assert events[7]["title"] == "命中来源"
     assert events[-1]["answer_draft"] == "请等待 10 分钟后刷新。"
     assert events[-1]["documents"][0]["score"] == 0.88
 

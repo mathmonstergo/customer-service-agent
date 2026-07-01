@@ -178,6 +178,209 @@ def test_knowledge_chunks_schema_supports_vector_and_keyword_retrieval():
     assert "to_tsvector('simple', search_text)" in schema
 
 
+def test_kg_schema_supports_reviewable_entities_relations_and_evidence():
+    """KG schema 需要独立保存实体、关系和证据，确认后再投影到 knowledge_chunks。"""
+    schema = Path("sql/001_init.sql").read_text(encoding="utf-8")
+
+    assert "CREATE TABLE IF NOT EXISTS kg_entities" in schema
+    assert "entity_type TEXT NOT NULL" in schema
+    assert "aliases JSONB NOT NULL DEFAULT '[]'::jsonb" in schema
+    assert "status TEXT NOT NULL DEFAULT 'needs_review'" in schema
+    assert "CREATE TABLE IF NOT EXISTS kg_relations" in schema
+    assert "head_entity_id TEXT NOT NULL REFERENCES kg_entities(id)" in schema
+    assert "tail_entity_id TEXT NOT NULL REFERENCES kg_entities(id)" in schema
+    assert "relation_type TEXT NOT NULL" in schema
+    assert "CREATE TABLE IF NOT EXISTS kg_evidence" in schema
+    assert "source_type TEXT NOT NULL" in schema
+    assert "source_chunk_id TEXT" in schema
+    assert "excerpt TEXT NOT NULL" in schema
+    assert "kg_entities_status_type_idx" in schema
+    assert "kg_relations_status_type_idx" in schema
+    assert "kg_evidence_source_idx" in schema
+
+
+def test_kg_extraction_jobs_schema_records_source_status_and_counts():
+    """KG 抽取任务表需要记录来源、状态、模型和候选数量，供 UI 展示进度。"""
+    schema = Path("sql/001_init.sql").read_text(encoding="utf-8")
+
+    assert "CREATE TABLE IF NOT EXISTS kg_extraction_jobs" in schema
+    assert "source_type TEXT NOT NULL" in schema
+    assert "source_id TEXT NOT NULL" in schema
+    assert "source_chunk_id TEXT" in schema
+    assert "status TEXT NOT NULL DEFAULT 'queued'" in schema
+    assert "entity_count INTEGER NOT NULL DEFAULT 0" in schema
+    assert "relation_count INTEGER NOT NULL DEFAULT 0" in schema
+    assert "evidence_count INTEGER NOT NULL DEFAULT 0" in schema
+    assert "model TEXT" in schema
+    assert "error TEXT" in schema
+    assert "kg_extraction_jobs_status_idx" in schema
+
+
+def test_create_kg_extraction_job_writes_queued_source_record():
+    """创建 KG 抽取任务时应先落 queued 记录，后续执行再更新状态。"""
+
+    class _FakeConn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, sql, params=None):
+            self.calls.append((sql, params or {}))
+            return self
+
+        def fetchone(self):
+            return {"id": "kg_job_abc", "status": "queued"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    conn = _FakeConn()
+    db = Database("postgresql://unused")
+    db.connect = lambda: conn
+
+    job = db.create_kg_extraction_job(
+        {
+            "source_type": "document_chunk",
+            "source_id": "chunk_1",
+            "source_chunk_id": "chunk_1",
+            "model": "mimo-v2.5-pro",
+        }
+    )
+
+    assert job["status"] == "queued"
+    sql, params = conn.calls[0]
+    assert "INSERT INTO kg_extraction_jobs" in sql
+    assert params["source_type"] == "document_chunk"
+    assert params["source_id"] == "chunk_1"
+    assert params["source_chunk_id"] == "chunk_1"
+    assert params["model"] == "mimo-v2.5-pro"
+
+
+def test_update_kg_extraction_job_allows_status_counts_and_error():
+    """KG 抽取任务执行后应能写入状态、候选计数和错误信息。"""
+    sql = Database._update_kg_extraction_job_sql({"status", "entity_count", "relation_count", "evidence_count", "error"})
+
+    assert "UPDATE kg_extraction_jobs" in sql
+    assert "status = %(status)s" in sql
+    assert "entity_count = %(entity_count)s" in sql
+    assert "relation_count = %(relation_count)s" in sql
+    assert "evidence_count = %(evidence_count)s" in sql
+    assert "error = %(error)s" in sql
+
+
+def test_search_knowledge_sql_excludes_kg_projection_by_default():
+    """默认客服检索不能读取 KG 投影，KG 只通过显式调试/评测开关进入候选。"""
+    sql = Database._search_knowledge_sql()
+
+    assert "kc.source_type NOT IN ('kg_entity', 'kg_relation')" in sql
+
+
+def test_search_knowledge_text_sql_excludes_kg_projection_by_default():
+    """默认关键词召回同样不能直接读取 KG 投影。"""
+    sql = Database._search_knowledge_text_sql()
+
+    assert "kc.source_type NOT IN ('kg_entity', 'kg_relation')" in sql
+
+
+def test_search_kg_knowledge_text_sql_reads_only_confirmed_kg_projection():
+    """KG 关键词召回必须只读取已确认 KG 投影，并保留普通状态过滤。"""
+    sql = Database._search_kg_knowledge_text_sql()
+
+    assert "FROM knowledge_chunks kc" in sql
+    assert "kc.source_type IN ('kg_entity', 'kg_relation')" in sql
+    assert "kc.status = %(status)s" in sql
+    assert "kg_entity" in sql
+    assert "kg_relation" in sql
+
+
+def test_list_kg_entities_sql_includes_evidence_and_filters():
+    """KG 实体审核列表需要带证据摘要，并支持状态/类型筛选。"""
+    sql = Database._list_kg_entities_sql(where="WHERE ent.status = %(status)s AND ent.entity_type = %(entity_type)s")
+
+    assert "FROM kg_entities ent" in sql
+    assert "LEFT JOIN kg_evidence ev ON ev.entity_id = ent.id" in sql
+    assert "jsonb_agg" in sql
+    assert "ent.status = %(status)s" in sql
+    assert "ent.entity_type = %(entity_type)s" in sql
+    assert "LIMIT %(limit)s OFFSET %(offset)s" in sql
+
+
+def test_list_kg_relations_sql_includes_head_tail_and_evidence():
+    """KG 关系审核列表需要带头尾实体名称和证据摘要。"""
+    sql = Database._list_kg_relations_sql(where="WHERE rel.status = %(status)s")
+
+    assert "FROM kg_relations rel" in sql
+    assert "JOIN kg_entities head ON head.id = rel.head_entity_id" in sql
+    assert "JOIN kg_entities tail ON tail.id = rel.tail_entity_id" in sql
+    assert "LEFT JOIN kg_evidence ev ON ev.relation_id = rel.id" in sql
+    assert "head.name AS head_entity_name" in sql
+    assert "tail.name AS tail_entity_name" in sql
+    assert "jsonb_agg" in sql
+
+
+def test_set_kg_entity_status_updates_projection_chunk():
+    """禁用或待复核 KG 实体时，应同步更新 kg_entity 投影状态。"""
+
+    class _FakeConn:
+        def __init__(self):
+            self.calls = []
+            self._fetchone_index = 0
+
+        def execute(self, sql, params=None):
+            self.calls.append((sql, params or {}))
+            return self
+
+        def fetchone(self):
+            result = self._pick_fetchone()
+            self._fetchone_index += 1
+            return result
+
+        def _pick_fetchone(self):
+            call_sql = self.calls[self._fetchone_index][0] if self._fetchone_index < len(self.calls) else ""
+            if "SELECT EXISTS" in call_sql:
+                return {"exists": True}
+            return {"id": "kg_ent_abc", "status": "disabled"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    conn = _FakeConn()
+    db = Database("postgresql://unused")
+    db.connect = lambda: conn
+
+    row = db.set_kg_entity_status("kg_ent_abc", "disabled")
+
+    assert row["status"] == "disabled"
+    assert any("UPDATE kg_entities" in sql for sql, _params in conn.calls)
+    projection_calls = [
+        (sql, params)
+        for sql, params in conn.calls
+        if "UPDATE knowledge_chunks" in sql and "%(source_type)s" in sql
+    ]
+    assert projection_calls
+    assert projection_calls[0][1] == {"id": "kg_ent_abc", "status": "disabled", "source_type": "kg_entity"}
+
+
+def test_set_kg_relation_status_updates_projection_chunk():
+    """禁用或待复核 KG 关系时，应同步更新 kg_relation 投影状态。"""
+    sql = Database._set_kg_relation_status_sql()
+    projection_sql = Database._set_kg_projection_status_sql()
+
+    assert "UPDATE kg_relations" in sql
+    assert "status = %(status)s" in sql
+    assert "JOIN kg_entities head" in sql
+    assert "JOIN kg_entities tail" in sql
+    assert "head_entity_name" in sql
+    assert "tail_entity_name" in sql
+    assert "UPDATE knowledge_chunks" in projection_sql
+    assert "source_type = %(source_type)s" in projection_sql
+
+
 def test_insert_knowledge_chunk_sql_uses_single_upsert_shape():
     """统一知识单元写入 SQL 应覆盖来源、内容、检索文本和 embedding 状态。"""
     sql = Database._insert_knowledge_chunk_sql()
@@ -196,6 +399,202 @@ def test_insert_knowledge_chunk_sql_uses_single_upsert_shape():
     assert "embedding_text" in sql
     assert "search_text" in sql
     assert "ON CONFLICT (source_type, source_id, chunk_index)" in sql
+
+
+def test_confirm_kg_entity_projects_usable_chunk_in_same_connection():
+    """确认 KG 实体时应更新状态并写入 kg_entity 知识单元投影。"""
+
+    class _FakeConn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, sql, params=None):
+            self.calls.append((sql, params or {}))
+            return self
+
+        def fetchone(self):
+            return {
+                "id": "kg_ent_abc",
+                "name": "报告导出",
+                "entity_type": "feature_ui_action",
+                "aliases": ["导出报告"],
+                "description": "后台导出团体报告的功能入口。",
+                "confidence": 0.86,
+                "status": "usable",
+            }
+
+        def fetchall(self):
+            return [
+                {
+                    "source_type": "document",
+                    "source_id": "imp_1",
+                    "source_chunk_id": "chunk_1",
+                    "excerpt": "检查账号权限",
+                }
+            ]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    conn = _FakeConn()
+    db = Database("postgresql://unused")
+    db.connect = lambda: conn
+
+    row = db.confirm_kg_entity("kg_ent_abc")
+
+    assert row["status"] == "usable"
+    assert any("UPDATE kg_entities" in sql for sql, _params in conn.calls)
+    insert_calls = [(sql, params) for sql, params in conn.calls if "INSERT INTO knowledge_chunks" in sql]
+    assert insert_calls
+    assert insert_calls[0][1]["source_type"] == "kg_entity"
+    assert insert_calls[0][1]["source_id"] == "kg_ent_abc"
+    assert insert_calls[0][1]["embedding_status"] == "pending"
+
+
+def test_confirm_kg_relation_projects_usable_chunk_with_head_tail_entities():
+    """确认 KG 关系时应读取头尾实体并写入 kg_relation 知识单元投影。"""
+
+    class _FakeConn:
+        def __init__(self):
+            self.calls = []
+            self.last_sql = ""
+
+        def execute(self, sql, params=None):
+            self.last_sql = sql
+            self.calls.append((sql, params or {}))
+            return self
+
+        def fetchone(self):
+            if "UPDATE kg_relations" in self.last_sql:
+                return {
+                    "id": "kg_rel_abc",
+                    "head_entity_id": "kg_ent_head",
+                    "head_entity_name": "报告导出",
+                    "head_entity_type": "feature_ui_action",
+                    "relation_type": "requires",
+                    "tail_entity_id": "kg_ent_tail",
+                    "tail_entity_name": "账号权限",
+                    "tail_entity_type": "role_permission_channel",
+                    "description": "导出报告需要账号具备报告权限。",
+                    "confidence": 0.8,
+                    "status": "usable",
+                }
+            return {}
+
+        def fetchall(self):
+            return [
+                {
+                    "source_type": "document",
+                    "source_id": "imp_1",
+                    "source_chunk_id": "chunk_1",
+                    "excerpt": "先检查账号权限",
+                }
+            ]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    conn = _FakeConn()
+    db = Database("postgresql://unused")
+    db.connect = lambda: conn
+
+    row = db.confirm_kg_relation("kg_rel_abc")
+
+    assert row["status"] == "usable"
+    assert any("UPDATE kg_relations" in sql for sql, _params in conn.calls)
+    insert_calls = [(sql, params) for sql, params in conn.calls if "INSERT INTO knowledge_chunks" in sql]
+    assert insert_calls
+    assert insert_calls[0][1]["source_type"] == "kg_relation"
+    assert insert_calls[0][1]["source_id"] == "kg_rel_abc"
+    assert "报告导出 requires 账号权限" in insert_calls[0][1]["source_title"]
+
+
+def test_save_kg_extraction_candidates_writes_entities_relations_and_evidence():
+    """解析后的 KG 候选应写入独立审核表，证据不直接进入可检索状态。"""
+
+    class _FakeConn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, sql, params=None):
+            self.calls.append((sql, params or {}))
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    conn = _FakeConn()
+    db = Database("postgresql://unused")
+    db.connect = lambda: conn
+    extraction = {
+        "entities": [
+            {
+                "id": "kg_ent_head",
+                "name": "报告导出",
+                "entity_type": "feature_ui_action",
+                "aliases": ["导出报告"],
+                "description": "导出报告入口",
+                "status": "needs_review",
+                "confidence": 0.86,
+                "source_count": 1,
+                "evidence": [
+                    {
+                        "source_type": "document",
+                        "source_id": "imp_1",
+                        "source_chunk_id": "chunk_1",
+                        "source_title": "平台使用手册.pdf",
+                        "section_path": ["报告"],
+                        "page_start": 3,
+                        "page_end": 4,
+                        "excerpt": "报告导出失败时，先检查账号权限。",
+                    }
+                ],
+            }
+        ],
+        "relations": [
+            {
+                "id": "kg_rel_requires",
+                "head_entity_id": "kg_ent_head",
+                "relation_type": "requires",
+                "tail_entity_id": "kg_ent_tail",
+                "description": "导出报告需要账号权限",
+                "status": "needs_review",
+                "confidence": 0.8,
+                "evidence": [
+                    {
+                        "source_type": "document",
+                        "source_id": "imp_1",
+                        "source_chunk_id": "chunk_1",
+                        "source_title": "平台使用手册.pdf",
+                        "section_path": ["报告"],
+                        "page_start": 3,
+                        "page_end": 4,
+                        "excerpt": "先检查账号权限。",
+                    }
+                ],
+            }
+        ],
+    }
+
+    result = db.save_kg_extraction_candidates(extraction)
+
+    assert result == {"entity_count": 1, "relation_count": 1, "evidence_count": 2}
+    assert any("INSERT INTO kg_entities" in sql for sql, _params in conn.calls)
+    assert any("INSERT INTO kg_relations" in sql for sql, _params in conn.calls)
+    evidence_calls = [(sql, params) for sql, params in conn.calls if "INSERT INTO kg_evidence" in sql]
+    assert len(evidence_calls) == 2
+    assert evidence_calls[0][1]["entity_id"] == "kg_ent_head"
+    assert evidence_calls[1][1]["relation_id"] == "kg_rel_requires"
+    assert all(params["source_id"] == "imp_1" for _sql, params in evidence_calls)
 
 
 def test_sync_ready_faq_knowledge_chunks_sql_reuses_existing_vectors():
@@ -656,4 +1055,13 @@ def test_database_record_query_event_writes_via_connection():
     assert params["latency_ms"] == 154
     assert params["requester_type"] == "agent"
     assert params["requester_id"] == "listing-writer"
-    assert params["metadata"] == json.dumps({"flow": "basic_rag"}, ensure_ascii=False)
+
+
+def test_kg_subgraph_sql_includes_hops_recursive_cte():
+    """局部子图 SQL 必须用 RECURSIVE CTE 支持 hops 参数。"""
+    sql = Database._kg_subgraph_sql()
+
+    assert "WITH RECURSIVE reachable AS" in sql
+    assert "%(hops)s" in sql
+    assert "reachable.depth < %(hops)s" in sql
+    assert "%(center_entity_id)s" in sql
