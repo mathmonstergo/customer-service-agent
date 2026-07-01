@@ -1,0 +1,103 @@
+# 知识图谱 MVP
+
+## 目标
+
+设计并落地第一版轻量知识图谱能力：从已审核知识中抽取实体/关系候选，经过人工审核后形成可追溯结构化知识，后续用于检索增强和客服排查。
+
+## 影响范围
+
+* 数据库 schema：可能新增实体、关系、证据、审核状态相关表。
+* AI 抽取逻辑：新增结构化实体/关系候选生成和 JSON 解析。
+* 后端 API：候选列表、审核、状态流转、可能的检索扩展接口。
+* 检索链路：后续可能在 `retrieval.py` / `rag.py` 中加入 KG 扩召回。
+* 管理后台 UI：候选审核列表、实体/关系详情、来源证据追溯。
+* 后续可视化：预留局部子图 API 和稳定节点/边数据结构，3D 图谱拆到后续阶段。
+* 评测：用现有效果验收工具验证 KG 扩召回收益。
+
+## 初步步骤
+
+1. 已调研本地 RAGFlow GraphRAG 实现，确认其采用“KG 产物写回 doc store + use_kg 合成上下文”的模式。
+2. 已调研主流 KG / GraphRAG / 可视化实践，确认 3D 图谱应作为后续消费层，不应替代第一版审核和证据底座。
+3. 已确认 MVP 路径采用“独立审核表 + 确认后投影为 KG chunk + 预留局部子图 API”。
+4. 已确认第一版实体类型、关系类型采用固定客服领域枚举。
+5. 已确认第一版接入最小 KG 检索增强，但仅通过显式开关用于评测/调试，不默认影响客服回答链路。
+6. 设计数据模型和状态流转，并预留局部子图查询 API。
+7. 设计 AI 抽取输入/输出 JSON 契约。
+8. 如涉及 UI，先给用户 UI prompt，等用户确认布局图后再实现。
+9. 按 TDD 补后端 schema/API/解析/检索测试。
+10. 实现后端和前端最小闭环。
+11. 运行后端与前端质量门，并记录验证结果。
+
+## 需要用户确认
+
+* 第一版是否接受“不做 3D，只预留局部子图 API；3D 放到后续阶段”的范围。
+* 当前无阻塞范围问题；进入实现前需按 Trellis 读取项目规范并拆分实现步骤。
+
+## 预期效果
+
+* AI 抽取不会直接污染正式知识库。
+* 每个实体/关系都能追溯到 FAQ 或文档切片。
+* 用户能审核、禁用或确认图谱候选。
+* 第一版产出的实体/关系结构可被后续 2D/3D 图谱复用，不需要重建事实来源。
+* 实体/关系类型固定，便于审核筛选、检索扩展和后续图谱可视化配色。
+* KG 最小检索增强可通过显式开关在评测/调试中验证，不默认影响所有客服回答。
+* 后续可以用评测工作台判断 KG 扩召回是否有效。
+
+## 当前确认状态
+
+已确认 MVP 路径；后端第一版底座和前端审核工作台已实现并通过验证。
+
+## 实施记录
+
+* 新增 `customer_service_agent/kg.py`：固定 KG 实体/关系枚举，解析模型 JSON 输出，生成稳定实体/关系 ID，强制证据必填，候选默认 `needs_review`。
+* 新增 `customer_service_agent/kg_ai.py`：调用 Chat 模型从单条 FAQ 或文档切片抽取 KG 候选，要求输出固定 JSON schema。
+* 新增 `KnowledgeGraphMixin`：保存 KG 抽取候选到 `kg_entities`、`kg_relations`、`kg_evidence`；确认实体/关系后分别投影为 `knowledge_chunks.source_type='kg_entity'` / `kg_relation`。
+* 更新 `sql/001_init.sql`：新增 KG 抽取任务、实体、关系、证据表和状态/类型索引。
+* 新增 `POST /api/kg/extraction-jobs`：第一版同步执行单来源抽取任务，支持 `source_type=faq` 和 `source_type=document_chunk`；任务状态记录 `queued`、`processing`、`completed`、`failed`。
+* 新增 KG 审核后端 API：`GET /api/kg/entities`、`GET /api/kg/relations`、确认实体/关系、更新实体/关系状态。
+* 审核列表返回证据数组；禁用或待复核实体/关系会同步更新对应 `kg_entity` / `kg_relation` 投影状态。
+* 更新默认检索 SQL：普通 `search_knowledge` / `search_knowledge_text` 显式排除 `kg_entity` / `kg_relation`，避免 KG 默认影响客服回答链路。
+* 更新评测运行：`POST /api/retrieval/eval-cases/{case_id}/run` 支持 `{"use_kg": true}`，仅在显式开启时调用 KG 召回，并记录 `retrieval_hybrid_v1_kg_debug`。
+* 新增局部子图入口：`GET /api/kg/subgraph`，支持中心实体、状态、实体类型、关系类型、跳数和数量限制，供后续 2D/3D 可视化复用。
+* 更新 `.trellis/spec/backend/customer-service-agent-db-contracts.md`，记录 KG 审核、投影和显式检索契约。
+* 新增 React 管理页 `/knowledge-graph`：沿用现有左侧导航、顶部工具栏、单列表和右侧抽屉结构，不做常驻三栏。
+* 前端新增 KG 类型和 React Query hooks：实体/关系列表、确认、状态更新、局部子图、单来源抽取任务。
+* 审核 UI 支持实体/关系 tab、状态筛选、类型筛选、当前页搜索、分页、刷新、AI 抽取候选入口。
+* 右侧详情抽屉展示实体/关系元数据、证据列表、审核动作；实体已确认后展示局部关系邻域。
+* 更新 `.trellis/spec/frontend/components.md`，记录 KG 审核 UI 必须使用“工具栏 + 单列表 + 右抽屉”的约定，3D 可视化作为后续视图。
+
+## 验证记录
+
+* `conda run -n customer-service-agent python -m pytest`：275 passed。
+* `conda run -n customer-service-agent python -m ruff check .`：All checks passed。
+* `conda run -n customer-service-agent python -m customer_service_agent.cli check-config`：config ok。
+* `pnpm test src/pages/kg/helpers.test.ts`：8 passed。
+* `pnpm lint`：通过。
+* `pnpm build`：通过；Vite 仍提示单包体积超过 500 kB 的既有构建警告。
+* Playwright CLI 打开 `http://127.0.0.1:5173/static/dist/#/knowledge-graph`：页面标题、左侧“知识图谱”导航、实体/关系 tab、空态和“抽取候选”弹层均可见。
+* `curl http://127.0.0.1:8765/#/knowledge-graph`：200 text/html。
+* `curl http://127.0.0.1:8765/api/kg/relations?limit=1`：200 application/json。
+
+## 未做事项
+
+* 尚未实现 3D 可视化；当前只预留局部子图 API 和稳定节点/边结构。
+* 当前抽取 job 为单来源同步任务，尚未做批量文件抽取和后台异步队列。
+* 本地 KG 候选数据为空，未向业务库写入假数据；右侧抽屉的真实数据点选需要先产生实体/关系候选。
+
+## 本地 RAGFlow 调研摘要
+
+* `rag/svr/task_executor.py` 在 `task_type == "graphrag"` 时创建 KB 级 GraphRAG 任务。
+* `rag/graphrag/general/index.py` 从已有文档 chunk 构建文档子图，再合并为 KB 全局图。
+* `rag/graphrag/utils.py` 将实体和关系写为特殊 chunk，使用 `knowledge_graph_kwd` 区分 `graph`、`subgraph`、`entity`、`relation`、`community_report`。
+* `rag/graphrag/search.py` 检索实体、关系和社区报告后，返回一条 `Related content in Knowledge Graph` 合成上下文。
+* RAGFlow 的 `use_kg` 是检索/聊天侧开关；生成侧配置包括实体类型、Light/General、实体消歧和社区报告。
+* 本项目不能直接照搬 RAGFlow，因为本项目要求 AI 生成结果先人工审核，再进入正式可检索知识。
+
+## 主流实践与 3D 可视化调研摘要
+
+* Microsoft GraphRAG 先做 TextUnits、实体、关系、claims、社区聚类和查询增强，图形展示只是理解结构的辅助层。
+* Google Knowledge Graph Search API 强调实体查询和 API 访问，Google RAG Engine 强调 corpus/import/retrieval 等数据和检索底座。
+* 云厂商和图数据库的 GenAI 方案通常先把图谱存储、查询、权限和质量做好，再提供图浏览器或图探索工具。
+* 3D 图谱适合后续探索、演示和局部排查，不适合第一版承担审核主流程。
+* 本项目当前前端没有 Three.js、3d-force-graph、D3、Cytoscape、Sigma 等依赖；做 3D 会引入新的前端渲染栈和浏览器验证成本。
+* 推荐路线：第一版做可信 KG 底座和局部子图 API；第二阶段做图谱治理 UI；第三阶段做 3D 可视化图谱。
