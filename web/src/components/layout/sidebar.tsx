@@ -4,6 +4,7 @@ import {
   ChevronLeft,
   ChevronRight,
   FileText,
+  Network,
   MessageSquare,
   Sparkles,
 } from 'lucide-react'
@@ -14,6 +15,7 @@ const NAV_MIGRATED = [
   { path: '/documents', label: '文档管理', icon: FileText },
   { path: '/faqs', label: 'FAQ 管理', icon: Sparkles },
   { path: '/assistant', label: '智能问答', icon: MessageSquare },
+  { path: '/knowledge-graph', label: '知识图谱', icon: Network },
   { path: '/evaluation', label: '效果验收', icon: Activity },
 ]
 

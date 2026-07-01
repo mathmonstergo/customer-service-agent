@@ -7,6 +7,7 @@ import DocumentsPage from './pages/DocumentsPage'
 import FaqsPage from './pages/FaqsPage'
 import AssistantPage from './pages/AssistantPage'
 import EvaluationPage from './pages/EvaluationPage'
+import KnowledgeGraphPage from './pages/KnowledgeGraphPage'
 import './index.css'
 
 const queryClient = new QueryClient({
@@ -29,6 +30,7 @@ createRoot(document.getElementById('root')!).render(
             <Route path="/documents" element={<DocumentsPage />} />
             <Route path="/faqs" element={<FaqsPage />} />
             <Route path="/assistant" element={<AssistantPage />} />
+            <Route path="/knowledge-graph" element={<KnowledgeGraphPage />} />
             <Route path="/evaluation" element={<EvaluationPage />} />
             <Route path="*" element={<Navigate to="/documents" replace />} />
           </Route>

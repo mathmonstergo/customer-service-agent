@@ -12,6 +12,11 @@ import type {
   ImportChunkListResponse,
   ImportFile,
   ImportListResponse,
+  KgEntity,
+  KgExtractionJob,
+  KgListResponse,
+  KgRelation,
+  KgSubgraphResponse,
   MessagesResponse,
   ProviderModelsResponse,
   ProviderProbeResponse,
@@ -496,6 +501,156 @@ export function useSaveRetrievalAlias() {
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['retrieval-aliases'] })
+    },
+  })
+}
+
+// ───── Knowledge Graph ─────
+
+export interface KgEntityListParams {
+  status?: string
+  entity_type?: string
+  limit?: number
+  offset?: number
+}
+
+// 拉取 KG 实体候选列表；queryKey 覆盖筛选和分页，避免审核状态切换后复用旧缓存。
+export function useKgEntities(params: KgEntityListParams = {}) {
+  return useQuery({
+    queryKey: ['kg-entities', params],
+    queryFn: () =>
+      requestJson<KgListResponse<KgEntity>>('/api/kg/entities', {
+        query: {
+          status: params.status,
+          entity_type: params.entity_type,
+          limit: params.limit ?? 50,
+          offset: params.offset ?? 0,
+        },
+      }),
+    staleTime: 10_000,
+    placeholderData: (prev) => prev,
+  })
+}
+
+export interface KgRelationListParams {
+  status?: string
+  relation_type?: string
+  limit?: number
+  offset?: number
+}
+
+// 拉取 KG 关系列表；后端已带头尾实体和证据，前端只做展示和轻量筛选。
+export function useKgRelations(params: KgRelationListParams = {}) {
+  return useQuery({
+    queryKey: ['kg-relations', params],
+    queryFn: () =>
+      requestJson<KgListResponse<KgRelation>>('/api/kg/relations', {
+        query: {
+          status: params.status,
+          relation_type: params.relation_type,
+          limit: params.limit ?? 50,
+          offset: params.offset ?? 0,
+        },
+      }),
+    staleTime: 10_000,
+    placeholderData: (prev) => prev,
+  })
+}
+
+// 确认实体并触发后端投影为可检索 KG chunk；成功后刷新 KG 列表和默认 FAQ/文档检索缓存。
+export function useConfirmKgEntity() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) =>
+      requestJson<{ item: KgEntity }>(`/api/kg/entities/${encodeURIComponent(id)}/confirm`, {
+        method: 'POST',
+        body: {},
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['kg-entities'] })
+      qc.invalidateQueries({ queryKey: ['kg-subgraph'] })
+    },
+  })
+}
+
+// 确认关系并触发后端投影；关系确认后局部子图也需要刷新。
+export function useConfirmKgRelation() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) =>
+      requestJson<{ item: KgRelation }>(`/api/kg/relations/${encodeURIComponent(id)}/confirm`, {
+        method: 'POST',
+        body: {},
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['kg-relations'] })
+      qc.invalidateQueries({ queryKey: ['kg-subgraph'] })
+    },
+  })
+}
+
+// 更新实体审核状态；用于停用误抽取实体或退回待审核。
+export function useSetKgEntityStatus() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, status }: { id: string; status: string }) =>
+      requestJson<{ item: KgEntity }>(`/api/kg/entities/${encodeURIComponent(id)}/status`, {
+        method: 'POST',
+        body: { status },
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['kg-entities'] })
+      qc.invalidateQueries({ queryKey: ['kg-subgraph'] })
+    },
+  })
+}
+
+// 更新关系审核状态；用于停用误抽取关系或退回待审核。
+export function useSetKgRelationStatus() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, status }: { id: string; status: string }) =>
+      requestJson<{ item: KgRelation }>(`/api/kg/relations/${encodeURIComponent(id)}/status`, {
+        method: 'POST',
+        body: { status },
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['kg-relations'] })
+      qc.invalidateQueries({ queryKey: ['kg-subgraph'] })
+    },
+  })
+}
+
+// 读取局部子图；当前作为详情抽屉的关系邻域，后续 3D 视图也复用同一个返回结构。
+export function useKgSubgraph(centerEntityId: string | null, options?: { enabled?: boolean }) {
+  return useQuery({
+    queryKey: ['kg-subgraph', centerEntityId],
+    queryFn: () =>
+      requestJson<KgSubgraphResponse>('/api/kg/subgraph', {
+        query: {
+          center_entity_id: centerEntityId,
+          hops: 1,
+          status: 'usable',
+          limit: 40,
+        },
+      }),
+    enabled: !!centerEntityId && (options?.enabled ?? true),
+    staleTime: 10_000,
+  })
+}
+
+// 创建并同步执行 KG 抽取任务；只生成 needs_review 候选，不直接进入检索。
+export function useCreateKgExtractionJob() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (payload: { source_type: string; source_id: string; source_chunk_id?: string }) =>
+      requestJson<KgExtractionJob>('/api/kg/extraction-jobs', {
+        method: 'POST',
+        body: payload,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['kg-entities'] })
+      qc.invalidateQueries({ queryKey: ['kg-relations'] })
     },
   })
 }

@@ -41,6 +41,12 @@ export const faqStatusLabel: Record<string, string> = {
   disabled: '禁用',
 }
 
+export const kgReviewStatusLabelMap: Record<string, string> = {
+  usable: '已确认',
+  needs_review: '待审核',
+  disabled: '已停用',
+}
+
 export const confidenceLabel: Record<string, string> = {
   high: '高',
   medium: '中',

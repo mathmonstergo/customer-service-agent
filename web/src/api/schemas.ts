@@ -287,3 +287,96 @@ export interface RetrievalAliasListResponse {
   items: RetrievalAlias[]
   total: number
 }
+
+// Knowledge Graph
+
+export interface KgEvidence {
+  id: string
+  source_type: string
+  source_id: string
+  source_chunk_id: string | null
+  source_title: string | null
+  section_path: string[] | null
+  page_start: number | null
+  page_end: number | null
+  excerpt: string
+  [key: string]: unknown
+}
+
+export interface KgEntity {
+  id: string
+  name: string
+  entity_type: string
+  aliases: string[]
+  description: string | null
+  status: string
+  confidence: number | null
+  evidence: KgEvidence[]
+  created_at?: string
+  updated_at?: string
+  [key: string]: unknown
+}
+
+export interface KgRelation {
+  id: string
+  head_entity_id: string
+  relation_type: string
+  tail_entity_id: string
+  description: string | null
+  status: string
+  confidence: number | null
+  head_entity_name: string
+  head_entity_type: string
+  tail_entity_name: string
+  tail_entity_type: string
+  evidence: KgEvidence[]
+  created_at?: string
+  updated_at?: string
+  [key: string]: unknown
+}
+
+export interface KgListResponse<T> {
+  items: T[]
+  total: number
+}
+
+export interface KgSubgraphNode {
+  id: string
+  name: string
+  entity_type: string
+  description?: string | null
+  status?: string | null
+  confidence?: number | null
+}
+
+export interface KgSubgraphEdge {
+  id: string
+  source: string
+  target: string
+  relation_type: string
+  description?: string | null
+  confidence?: number | null
+  status?: string | null
+  evidence_count?: number
+}
+
+export interface KgSubgraphResponse {
+  nodes: KgSubgraphNode[]
+  edges: KgSubgraphEdge[]
+}
+
+export interface KgExtractionJob {
+  id: string
+  source_type: string
+  source_id: string
+  source_chunk_id?: string | null
+  status: string
+  entity_count: number
+  relation_count: number
+  evidence_count: number
+  model?: string | null
+  error?: string | null
+  created_at?: string
+  updated_at?: string
+  [key: string]: unknown
+}
