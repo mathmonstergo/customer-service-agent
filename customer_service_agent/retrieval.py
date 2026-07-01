@@ -105,15 +105,16 @@ def fuse_retrieval_candidates(
     *,
     vector_docs: Iterable[Any],
     keyword_docs: Iterable[Any],
+    kg_docs: Iterable[Any] | None = None,
     top_k: int,
     rrf_k: int = 60,
 ) -> list[FusedCandidate]:
-    """用 RRF 融合向量和关键词候选，同一知识单元多通道命中时排位更靠前。"""
+    """用 RRF 融合多路候选，关键约束是 KG 通道必须由调用方显式传入。"""
     candidates: dict[str, dict[str, Any]] = {}
 
     def add_channel(docs: Iterable[Any], channel: str) -> None:
         for rank, doc in enumerate(docs, start=1):
-            doc_id = str(getattr(doc, "id"))
+            doc_id = str(getattr(doc, "id", doc.get("id") if isinstance(doc, dict) else ""))
             item = candidates.setdefault(
                 doc_id,
                 {
@@ -135,6 +136,8 @@ def fuse_retrieval_candidates(
 
     add_channel(vector_docs, "vector")
     add_channel(keyword_docs, "keyword")
+    if kg_docs is not None:
+        add_channel(kg_docs, "kg")
 
     fused = [
         FusedCandidate(

@@ -40,6 +40,7 @@ from customer_service_agent.import_dedupe import compare_candidate_duplicate
 from customer_service_agent.import_ai import ImportAiAssistant, ImportCandidateError
 from customer_service_agent.import_questions import ImportQuestionAssistant, ImportQuestionError
 from customer_service_agent.import_models import detect_file_type
+from customer_service_agent.kg_ai import KnowledgeGraphAiAssistant
 from customer_service_agent.llm import ChatClient, EmbeddingClient, RerankClient, build_openai_client
 from customer_service_agent.markdown_import import chunk_messages, parse_wechat_messages
 from customer_service_agent.rag import build_user_prompt, load_system_prompt
@@ -78,6 +79,8 @@ REMOTE_ADMIN_ENV = "ALLOW_REMOTE_ADMIN"
 
 VALID_FAQ_STATUSES = {"usable", "needs_review", "disabled"}
 VALID_IMPORT_PARSE_MODES = {"by_days", "by_gap"}
+VALID_KG_EXTRACTION_SOURCE_TYPES = {"faq", "document_chunk"}
+VALID_KG_REVIEW_STATUSES = {"usable", "needs_review", "disabled"}
 
 
 def normalize_document_chunker_type(value: Any, *, default: str = "naive") -> str:
@@ -90,6 +93,7 @@ def normalize_document_chunker_type(value: Any, *, default: str = "naive") -> st
         raise AdminValidationError(f"chunker_type must be one of: {allowed}")
     return selected
 RETRIEVAL_EVAL_STRATEGY = "retrieval_hybrid_v1"
+RETRIEVAL_EVAL_KG_DEBUG_STRATEGY = "retrieval_hybrid_v1_kg_debug"
 DOCUMENT_CHILD_INDEX_OFFSET = 1
 
 
@@ -868,12 +872,18 @@ class AdminApp:
         row = normalize_retrieval_alias_payload(payload)
         return self.database().upsert_retrieval_alias(row)
 
-    def run_retrieval_eval_case(self, case_id: str) -> dict[str, Any]:
-        """运行单条检索评测，记录混合召回候选和指标。"""
+    def run_retrieval_eval_case(
+        self,
+        case_id: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """运行单条检索评测，关键约束是 KG 召回必须由 use_kg 显式开启。"""
         case = self.database().get_retrieval_eval_case(case_id)
         if case is None:
             raise AdminNotFoundError(f"Retrieval eval case not found: {case_id}")
 
+        payload = payload or {}
+        use_kg = self._bool_payload(payload, "use_kg", False)
         question = str(case["question"]).strip()
         analysis = analyze_query(question, self.chat_client())
         query = analysis.query_rewrite or question
@@ -893,9 +903,15 @@ class AdminApp:
             top_k=candidate_limit,
             query_terms=query_terms,
         )
+        kg_docs = []
+        if use_kg:
+            search_kg = getattr(self.database(), "search_kg_knowledge_text", None)
+            if search_kg is not None:
+                kg_docs = search_kg(query, top_k=candidate_limit, query_terms=query_terms)
         fused = fuse_retrieval_candidates(
             vector_docs=vector_docs,
             keyword_docs=keyword_docs,
+            kg_docs=kg_docs if use_kg else None,
             top_k=top_k,
         )
         retrieved_items = [retrieval_eval_item_payload(candidate) for candidate in fused]
@@ -918,7 +934,7 @@ class AdminApp:
         )
         row = {
             "case_id": case_id,
-            "strategy": RETRIEVAL_EVAL_STRATEGY,
+            "strategy": RETRIEVAL_EVAL_KG_DEBUG_STRATEGY if use_kg else RETRIEVAL_EVAL_STRATEGY,
             "retrieved_items": retrieved_items,
             "metrics": metrics,
             "analysis": {
@@ -926,9 +942,183 @@ class AdminApp:
                 "query_terms": query_terms,
                 "vector_count": len(vector_docs),
                 "keyword_count": len(keyword_docs),
+                "kg_count": len(kg_docs),
+                "use_kg": use_kg,
             },
         }
         return self.database().record_retrieval_eval_run(row)
+
+    def kg_subgraph(self, params: dict[str, list[str]]) -> dict[str, Any]:
+        """读取局部知识图谱，关键约束是默认只看 usable 且限制返回规模。"""
+        center_entity_id = str(params.get("center_entity_id", [""])[0]).strip()
+        if not center_entity_id:
+            raise AdminValidationError("center_entity_id is required")
+        return self.database().get_kg_subgraph(
+            center_entity_id=center_entity_id,
+            hops=min(max(self._int_param(params, "hops", 1), 1), 2),
+            entity_types=split_text_list(params.get("entity_type", [""])[0]),
+            relation_types=split_text_list(params.get("relation_type", [""])[0]),
+            status=params.get("status", ["usable"])[0] or "usable",
+            limit=min(max(self._int_param(params, "limit", 80), 1), 200),
+        )
+
+    def list_kg_entities(self, params: dict[str, list[str]]) -> dict[str, Any]:
+        """列出 KG 实体审核候选，关键约束是只做筛选分页不修改状态。"""
+        return self.database().list_kg_entities(
+            status=params.get("status", [""])[0] or None,
+            entity_type=params.get("entity_type", [""])[0] or None,
+            limit=min(max(self._int_param(params, "limit", 50), 1), 100),
+            offset=max(self._int_param(params, "offset", 0), 0),
+        )
+
+    def list_kg_relations(self, params: dict[str, list[str]]) -> dict[str, Any]:
+        """列出 KG 关系审核候选，关键约束是带头尾实体和证据供人工判断。"""
+        return self.database().list_kg_relations(
+            status=params.get("status", [""])[0] or None,
+            relation_type=params.get("relation_type", [""])[0] or None,
+            limit=min(max(self._int_param(params, "limit", 50), 1), 100),
+            offset=max(self._int_param(params, "offset", 0), 0),
+        )
+
+    def confirm_kg_entity(self, entity_id: str) -> dict[str, Any]:
+        """确认 KG 实体，关键约束是确认后才投影为可检索 KG chunk。"""
+        try:
+            return {"item": self.database().confirm_kg_entity(entity_id)}
+        except KeyError as exc:
+            raise AdminNotFoundError(str(exc)) from exc
+
+    def confirm_kg_relation(self, relation_id: str) -> dict[str, Any]:
+        """确认 KG 关系，关键约束是确认后才投影为可检索 KG chunk。"""
+        try:
+            return {"item": self.database().confirm_kg_relation(relation_id)}
+        except KeyError as exc:
+            raise AdminNotFoundError(str(exc)) from exc
+
+    def set_kg_entity_status(self, entity_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """更新 KG 实体审核状态，关键约束是状态枚举受控。"""
+        status = self._kg_review_status(payload)
+        try:
+            return {"item": self.database().set_kg_entity_status(entity_id, status)}
+        except KeyError as exc:
+            raise AdminNotFoundError(str(exc)) from exc
+
+    def set_kg_relation_status(self, relation_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """更新 KG 关系审核状态，关键约束是状态枚举受控。"""
+        status = self._kg_review_status(payload)
+        try:
+            return {"item": self.database().set_kg_relation_status(relation_id, status)}
+        except KeyError as exc:
+            raise AdminNotFoundError(str(exc)) from exc
+
+    def create_kg_extraction_job(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """创建并同步执行 KG 抽取任务，关键约束是只生成待审核候选。"""
+        source_type = str(payload.get("source_type") or "").strip()
+        source_id = str(payload.get("source_id") or "").strip()
+        if source_type not in VALID_KG_EXTRACTION_SOURCE_TYPES:
+            raise AdminValidationError("source_type must be faq or document_chunk")
+        if not source_id:
+            raise AdminValidationError("source_id is required")
+
+        chat = self.chat_client()
+        job = self.database().create_kg_extraction_job(
+            {
+                "source_type": source_type,
+                "source_id": source_id,
+                "source_chunk_id": source_id if source_type == "document_chunk" else None,
+                "model": str(getattr(chat, "model", "") or getattr(self.settings, "chat_model", "") or ""),
+            }
+        )
+        try:
+            self.database().update_kg_extraction_job(job["id"], status="processing", error=None)
+        except Exception:
+            logger.warning("Failed to update KG extraction job to processing: %s", job["id"], exc_info=True)
+        try:
+            source_text, source = self._kg_extraction_source(source_type, source_id)
+            extraction = KnowledgeGraphAiAssistant(chat).extract(source_text=source_text, source=source)
+            counts = self.database().save_kg_extraction_candidates(extraction)
+        except Exception as exc:
+            try:
+                return self.database().update_kg_extraction_job(
+                    job["id"],
+                    status="failed",
+                    error=str(exc)[:1000],
+                )
+            except Exception:
+                logger.error(
+                    "Failed to update KG extraction job to failed: %s", job["id"], exc_info=True
+                )
+                raise
+        try:
+            return self.database().update_kg_extraction_job(
+                job["id"],
+                status="completed",
+                entity_count=counts["entity_count"],
+                relation_count=counts["relation_count"],
+                evidence_count=counts["evidence_count"],
+                error=None,
+            )
+        except Exception:
+            logger.error(
+                "KG extraction data saved but failed to update job %s to completed", job["id"],
+                exc_info=True,
+            )
+            try:
+                return self.database().update_kg_extraction_job(
+                    job["id"],
+                    status="failed",
+                    error="data saved but status update failed",
+                )
+            except Exception:
+                logger.critical(
+                    "Cannot update KG extraction job %s at all", job["id"], exc_info=True
+                )
+                raise
+
+    def _kg_extraction_source(self, source_type: str, source_id: str) -> tuple[str, dict[str, Any]]:
+        """读取 KG 抽取来源，关键约束是只允许已审核 FAQ 或未禁用文档切片。"""
+        if source_type == "faq":
+            faq = self.database().get_faq(source_id)
+            if faq is None:
+                raise AdminNotFoundError(f"FAQ not found: {source_id}")
+            if faq.get("status") != "usable":
+                raise AdminValidationError("FAQ must be usable before KG extraction")
+            source_text = self._faq_kg_source_text(faq)
+            return source_text, {
+                "source_type": "faq",
+                "source_id": faq["id"],
+                "source_chunk_id": None,
+                "source_title": faq.get("question"),
+            }
+        chunk = self.database().get_import_chunk(source_id)
+        if chunk is None:
+            raise AdminNotFoundError(f"Import chunk not found: {source_id}")
+        if chunk.get("is_disabled"):
+            raise AdminValidationError("disabled import chunk cannot be used for KG extraction")
+        source_text = str(chunk.get("source_text") or "").strip()
+        if not source_text:
+            raise AdminValidationError("import chunk source_text is required")
+        record = self.database().get_import_file(chunk["file_id"])
+        source_title = record.get("original_name") if record else chunk.get("file_id")
+        return source_text, {
+            "source_type": "document",
+            "source_id": chunk["file_id"],
+            "source_chunk_id": chunk["id"],
+            "source_title": source_title,
+            "section_path": list(chunk.get("section_path") or []),
+            "page_start": chunk.get("page_start"),
+            "page_end": chunk.get("page_end"),
+        }
+
+    @staticmethod
+    def _faq_kg_source_text(faq: dict[str, Any]) -> str:
+        """把 FAQ 整理为 KG 抽取文本，关键约束是保留问题、答案、分类和标签。"""
+        parts = [f"问题：{faq.get('question') or ''}", f"答案：{faq.get('answer') or ''}"]
+        if faq.get("category"):
+            parts.append(f"分类：{faq['category']}")
+        tags = split_text_list(faq.get("tags"))
+        if tags:
+            parts.append(f"标签：{'，'.join(tags)}")
+        return "\n".join(part for part in parts if part.strip())
 
     def _retrieval_aliases(self) -> list[dict[str, Any]]:
         """读取启用别名词典；测试替身未实现该方法时返回空列表。"""
@@ -936,6 +1126,24 @@ class AdminApp:
         if list_aliases is None:
             return []
         return list_aliases()
+
+    @staticmethod
+    def _kg_review_status(payload: dict[str, Any]) -> str:
+        """读取 KG 审核状态，关键约束是只接受三态审核枚举。"""
+        status = str(payload.get("status") or "").strip()
+        if status not in VALID_KG_REVIEW_STATUSES:
+            raise AdminValidationError("status must be usable, needs_review, or disabled")
+        return status
+
+    @staticmethod
+    def _bool_payload(payload: dict[str, Any], key: str, default: bool) -> bool:
+        """读取布尔 payload 字段，关键约束是兼容前端字符串和真实布尔值。"""
+        value = payload.get(key)
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
     @staticmethod
     def _utc_now() -> datetime:
@@ -2008,16 +2216,42 @@ class AdminApp:
         rerank_input_size = int(getattr(rerank_client, "input_size", 0) or 0)
         candidate_limit = max(top_k * 2, top_k, rerank_input_size)
         query_terms = build_keyword_terms(retrieval_query, self._retrieval_aliases())
+
+        vector_started = time.perf_counter()
         vector_docs = self.database().search_knowledge(
             query_embedding,
             top_k=candidate_limit,
             min_score=min_score,
         )
+        yield assistant_step_event(
+            "vector_search",
+            "向量召回",
+            "completed",
+            vector_started,
+            summary=f"向量召回 {len(vector_docs)} 条候选",
+            top_k=candidate_limit,
+            min_score=min_score,
+            count=len(vector_docs),
+        )
+
+        keyword_started = time.perf_counter()
         keyword_docs = self.database().search_knowledge_text(
             retrieval_query,
             top_k=candidate_limit,
             query_terms=query_terms,
         )
+        yield assistant_step_event(
+            "keyword_search",
+            "关键词召回",
+            "completed",
+            keyword_started,
+            summary=f"关键词召回 {len(keyword_docs)} 条候选",
+            top_k=candidate_limit,
+            query_terms=query_terms,
+            count=len(keyword_docs),
+        )
+
+        fuse_started = time.perf_counter()
         fused = fuse_retrieval_candidates(
             vector_docs=vector_docs,
             keyword_docs=keyword_docs,
@@ -2220,6 +2454,15 @@ def make_handler(app: AdminApp):
                 if parsed.path == "/api/retrieval/aliases":
                     self.send_json(app.list_retrieval_aliases())
                     return
+                if parsed.path == "/api/kg/entities":
+                    self.send_json(app.list_kg_entities(parse_qs(parsed.query)))
+                    return
+                if parsed.path == "/api/kg/relations":
+                    self.send_json(app.list_kg_relations(parse_qs(parsed.query)))
+                    return
+                if parsed.path == "/api/kg/subgraph":
+                    self.send_json(app.kg_subgraph(parse_qs(parsed.query)))
+                    return
                 if parsed.path == "/api/import/files":
                     self.send_json(app.list_import_files(parse_qs(parsed.query)))
                     return
@@ -2304,10 +2547,29 @@ def make_handler(app: AdminApp):
                     return
                 if parsed.path.startswith("/api/retrieval/eval-cases/") and parsed.path.endswith("/run"):
                     case_id = parsed.path.removeprefix("/api/retrieval/eval-cases/").removesuffix("/run")
-                    self.send_json(app.run_retrieval_eval_case(case_id))
+                    self.send_json(app.run_retrieval_eval_case(case_id, payload))
                     return
                 if parsed.path == "/api/retrieval/aliases":
                     self.send_json(app.save_retrieval_alias(payload))
+                    return
+                if parsed.path == "/api/kg/extraction-jobs":
+                    self.send_json(app.create_kg_extraction_job(payload))
+                    return
+                if parsed.path.startswith("/api/kg/entities/") and parsed.path.endswith("/confirm"):
+                    entity_id = parsed.path.removeprefix("/api/kg/entities/").removesuffix("/confirm")
+                    self.send_json(app.confirm_kg_entity(entity_id))
+                    return
+                if parsed.path.startswith("/api/kg/entities/") and parsed.path.endswith("/status"):
+                    entity_id = parsed.path.removeprefix("/api/kg/entities/").removesuffix("/status")
+                    self.send_json(app.set_kg_entity_status(entity_id, payload))
+                    return
+                if parsed.path.startswith("/api/kg/relations/") and parsed.path.endswith("/confirm"):
+                    relation_id = parsed.path.removeprefix("/api/kg/relations/").removesuffix("/confirm")
+                    self.send_json(app.confirm_kg_relation(relation_id))
+                    return
+                if parsed.path.startswith("/api/kg/relations/") and parsed.path.endswith("/status"):
+                    relation_id = parsed.path.removeprefix("/api/kg/relations/").removesuffix("/status")
+                    self.send_json(app.set_kg_relation_status(relation_id, payload))
                     return
                 if parsed.path.startswith("/api/import/files/") and parsed.path.endswith("/reparse"):
                     file_id = parsed.path.removeprefix("/api/import/files/").removesuffix("/reparse")
