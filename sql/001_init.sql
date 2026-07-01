@@ -140,6 +140,115 @@ CREATE INDEX IF NOT EXISTS knowledge_chunks_section_path_idx
 CREATE INDEX IF NOT EXISTS knowledge_chunks_search_idx
     ON knowledge_chunks USING gin (to_tsvector('simple', search_text));
 
+CREATE TABLE IF NOT EXISTS kg_entities (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    entity_type TEXT NOT NULL CHECK (
+        entity_type IN (
+            'product_platform_module',
+            'feature_ui_action',
+            'error_symptom',
+            'process_task_object',
+            'role_permission_channel',
+            'condition_policy'
+        )
+    ),
+    aliases JSONB NOT NULL DEFAULT '[]'::jsonb,
+    description TEXT,
+    status TEXT NOT NULL DEFAULT 'needs_review' CHECK (status IN ('needs_review', 'usable', 'disabled')),
+    confidence DOUBLE PRECISION,
+    source_count INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS kg_entities_name_type_idx
+    ON kg_entities (lower(name), entity_type);
+
+CREATE INDEX IF NOT EXISTS kg_entities_status_type_idx
+    ON kg_entities (status, entity_type, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS kg_relations (
+    id TEXT PRIMARY KEY,
+    head_entity_id TEXT NOT NULL REFERENCES kg_entities(id) ON DELETE CASCADE,
+    relation_type TEXT NOT NULL CHECK (
+        relation_type IN (
+            'belongs_to',
+            'requires',
+            'causes',
+            'resolves_by',
+            'blocked_by',
+            'available_for',
+            'escalate_when'
+        )
+    ),
+    tail_entity_id TEXT NOT NULL REFERENCES kg_entities(id) ON DELETE CASCADE,
+    description TEXT,
+    status TEXT NOT NULL DEFAULT 'needs_review' CHECK (status IN ('needs_review', 'usable', 'disabled')),
+    confidence DOUBLE PRECISION,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (head_entity_id, relation_type, tail_entity_id)
+);
+
+CREATE INDEX IF NOT EXISTS kg_relations_status_type_idx
+    ON kg_relations (status, relation_type, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS kg_relations_head_idx
+    ON kg_relations (head_entity_id, status);
+
+CREATE INDEX IF NOT EXISTS kg_relations_tail_idx
+    ON kg_relations (tail_entity_id, status);
+
+CREATE TABLE IF NOT EXISTS kg_evidence (
+    id TEXT PRIMARY KEY,
+    entity_id TEXT REFERENCES kg_entities(id) ON DELETE CASCADE,
+    relation_id TEXT REFERENCES kg_relations(id) ON DELETE CASCADE,
+    source_type TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    source_chunk_id TEXT,
+    source_title TEXT,
+    section_path JSONB NOT NULL DEFAULT '[]'::jsonb,
+    page_start INTEGER,
+    page_end INTEGER,
+    excerpt TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (
+        (entity_id IS NOT NULL AND relation_id IS NULL)
+        OR (entity_id IS NULL AND relation_id IS NOT NULL)
+    )
+);
+
+CREATE INDEX IF NOT EXISTS kg_evidence_entity_idx
+    ON kg_evidence (entity_id);
+
+CREATE INDEX IF NOT EXISTS kg_evidence_relation_idx
+    ON kg_evidence (relation_id);
+
+CREATE INDEX IF NOT EXISTS kg_evidence_source_idx
+    ON kg_evidence (source_type, source_id, source_chunk_id);
+
+CREATE TABLE IF NOT EXISTS kg_extraction_jobs (
+    id TEXT PRIMARY KEY,
+    source_type TEXT NOT NULL CHECK (source_type IN ('faq', 'document_chunk')),
+    source_id TEXT NOT NULL,
+    source_chunk_id TEXT,
+    status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'processing', 'completed', 'failed')),
+    entity_count INTEGER NOT NULL DEFAULT 0,
+    relation_count INTEGER NOT NULL DEFAULT 0,
+    evidence_count INTEGER NOT NULL DEFAULT 0,
+    model TEXT,
+    error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS kg_extraction_jobs_status_idx
+    ON kg_extraction_jobs (status, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS kg_extraction_jobs_source_idx
+    ON kg_extraction_jobs (source_type, source_id, source_chunk_id);
+
 CREATE TABLE IF NOT EXISTS import_files (
     id TEXT PRIMARY KEY,
     original_name TEXT NOT NULL,

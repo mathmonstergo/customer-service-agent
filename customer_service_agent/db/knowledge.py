@@ -30,8 +30,26 @@ class KnowledgeMixin:
         embedding_dimensions: int | None = None,
     ) -> dict[str, Any]:
         """写入统一知识单元，关键约束是无向量时保持 pending 等待后续生成。"""
+        payload = self._knowledge_chunk_payload(
+            row,
+            embedding=embedding,
+            embedding_model=embedding_model,
+            embedding_dimensions=embedding_dimensions,
+        )
+        with self.connect() as conn:
+            return conn.execute(self._insert_knowledge_chunk_sql(), payload).fetchone()
+
+    @staticmethod
+    def _knowledge_chunk_payload(
+        row: dict[str, Any],
+        embedding: list[float] | None = None,
+        *,
+        embedding_model: str | None = None,
+        embedding_dimensions: int | None = None,
+    ) -> dict[str, Any]:
+        """构造统一知识单元写入参数，关键约束是供普通写入和 KG 事务投影复用。"""
         embedding_text = str(row.get("embedding_text") or row["content"]).strip()
-        payload = {
+        return {
             "id": row["id"],
             "source_type": row["source_type"],
             "source_id": row["source_id"],
@@ -62,8 +80,6 @@ class KnowledgeMixin:
             "content_hash": row.get("content_hash")
             or compute_knowledge_chunk_hash({**row, "embedding_text": embedding_text}),
         }
-        with self.connect() as conn:
-            return conn.execute(self._insert_knowledge_chunk_sql(), payload).fetchone()
 
     def search(
         self,
@@ -270,6 +286,7 @@ class KnowledgeMixin:
         WHERE COALESCE(fq.status, kc.status) = %(status)s
           AND kc.embedding_status = 'ready'
           AND kc.embedding IS NOT NULL
+          AND kc.source_type NOT IN ('kg_entity', 'kg_relation')
           AND (kc.embedding <=> %(embedding)s::vector) <= %(max_distance)s
           AND COALESCE(imp.is_disabled, false) = false
           AND COALESCE(ic.is_disabled, false) = false
@@ -311,6 +328,7 @@ class KnowledgeMixin:
         LEFT JOIN faq_documents fq
             ON kc.source_type = 'faq' AND fq.id = kc.source_id
         WHERE COALESCE(fq.status, kc.status) = %(status)s
+          AND kc.source_type NOT IN ('kg_entity', 'kg_relation')
           AND COALESCE(imp.is_disabled, false) = false
           AND COALESCE(ic.is_disabled, false) = false
           AND (kc.source_type <> 'document' OR kc.chunk_level <> 'parent')
