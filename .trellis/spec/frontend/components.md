@@ -461,6 +461,31 @@ For primary workspace pages that need a left work list plus a main detail area, 
 
 **Why**: If feature pages choose different left-panel widths or place full-width toolbars above route content, switching between `/assistant` and the feature page moves the main header and detail surface. That makes later page transitions feel discontinuous even when each page looks acceptable in isolation.
 
+### Knowledge Graph Review UI
+
+Knowledge graph review pages must use the existing internal-tool structure instead of a permanent three-column graph workspace:
+
+- Route content root: `flex h-full flex-col`.
+- Top toolbar: search, entity/relation mode, review status filter, type filter, refresh, and extraction entry.
+- Main content: one dense list/table for either entities or relations.
+- Detail surface: right-side drawer opened from a selected row, containing metadata, evidence, local relationships, and review actions.
+- Extraction results must show review state explicitly: `needs_review`, `usable`, and `disabled`.
+- Evidence must be visible in the drawer before confirmation; KG candidates are AI-generated and must not be confirmed from name/type alone.
+- 3D or force-graph visualization is a later view over confirmed KG data, not the first MVP review surface.
+
+```tsx
+// Good: KG review keeps the same page geometry as FAQ management.
+<div className="flex h-full flex-col">
+  <header>{/* search + filters + extraction action */}</header>
+  <main>{/* entity or relation list */}</main>
+  <KgDetailDrawer selected={selected} />
+</div>
+
+// Bad: three permanent panes compete with the existing app shell and make
+// evidence review harder to scan.
+<div className="grid grid-cols-[280px_1fr_360px]">{/* ... */}</div>
+```
+
 ---
 
 ## Loading States

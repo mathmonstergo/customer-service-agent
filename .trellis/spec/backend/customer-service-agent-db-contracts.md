@@ -243,3 +243,161 @@ This is technically enough for metrics but not enough for a human to know which 
 ```
 
 The UI can now let users label the expected source/chunk from a readable candidate row instead of asking them to discover internal ids.
+
+## Scenario: Knowledge Graph Review Projection and Explicit Retrieval
+
+### 1. Scope / Trigger
+
+- Trigger: code modifies KG extraction parsing, `kg_entities`, `kg_relations`, `kg_evidence`, KG projection into `knowledge_chunks`, `KnowledgeGraphMixin`, or retrieval/evaluation paths that can read KG chunks.
+- Reason: KG facts are model-generated and may be wrong. They must not become retrievable until reviewed, and they must not affect the default assistant path before evaluation proves value.
+
+### 2. Signatures
+
+- Python parser: `parse_kg_extraction_response(payload, *, source) -> dict[str, list[dict[str, Any]]]`
+- Python DB methods:
+  - `Database.create_kg_extraction_job(row) -> dict[str, Any]`
+  - `Database.update_kg_extraction_job(job_id, **fields) -> dict[str, Any]`
+  - `Database.save_kg_extraction_candidates(extraction) -> dict[str, int]`
+  - `Database.confirm_kg_entity(entity_id) -> dict[str, Any]`
+  - `Database.confirm_kg_relation(relation_id) -> dict[str, Any]`
+  - `Database.list_kg_entities(status=None, entity_type=None, limit=50, offset=0) -> dict[str, Any]`
+  - `Database.list_kg_relations(status=None, relation_type=None, limit=50, offset=0) -> dict[str, Any]`
+  - `Database.set_kg_entity_status(entity_id, status) -> dict[str, Any]`
+  - `Database.set_kg_relation_status(relation_id, status) -> dict[str, Any]`
+  - `Database.search_kg_knowledge_text(query_text, *, top_k, query_terms=None, status="usable")`
+  - `Database.get_kg_subgraph(center_entity_id, hops=1, entity_types=None, relation_types=None, status="usable", limit=80)`
+- Admin API:
+  - `POST /api/kg/extraction-jobs` with JSON fields `source_type` (`faq` or `document_chunk`) and `source_id`.
+  - `GET /api/kg/entities?status=<status>&entity_type=<type>&limit=50&offset=0`
+  - `GET /api/kg/relations?status=<status>&relation_type=<type>&limit=50&offset=0`
+  - `POST /api/kg/entities/{entity_id}/confirm`
+  - `POST /api/kg/entities/{entity_id}/status` with JSON field `status`.
+  - `POST /api/kg/relations/{relation_id}/confirm`
+  - `POST /api/kg/relations/{relation_id}/status` with JSON field `status`.
+  - `POST /api/retrieval/eval-cases/{case_id}/run` with optional JSON field `use_kg`.
+  - `GET /api/kg/subgraph?center_entity_id=<id>&hops=1&entity_type=<csv>&relation_type=<csv>&status=usable&limit=80`
+- Database tables:
+  - `kg_extraction_jobs`
+  - `kg_entities`
+  - `kg_relations`
+  - `kg_evidence`
+  - projected `knowledge_chunks.source_type IN ('kg_entity', 'kg_relation')`
+
+### 3. Contracts
+
+- KG entity types must be one of:
+  - `product_platform_module`
+  - `feature_ui_action`
+  - `error_symptom`
+  - `process_task_object`
+  - `role_permission_channel`
+  - `condition_policy`
+- KG relation types must be one of:
+  - `belongs_to`
+  - `requires`
+  - `causes`
+  - `resolves_by`
+  - `blocked_by`
+  - `available_for`
+  - `escalate_when`
+- Parsed model output defaults to `status = 'needs_review'`.
+- `POST /api/kg/extraction-jobs` first records a job as `queued`, then updates `processing`, then `completed` or `failed`.
+- First extraction scope only supports one source per job:
+  - `source_type = 'faq'`, `source_id = faq_documents.id`, and the FAQ must be `usable`;
+  - `source_type = 'document_chunk'`, `source_id = import_chunks.id`, and the chunk must not be disabled.
+- A failed model call or parser validation error must update the job to `failed` with a bounded `error` string.
+- `kg_evidence` must point to exactly one of `entity_id` or `relation_id`.
+- Every KG candidate must include evidence with `source_type`, `source_id`, optional `source_chunk_id`, and non-empty `excerpt`.
+- Confirmed KG entities/relations may be projected to `knowledge_chunks` using `source_type = 'kg_entity'` or `source_type = 'kg_relation'`.
+- Review list APIs must include evidence arrays so UI can show source excerpt/title/page without extra per-row calls.
+- Confirm APIs must set KG status to `usable` and create/update the corresponding `knowledge_chunks` projection.
+- Status APIs must only accept `needs_review`, `usable`, or `disabled`; changing status must also update the matching KG projection row status if it exists.
+- Default `Database.search_knowledge()` and `Database.search_knowledge_text()` must exclude `kg_entity` and `kg_relation`.
+- KG retrieval is allowed only through explicit debug/evaluation paths such as `use_kg=true`.
+
+### 4. Validation & Error Matrix
+
+- Missing entity name/type -> `KnowledgeGraphExtractionError`.
+- Entity or relation type outside fixed enum -> `KnowledgeGraphExtractionError`.
+- Missing evidence or missing evidence excerpt -> `KnowledgeGraphExtractionError`.
+- `POST /api/kg/extraction-jobs` with unsupported `source_type` -> `AdminValidationError`.
+- `POST /api/kg/extraction-jobs` with missing `source_id` -> `AdminValidationError`.
+- KG extraction from non-usable FAQ -> `failed` job or `AdminValidationError` before candidates are saved.
+- KG extraction from disabled/empty document chunk -> `failed` job or `AdminValidationError` before candidates are saved.
+- Missing `center_entity_id` for subgraph API -> `AdminValidationError`.
+- `POST /api/kg/*/{id}/status` with unsupported status -> `AdminValidationError`.
+- `use_kg` omitted or false -> evaluation run must not call `search_kg_knowledge_text`.
+- KG row with `status != 'usable'` -> not returned by KG retrieval or subgraph query.
+
+### 5. Good/Base/Bad Cases
+
+- Good: model extracts an entity and relation from a document chunk; rows enter KG tables as `needs_review`; user confirms the entity; a `kg_entity` chunk is created with `embedding_status = 'pending'`.
+- Good: review UI calls `GET /api/kg/entities?status=needs_review`; response rows include evidence excerpts and source ids.
+- Good: user disables a bad relation; `kg_relations.status` and existing `kg_relation` projection both become `disabled`.
+- Good: `POST /api/kg/extraction-jobs {"source_type":"faq","source_id":"faq_1"}` reads the usable FAQ, calls the Chat model, saves candidates, and returns a `completed` job with counts.
+- Good: invalid model JSON or enum drift returns a `failed` job with `error`, leaving no confirmed KG projection.
+- Good: evaluation run with `use_kg=true` includes KG candidates and records strategy `retrieval_hybrid_v1_kg_debug`.
+- Base: evaluation run without `use_kg` behaves like normal hybrid retrieval and records strategy `retrieval_hybrid_v1`.
+- Bad: KG projection appears in default assistant search results before evaluation explicitly enables KG.
+- Bad: model invents `entity_type = "random_type"` and the parser silently stores it.
+
+### 6. Tests Required
+
+- Parser tests must assert:
+  - valid output defaults to `needs_review`;
+  - evidence provenance is preserved;
+  - unknown entity/relation types are rejected;
+  - missing evidence is rejected.
+- DB tests must assert:
+  - `kg_extraction_jobs` schema includes source, status, model, error, and count fields;
+  - `create_kg_extraction_job()` writes a queued source record;
+  - `update_kg_extraction_job()` writes status/count/error fields;
+  - schema contains `kg_entities`, `kg_relations`, `kg_evidence`, status fields, and indexes;
+  - `save_kg_extraction_candidates()` writes entities, relations, and evidence;
+  - default `search_knowledge*` SQL excludes `kg_entity`/`kg_relation`;
+  - `search_kg_knowledge_text()` only reads `kg_entity`/`kg_relation`;
+  - confirming a KG entity projects a pending `knowledge_chunks` row;
+  - confirming a KG relation projects a pending `knowledge_chunks` row with head/tail entity IDs.
+  - list entity/relation SQL aggregates evidence and supports status/type filters;
+  - status update methods synchronize KG table status and KG projection chunk status.
+- Admin tests must assert:
+  - entity/relation list methods pass status/type/pagination filters to DB;
+  - confirm methods delegate to DB and return item wrappers;
+  - status methods validate allowed statuses and delegate to DB;
+  - FAQ KG extraction creates a job, calls the model, saves candidates, and completes with counts;
+  - document chunk KG extraction preserves file/chunk provenance;
+  - invalid model output marks the job `failed`;
+  - `use_kg=true` calls KG retrieval and uses KG debug strategy;
+  - default eval runs do not require KG DB methods;
+  - subgraph API passes filters and limits to DB.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+fused = fuse_retrieval_candidates(
+    vector_docs=vector_docs,
+    keyword_docs=keyword_docs + database.search_kg_knowledge_text(query, top_k=top_k),
+    top_k=top_k,
+)
+```
+
+This makes KG affect normal retrieval without an explicit switch.
+
+#### Correct
+
+```python
+kg_docs = []
+if payload.get("use_kg") is True:
+    kg_docs = database.search_kg_knowledge_text(query, top_k=candidate_limit, query_terms=query_terms)
+
+fused = fuse_retrieval_candidates(
+    vector_docs=vector_docs,
+    keyword_docs=keyword_docs,
+    kg_docs=kg_docs if payload.get("use_kg") is True else None,
+    top_k=top_k,
+)
+```
+
+The default assistant and evaluation path stays unchanged; KG participates only in explicit debug/evaluation runs.
