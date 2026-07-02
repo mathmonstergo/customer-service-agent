@@ -492,6 +492,8 @@ When a workflow needs internal document IDs or chunk IDs, the UI must expose the
 
 - Document drawers should show the import file ID with a copy button.
 - Chunk toolbars may show only a compact `复制ID` action with a copy icon; avoid rendering the full chunk ID in crowded toolbars.
+- Chunk toolbar section titles should stay visually capped at about 8 Chinese characters (`max-w-[8em]` with truncation) so action controls do not shift when a section name is long.
+- Chunk toolbar controls should preserve a dense single-row height: prefer compact padding and 24px action buttons over default-height buttons in this row.
 - Copy button hover text and success toast should include the full ID, and the copy action must copy the full ID.
 - Chunk location metadata should prefer compact human locators such as `p14-15`; parser block types like `text` should not be shown unless they add clear user value.
 - KG extraction from a document chunk should be available from the active chunk toolbar when the chunk is usable and not being edited.

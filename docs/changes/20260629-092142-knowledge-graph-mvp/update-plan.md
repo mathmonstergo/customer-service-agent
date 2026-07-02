@@ -105,6 +105,12 @@
   * `pnpm build`：通过；Vite 仍提示单包体积超过 500 kB。
   * Playwright CLI 打开 `/knowledge-graph`：快照确认“抽取候选”弹层只保留“来源 ID”输入，没有 FAQ / 文档切片下拉。
   * Playwright CLI 打开 `/documents` 文档抽屉：快照确认切片工具栏显示 `p1-3`、`复制ID`、`KG 抽取`，不显示 `text` 或长切片 ID；点击复制后 toast 显示完整 `chunk_c9ca64929a98`。
+* 2026-07-02 切片工具栏高度回调验证：
+  * 切片标题增加约 8 个中文字符的视觉宽度上限，避免长标题挤压右侧控件。
+  * 工具栏 padding、文字按钮和图标按钮改为紧凑高度，保持单行工具条观感。
+  * `pnpm lint`：通过。
+  * `pnpm build`：通过；Vite 仍提示单包体积超过 500 kB。
+  * Playwright CLI 打开 `/documents` 文档抽屉：快照确认切片定位、`复制ID`、`KG 抽取`、`Embedding`、禁用和编辑按钮仍在同一行。
 
 ## 未做事项
 

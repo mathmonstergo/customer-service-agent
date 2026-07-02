@@ -421,11 +421,11 @@ function ChunkToolbar({
     ? chunk.section_path[chunk.section_path.length - 1]
     : null
   return (
-    <div className="flex shrink-0 items-center justify-between gap-2 border-b border-(--color-border-soft) bg-(--color-surface) px-6 py-2.5">
+    <div className="flex shrink-0 items-center justify-between gap-2 border-b border-(--color-border-soft) bg-(--color-surface) px-6 py-1">
       {/* 状态已统一到滚轴圆点 + hover，这里只留段落 / 页码等定位信息，保持工具栏清爽 */}
       <div className="flex min-w-0 flex-1 items-center gap-2 text-[12px] text-(--color-text-muted)">
         {sectionLeaf && (
-          <span className="truncate text-(--color-text)" title={chunk.section_path?.join(' > ')}>
+          <span className="max-w-[8em] truncate text-(--color-text)" title={chunk.section_path?.join(' > ')}>
             {sectionLeaf}
           </span>
         )}
@@ -441,7 +441,7 @@ function ChunkToolbar({
         <Button
           variant="outline"
           size="sm"
-          className="cursor-pointer"
+          className="h-6 cursor-pointer gap-1 px-1.5 text-[11px]"
           disabled={cannotExtractKg || isExtractingKg}
           onClick={async () => {
             try {
@@ -462,14 +462,14 @@ function ChunkToolbar({
           {isExtractingKg ? (
             <Loader2 className="size-3.5 animate-spin" />
           ) : (
-            <Bot className="size-3.5" />
+            <Bot className="size-3" />
           )}
           KG 抽取
         </Button>
         <Button
           variant={needsEmbed ? 'primary' : 'ghost'}
           size="sm"
-          className="cursor-pointer"
+          className="h-6 cursor-pointer gap-1 px-1.5 text-[11px]"
           disabled={isEmbedding || editMode}
           onClick={async () => {
             try {
@@ -485,27 +485,27 @@ function ChunkToolbar({
           {isEmbedding ? (
             <Loader2 className="size-3.5 animate-spin" />
           ) : (
-            <Waypoints className="size-3.5" />
+            <Waypoints className="size-3" />
           )}
           Embedding
         </Button>
         <Button
           variant={chunk.is_disabled ? 'default' : 'ghost'}
           size="icon"
-          className="size-7 cursor-pointer"
+          className="size-6 cursor-pointer"
           onClick={onToggleDisabled}
           title={chunk.is_disabled ? '启用切片' : '禁用切片'}
         >
-          {chunk.is_disabled ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
+          {chunk.is_disabled ? <Eye className="size-3" /> : <EyeOff className="size-3" />}
         </Button>
         <Button
           variant={editMode ? 'primary' : 'ghost'}
           size="icon"
-          className="size-7 cursor-pointer"
+          className="size-6 cursor-pointer"
           onClick={onEditToggle}
           title={editMode ? '退出编辑' : '编辑原文'}
         >
-          {editMode ? <X className="size-3.5" /> : <Edit3 className="size-3.5" />}
+          {editMode ? <X className="size-3" /> : <Edit3 className="size-3" />}
         </Button>
       </div>
     </div>
@@ -520,7 +520,7 @@ function CopyIdInline({ label, value }: { label: string; value: string }) {
     <button
       type="button"
       onClick={() => void copyText(clean, label)}
-      className="inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded-(--radius-control) px-1.5 text-[11px] text-(--color-text-faint) transition-colors hover:bg-(--color-surface-2) hover:text-(--color-text)"
+      className="inline-flex h-5 shrink-0 cursor-pointer items-center gap-1 rounded-(--radius-control) px-1.5 text-[11px] text-(--color-text-faint) transition-colors hover:bg-(--color-surface-2) hover:text-(--color-text)"
       title={`复制${label}：${clean}`}
       aria-label={`复制${label}`}
     >
