@@ -461,6 +461,15 @@ For primary workspace pages that need a left work list plus a main detail area, 
 
 **Why**: If feature pages choose different left-panel widths or place full-width toolbars above route content, switching between `/assistant` and the feature page moves the main header and detail surface. That makes later page transitions feel discontinuous even when each page looks acceptable in isolation.
 
+### Assistant Message Navigation
+
+Assistant message navigation should act as a quiet scroll aid rather than a second transcript:
+
+- The right-side quick locator only lists user questions; do not include AI answers in the expanded locator.
+- Expanded locator rows should be one-line, truncated question text with no visible role label, sequence number, timestamp, or other metadata.
+- The collapsed rail should use at most 20 larger horizontal markers, sampled from the available user questions while preserving the first and last question.
+- A floating "back to latest" action may appear when the user scrolls away from the bottom; it should disappear once the latest message is visible.
+
 ### Knowledge Graph Review UI
 
 Knowledge graph review pages must use the existing internal-tool structure instead of a permanent three-column graph workspace:

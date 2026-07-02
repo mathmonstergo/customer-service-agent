@@ -1,10 +1,11 @@
 // 中间消息流：仿 ChatGPT/Claude 的极简两栏内会话。
 // 用户气泡（右侧灰底）+ 助手回答（左侧无气泡，markdown 渲染）+ 上方 inline 状态行 / 完成后折叠面板。
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
+  ArrowDown,
   Copy,
   FileText,
   AlertTriangle,
@@ -20,10 +21,62 @@ import { confidenceLabel, intentLabel, tr } from '@/lib/labels'
 import { useAssistant, type ChatMessage } from '@/store/assistant'
 import type { AssistantSource } from '@/api/schemas'
 import type { AssistantStepEvent } from '@/lib/sse-assistant'
+import {
+  buildMessageNavItems,
+  selectMessageRailItems,
+  type MessageNavigationItem,
+} from './message-navigation'
 
 export function MessageStream({ conversationId }: { conversationId: string }) {
   const messages = useAssistant((s) => s.conversations[conversationId]?.messages ?? [])
   const scrollRef = useRef<HTMLDivElement>(null)
+  const messageRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const [showJumpButton, setShowJumpButton] = useState(false)
+  const [activeMessageId, setActiveMessageId] = useState<string | null>(null)
+  const navItems = useMemo(() => buildMessageNavItems(messages), [messages])
+  const railItems = useMemo(() => selectMessageRailItems(navItems, 20), [navItems])
+
+  const updateScrollState = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    setShowJumpButton(distanceToBottom > 220)
+
+    const anchor = el.scrollTop + el.clientHeight * 0.38
+    let currentId = navItems[0]?.id ?? null
+    for (const item of navItems) {
+      const node = messageRefs.current[item.id]
+      if (!node) continue
+      if (node.offsetTop <= anchor) currentId = item.id
+      else break
+    }
+    setActiveMessageId(currentId)
+  }, [navItems])
+
+  const registerMessageRef = useCallback((id: string, node: HTMLDivElement | null) => {
+    messageRefs.current[id] = node
+  }, [])
+
+  const scrollToBottom = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+  }, [])
+
+  const scrollToMessage = useCallback((id: string) => {
+    const el = scrollRef.current
+    const node = messageRefs.current[id]
+    if (!el || !node) return
+    el.scrollTo({ top: Math.max(0, node.offsetTop - 24), behavior: 'smooth' })
+  }, [])
+
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    updateScrollState()
+    el.addEventListener('scroll', updateScrollState, { passive: true })
+    return () => el.removeEventListener('scroll', updateScrollState)
+  }, [updateScrollState])
 
   useEffect(() => {
     const el = scrollRef.current
@@ -34,20 +87,123 @@ export function MessageStream({ conversationId }: { conversationId: string }) {
     if (nearBottom || last.role === 'user') {
       el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
     }
-  }, [messages])
+    window.requestAnimationFrame(updateScrollState)
+  }, [messages, updateScrollState])
 
   if (messages.length === 0) {
     return <EmptyState />
   }
 
   return (
-    <div ref={scrollRef} className="h-full overflow-y-auto scroll-thin">
-      <div className="mx-auto flex max-w-3xl flex-col gap-7 px-6 py-8">
-        <AnimatePresence initial={false}>
-          {messages.map((m) => (
-            <MessageBubble key={m.id} msg={m} />
+    <div className="relative h-full">
+      <div ref={scrollRef} className="h-full overflow-y-auto scroll-thin">
+        <div className="mx-auto flex max-w-3xl flex-col gap-7 px-6 py-8">
+          <AnimatePresence initial={false}>
+            {messages.map((m) => (
+              <div
+                key={m.id}
+                ref={(node) => registerMessageRef(m.id, node)}
+                data-message-id={m.id}
+              >
+                <MessageBubble msg={m} />
+              </div>
+            ))}
+          </AnimatePresence>
+        </div>
+      </div>
+      {showJumpButton && (
+        <JumpToLatestButton onClick={scrollToBottom} />
+      )}
+      {navItems.length > 2 && (
+        <MessageQuickNavigator
+          items={navItems}
+          railItems={railItems}
+          activeId={activeMessageId}
+          onSelect={scrollToMessage}
+        />
+      )}
+    </div>
+  )
+}
+
+function JumpToLatestButton({ onClick }: { onClick: () => void }) {
+  return (
+    <motion.button
+      type="button"
+      initial={{ opacity: 0, y: 8, scale: 0.96 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: 8, scale: 0.96 }}
+      transition={{ duration: dur.base, ease: ease.out }}
+      onClick={onClick}
+      className={cn(
+        'absolute bottom-5 left-1/2 z-20 -translate-x-1/2',
+        'inline-flex size-9 items-center justify-center rounded-full',
+        'border border-(--color-border) bg-(--color-surface)/95 text-(--color-text-muted)',
+        'shadow-(--shadow-elevated) backdrop-blur-md transition-colors',
+        'hover:border-(--color-border-strong) hover:bg-(--color-surface-2) hover:text-(--color-text)',
+      )}
+      aria-label="回到最新对话"
+    >
+      <ArrowDown className="size-4" />
+    </motion.button>
+  )
+}
+
+function MessageQuickNavigator({
+  items,
+  railItems,
+  activeId,
+  onSelect,
+}: {
+  items: MessageNavigationItem[]
+  railItems: MessageNavigationItem[]
+  activeId: string | null
+  onSelect: (id: string) => void
+}) {
+  return (
+    <div className="group absolute right-5 top-1/2 z-20 hidden -translate-y-1/2 lg:block">
+      <div className="relative flex min-h-48 items-center justify-end">
+        <div className="flex w-10 flex-col items-end gap-1.5 rounded-full px-1.5 py-2 opacity-75 transition-opacity group-hover:opacity-0">
+          {railItems.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => onSelect(item.id)}
+              className={cn(
+                'h-0.5 rounded-full bg-(--color-text-faint) transition-all hover:bg-(--color-text-muted)',
+                activeId === item.id ? 'w-8 bg-(--color-text)' : 'w-5',
+              )}
+              aria-label={`定位到第 ${item.index} 条对话`}
+            />
           ))}
-        </AnimatePresence>
+        </div>
+        <div
+          className={cn(
+            'pointer-events-none absolute right-0 top-1/2 w-80 -translate-y-1/2',
+            'rounded-(--radius-drawer) border border-(--color-border) bg-(--color-surface)/95',
+            'p-2 shadow-(--shadow-elevated) backdrop-blur-xl',
+            'opacity-0 translate-x-2 transition-all duration-200 ease-out',
+            'group-hover:pointer-events-auto group-hover:translate-x-0 group-hover:opacity-100',
+          )}
+        >
+          <div className="max-h-[min(30rem,calc(100vh-12rem))] overflow-y-auto scroll-thin pr-1">
+            {items.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => onSelect(item.id)}
+                className={cn(
+                  'block w-full truncate rounded-(--radius-control) px-2.5 py-2 text-left text-[12px]',
+                  'transition-colors hover:bg-(--color-surface-2)',
+                  'text-(--color-text-muted) hover:text-(--color-text)',
+                  activeId === item.id && 'bg-(--color-surface-2)',
+                )}
+              >
+                {item.summary}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   )
