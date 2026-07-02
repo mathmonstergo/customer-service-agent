@@ -65,6 +65,8 @@
 * 审核 UI 支持实体/关系 tab、状态筛选、类型筛选、当前页搜索、分页、刷新、AI 抽取候选入口。
 * 右侧详情抽屉展示实体/关系元数据、证据列表、审核动作；实体已确认后展示局部关系邻域。
 * 更新 `.trellis/spec/frontend/components.md`，记录 KG 审核 UI 必须使用“工具栏 + 单列表 + 右抽屉”的约定，3D 可视化作为后续视图。
+* 2026-07-01 code review 记录了 10 个 KG 后端问题；已通过后续 `fix(kg)` / `test(kg)` 提交修复确认/状态投影、subgraph hops、JSON fence、job 状态、检索融合兼容等问题，并补充回归测试。
+* 2026-07-02 复查 review 修复后的工作树，清理 ruff 报告的 3 个未使用变量/导入，不改变业务行为。
 
 ## 验证记录
 
@@ -77,6 +79,13 @@
 * Playwright CLI 打开 `http://127.0.0.1:5173/static/dist/#/knowledge-graph`：页面标题、左侧“知识图谱”导航、实体/关系 tab、空态和“抽取候选”弹层均可见。
 * `curl http://127.0.0.1:8765/#/knowledge-graph`：200 text/html。
 * `curl http://127.0.0.1:8765/api/kg/relations?limit=1`：200 application/json。
+* 2026-07-02 复验：
+  * `conda run -n customer-service-agent python -m pytest`：279 passed。
+  * `conda run -n customer-service-agent python -m ruff check .`：All checks passed。
+  * `conda run -n customer-service-agent python -m customer_service_agent.cli check-config`：config ok。
+  * `pnpm test src/pages/kg/helpers.test.ts`：3 frontend test files passed。
+  * `pnpm lint`：通过。
+  * `pnpm build`：通过；Vite 仍提示单包体积超过 500 kB。
 
 ## 未做事项
 

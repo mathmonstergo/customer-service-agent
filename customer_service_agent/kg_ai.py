@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from customer_service_agent.kg import parse_kg_extraction_response

@@ -1,7 +1,5 @@
 from pathlib import Path
 
-import json
-
 from customer_service_agent.db import (
     Database,
     build_document_knowledge_chunk_row,

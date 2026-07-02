@@ -2251,7 +2251,6 @@ class AdminApp:
             count=len(keyword_docs),
         )
 
-        fuse_started = time.perf_counter()
         fused = fuse_retrieval_candidates(
             vector_docs=vector_docs,
             keyword_docs=keyword_docs,
