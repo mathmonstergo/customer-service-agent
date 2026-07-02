@@ -177,8 +177,10 @@ function DrawerInner({ fileId, onClose }: { fileId: string; onClose: () => void 
     <>
       <DrawerHeader>
         <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 items-center gap-2 pr-8">
-            <DrawerTitle className="min-w-0 flex-1 truncate">{file.original_name}</DrawerTitle>
+          <div className="flex min-w-0 items-center gap-1.5 pr-8">
+            <DrawerTitle className="min-w-0 max-w-[min(34rem,calc(100%-5rem))] truncate">
+              {file.original_name}
+            </DrawerTitle>
             <CopyIdButton label="文件ID" value={fileId} className="mt-0.5" />
           </div>
           <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[12px] text-(--color-text-muted)">

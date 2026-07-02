@@ -3,7 +3,7 @@ import { motion } from 'framer-motion'
 import { X } from 'lucide-react'
 import { forwardRef, type ReactNode } from 'react'
 import { cn } from '@/lib/cn'
-import { spring } from '@/lib/motion'
+import { ease } from '@/lib/motion'
 import { DRAWER_WIDTH_COMPACT } from './drawer-constants'
 
 export function Drawer(props: React.ComponentPropsWithoutRef<typeof DialogPrimitive.Root>) {
@@ -25,15 +25,23 @@ interface DrawerContentProps extends React.ComponentPropsWithoutRef<typeof Dialo
 export const DrawerContent = forwardRef<HTMLDivElement, DrawerContentProps>(
   ({ className, children, width = DRAWER_WIDTH_COMPACT, ...props }, ref) => (
     <DialogPrimitive.Portal>
-      <DialogPrimitive.Overlay className="fixed inset-0 z-40 bg-black/60 backdrop-blur-[6px] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0" />
+      <DialogPrimitive.Overlay asChild>
+        <motion.div
+          initial={{ opacity: 0, backdropFilter: 'blur(0px)' }}
+          animate={{ opacity: 1, backdropFilter: 'blur(5px)' }}
+          exit={{ opacity: 0, backdropFilter: 'blur(0px)' }}
+          transition={{ duration: 0.42, ease: ease.out }}
+          className="fixed inset-0 z-40 bg-black/35"
+        />
+      </DialogPrimitive.Overlay>
       {/* aria-describedby={undefined}：抽屉用自定义副标题行而非 Radix Description，显式关掉"缺 Description"提示；
           放在 {...props} 前，消费方仍可自行传 aria-describedby 关联描述 */}
       <DialogPrimitive.Content ref={ref} asChild aria-describedby={undefined} {...props}>
         <motion.div
-          initial={{ x: 20, opacity: 0 }}
-          animate={{ x: 0, opacity: 1 }}
-          exit={{ x: 20, opacity: 0 }}
-          transition={spring}
+          initial={{ x: 'calc(100% + 12px)' }}
+          animate={{ x: 0 }}
+          exit={{ x: 'calc(100% + 12px)' }}
+          transition={{ duration: 0.42, ease: ease.out }}
           style={{ width }}
           className={cn(
             'fixed right-3 top-3 bottom-3 z-50 max-w-[calc(100vw-1.5rem)]',
