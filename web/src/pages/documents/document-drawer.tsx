@@ -4,7 +4,6 @@ import { useQueryClient } from '@tanstack/react-query'
 import {
   Check,
   ChevronDown,
-  Copy,
   Download,
   Loader2,
   Play,
@@ -56,7 +55,8 @@ import {
   documentChunkerLabel,
   normalizeDocumentChunkerType,
 } from './chunker-options'
-import { shortDocumentId } from './kg-actions'
+import { CopyIdButton } from './copy-id-button'
+import { HoverTooltipTrigger } from './hover-tooltip'
 
 interface Props {
   fileId: string | null
@@ -177,7 +177,10 @@ function DrawerInner({ fileId, onClose }: { fileId: string; onClose: () => void 
     <>
       <DrawerHeader>
         <div className="min-w-0 flex-1">
-          <DrawerTitle className="truncate">{file.original_name}</DrawerTitle>
+          <div className="flex min-w-0 items-center gap-2 pr-8">
+            <DrawerTitle className="min-w-0 flex-1 truncate">{file.original_name}</DrawerTitle>
+            <CopyIdButton label="文件ID" value={fileId} className="mt-0.5" />
+          </div>
           <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[12px] text-(--color-text-muted)">
             <Badge tone="muted">{file.file_type}</Badge>
             <Badge tone="muted">{file.parser}</Badge>
@@ -187,7 +190,6 @@ function DrawerInner({ fileId, onClose }: { fileId: string; onClose: () => void 
               label={file.is_disabled ? '已禁用' : tr(embeddingStatusLabel, file.embedding_summary?.status, '未索引')}
             />
           </div>
-          <CopyIdLine label="文件 ID" value={fileId} />
         </div>
       </DrawerHeader>
 
@@ -200,7 +202,7 @@ function DrawerInner({ fileId, onClose }: { fileId: string; onClose: () => void 
               size="sm"
               className="cursor-pointer"
               disabled={pending.parse || isParsing}
-              title="选择解析后的切块策略"
+              aria-label="选择解析后的切块策略"
             >
               <span className="text-(--color-text-faint)">Chunker</span>
               {documentChunkerLabel(selectedChunker)}
@@ -240,65 +242,83 @@ function DrawerInner({ fileId, onClose }: { fileId: string; onClose: () => void 
           )}
           {isParsing ? '解析中…' : pending.parse ? '提交中…' : '开始解析'}
         </Button>
-        <Button
-          variant="primary"
-          className="relative cursor-pointer"
-          onClick={onEmbed}
-          disabled={!isParsed || pending.embed || (!!chunksQ.data && nonGreenCount === 0)}
-          title={
+        <HoverTooltipTrigger
+          content={
             nonGreenCount > 0
               ? `为 ${nonGreenCount} 个非绿切片生成向量（已索引的自动跳过）`
               : '所有切片均已索引，无需重新生成'
           }
+          disabled={!isParsed || pending.embed || (!!chunksQ.data && nonGreenCount === 0)}
         >
-          {pending.embed ? (
-            <Loader2 className="size-3.5 animate-spin" />
-          ) : (
-            <Waypoints className="size-3.5" />
-          )}
-          Embedding
-          {nonGreenCount > 0 && !pending.embed && (
-            <span className="absolute -right-1 -top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-(--radius-control) bg-(--color-warning)/20 px-1 font-mono text-[10px] text-(--color-warning)">
-              {nonGreenCount}
-            </span>
-          )}
-        </Button>
-        <Button
-          size="icon"
-          className="cursor-pointer"
-          onClick={onGenerate}
-          disabled={!isParsed || pending.questions}
-          title="生成假设问题"
-        >
-          {pending.questions ? (
-            <Loader2 className="size-3.5 animate-spin" />
-          ) : (
-            <Wand2 className="size-3.5" />
-          )}
-        </Button>
-        <div className="ml-auto" />
-        <Button asChild variant="ghost" size="icon" title="下载原文件">
-          <a
-            href={`/api/import/files/${encodeURIComponent(fileId)}/download`}
-            target="_blank"
-            rel="noreferrer"
-            className="cursor-pointer"
+          <Button
+            variant="primary"
+            className="relative cursor-pointer"
+            onClick={onEmbed}
+            disabled={!isParsed || pending.embed || (!!chunksQ.data && nonGreenCount === 0)}
           >
-            <Download className="size-3.5" />
-          </a>
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="cursor-pointer"
-          onClick={onToggleDisabled}
-          title={file.is_disabled ? '启用文档' : '禁用文档'}
-        >
-          {file.is_disabled ? <Power className="size-3.5" /> : <PowerOff className="size-3.5" />}
-        </Button>
-        <Button variant="danger" size="icon" className="cursor-pointer" onClick={() => setDeleteOpen(true)} title="删除文档">
-          <Trash2 className="size-3.5" />
-        </Button>
+            {pending.embed ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Waypoints className="size-3.5" />
+            )}
+            Embedding
+            {nonGreenCount > 0 && !pending.embed && (
+              <span className="absolute -right-1 -top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-(--radius-control) bg-(--color-warning)/20 px-1 font-mono text-[10px] text-(--color-warning)">
+                {nonGreenCount}
+              </span>
+            )}
+          </Button>
+        </HoverTooltipTrigger>
+        <HoverTooltipTrigger content="生成假设问题" disabled={!isParsed || pending.questions}>
+          <Button
+            size="icon"
+            className="cursor-pointer"
+            onClick={onGenerate}
+            disabled={!isParsed || pending.questions}
+            aria-label="生成假设问题"
+          >
+            {pending.questions ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Wand2 className="size-3.5" />
+            )}
+          </Button>
+        </HoverTooltipTrigger>
+        <div className="ml-auto" />
+        <HoverTooltipTrigger content="下载原文件">
+          <Button asChild variant="ghost" size="icon" aria-label="下载原文件">
+            <a
+              href={`/api/import/files/${encodeURIComponent(fileId)}/download`}
+              target="_blank"
+              rel="noreferrer"
+              className="cursor-pointer"
+            >
+              <Download className="size-3.5" />
+            </a>
+          </Button>
+        </HoverTooltipTrigger>
+        <HoverTooltipTrigger content={file.is_disabled ? '启用文档' : '禁用文档'}>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="cursor-pointer"
+            onClick={onToggleDisabled}
+            aria-label={file.is_disabled ? '启用文档' : '禁用文档'}
+          >
+            {file.is_disabled ? <Power className="size-3.5" /> : <PowerOff className="size-3.5" />}
+          </Button>
+        </HoverTooltipTrigger>
+        <HoverTooltipTrigger content="删除文档">
+          <Button
+            variant="danger"
+            size="icon"
+            className="cursor-pointer"
+            onClick={() => setDeleteOpen(true)}
+            aria-label="删除文档"
+          >
+            <Trash2 className="size-3.5" />
+          </Button>
+        </HoverTooltipTrigger>
       </div>
 
       {/* 任务区：解析进度条 + 其他后台任务 */}
@@ -353,39 +373,6 @@ function DrawerInner({ fileId, onClose }: { fileId: string; onClose: () => void 
       </Dialog>
     </>
   )
-}
-
-// 文件 ID 显示完整可复制入口，关键约束是展示短 ID 但复制完整 ID。
-function CopyIdLine({ label, value }: { label: string; value: string }) {
-  const clean = value.trim()
-  return (
-    <div className="mt-2 flex min-w-0 items-center gap-1 text-[11px] text-(--color-text-faint)">
-      <span className="shrink-0">{label}</span>
-      <span className="truncate font-mono" title={clean}>
-        {shortDocumentId(clean)}
-      </span>
-      <button
-        type="button"
-        onClick={() => void copyText(clean, label)}
-        className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-(--radius-control) text-(--color-text-faint) hover:bg-(--color-surface-2) hover:text-(--color-text)"
-        title={`复制${label}`}
-        aria-label={`复制${label}`}
-      >
-        <Copy className="size-3" />
-      </button>
-    </div>
-  )
-}
-
-// 复制文件 ID 用浏览器 clipboard；失败时显式提示，避免用户以为已复制。
-async function copyText(value: string, label: string): Promise<void> {
-  try {
-    if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
-    await navigator.clipboard.writeText(value)
-    toast.success(`已复制${label}`)
-  } catch {
-    toast.error(`复制${label}失败`)
-  }
 }
 
 function TaskPanel({

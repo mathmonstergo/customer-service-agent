@@ -111,6 +111,13 @@
   * `pnpm lint`：通过。
   * `pnpm build`：通过；Vite 仍提示单包体积超过 500 kB。
   * Playwright CLI 打开 `/documents` 文档抽屉：快照确认切片定位、`复制ID`、`KG 抽取`、`Embedding`、禁用和编辑按钮仍在同一行。
+* 2026-07-02 文件 ID 与 hover 样式统一验证：
+  * 文件 ID 复制入口移动到文档抽屉标题右侧，并复用切片处 `复制ID` + icon + 完整 ID tooltip/toast 的格式。
+  * 文档抽屉和切片工具栏移除浏览器原生 `title` tooltip，统一使用项目 `Tooltip` / `Popover` 样式。
+  * `pnpm test src/pages/documents/kg-actions.test.ts`：11 passed。
+  * `pnpm lint`：通过。
+  * `pnpm build`：通过；Vite 仍提示单包体积超过 500 kB。
+  * Playwright CLI 打开 `/documents` 文档抽屉：快照确认文件标题右侧可见 `复制ID`；hover 文件 ID 显示项目 tooltip 和完整 `imp_5c6d8ff6119a`；hover `KG 抽取` 显示项目 tooltip。
 
 ## 未做事项
 

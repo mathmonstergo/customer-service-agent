@@ -5,7 +5,6 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
-  Copy,
   Edit3,
   EyeOff,
   Eye,
@@ -36,6 +35,8 @@ import { ease, dur } from '@/lib/motion'
 import { embeddingStatusLabel, tr } from '@/lib/labels'
 import { useHorizontalWheelScroll } from '@/lib/use-horizontal-wheel-scroll'
 import { formatChunkPageLocator, formatKgExtractionResult } from './kg-actions'
+import { CopyIdButton } from './copy-id-button'
+import { HoverTooltip, HoverTooltipTrigger } from './hover-tooltip'
 
 export function ChunkBrowser({ fileId, chunks, fileDisabled }: { fileId: string; chunks: ImportChunk[]; fileDisabled?: boolean }) {
   const {
@@ -255,18 +256,20 @@ function ChunkNav({
           {filtering ? `${visibleIndices.length} / ${chunks.length}` : chunks.length}
         </span>
       </span>
-      <Button
-        variant="ghost"
-        size="icon"
-        className="size-6 cursor-pointer"
-        disabled={prevTarget === undefined}
-        title="上一个切片"
-        onClick={() => {
-          if (prevTarget !== undefined) onJump(prevTarget)
-        }}
-      >
-        <ChevronLeft className="size-3.5" />
-      </Button>
+      <HoverTooltipTrigger content="上一个切片" disabled={prevTarget === undefined}>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-6 cursor-pointer"
+          disabled={prevTarget === undefined}
+          aria-label="上一个切片"
+          onClick={() => {
+            if (prevTarget !== undefined) onJump(prevTarget)
+          }}
+        >
+          <ChevronLeft className="size-3.5" />
+        </Button>
+      </HoverTooltipTrigger>
       <div
         ref={scrollerRef}
         className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto scroll-thin scroll-smooth pb-0.5"
@@ -323,18 +326,20 @@ function ChunkNav({
           })
         )}
       </div>
-      <Button
-        variant="ghost"
-        size="icon"
-        className="size-6 cursor-pointer"
-        disabled={nextTarget === undefined}
-        title="下一个切片"
-        onClick={() => {
-          if (nextTarget !== undefined) onJump(nextTarget)
-        }}
-      >
-        <ChevronRight className="size-3.5" />
-      </Button>
+      <HoverTooltipTrigger content="下一个切片" disabled={nextTarget === undefined}>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-6 cursor-pointer"
+          disabled={nextTarget === undefined}
+          aria-label="下一个切片"
+          onClick={() => {
+            if (nextTarget !== undefined) onJump(nextTarget)
+          }}
+        >
+          <ChevronRight className="size-3.5" />
+        </Button>
+      </HoverTooltipTrigger>
       {/* 状态筛选 */}
       <Popover>
         <PopoverTrigger asChild>
@@ -342,7 +347,7 @@ function ChunkNav({
             variant={filtering ? 'primary' : 'ghost'}
             size="icon"
             className="size-6 shrink-0 cursor-pointer"
-            title="按状态筛选切片"
+            aria-label="按状态筛选切片"
           >
             <ListFilter className="size-3.5" />
           </Button>
@@ -425,9 +430,11 @@ function ChunkToolbar({
       {/* 状态已统一到滚轴圆点 + hover，这里只留段落 / 页码等定位信息，保持工具栏清爽 */}
       <div className="flex min-w-0 flex-1 items-center gap-2 text-[12px] text-(--color-text-muted)">
         {sectionLeaf && (
-          <span className="max-w-[8em] truncate text-(--color-text)" title={chunk.section_path?.join(' > ')}>
-            {sectionLeaf}
-          </span>
+          <HoverTooltip content={chunk.section_path?.join(' > ') || sectionLeaf}>
+            <span className="max-w-[8em] truncate text-(--color-text)">
+              {sectionLeaf}
+            </span>
+          </HoverTooltip>
         )}
         {pageLocator && (
           <span className="text-(--color-text-faint)">
@@ -435,110 +442,93 @@ function ChunkToolbar({
             {pageLocator}
           </span>
         )}
-        <CopyIdInline label="切片ID" value={chunk.id} />
+        <CopyIdButton label="切片ID" value={chunk.id} />
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-6 cursor-pointer gap-1 px-1.5 text-[11px]"
-          disabled={cannotExtractKg || isExtractingKg}
-          onClick={async () => {
-            try {
-              const result = await createKgJob.mutateAsync({
-                source_id: chunk.id,
-              })
-              toast.success(formatKgExtractionResult(result))
-            } catch (e) {
-              toast.error((e as Error).message || 'KG 抽取失败')
-            }
-          }}
-          title={
+        <HoverTooltipTrigger
+          content={
             cannotExtractKg
               ? '切片可用且非编辑状态时才能抽取 KG 候选'
               : '从当前切片抽取 KG 候选'
           }
+          disabled={cannotExtractKg || isExtractingKg}
         >
-          {isExtractingKg ? (
-            <Loader2 className="size-3.5 animate-spin" />
-          ) : (
-            <Bot className="size-3" />
-          )}
-          KG 抽取
-        </Button>
-        <Button
-          variant={needsEmbed ? 'primary' : 'ghost'}
-          size="sm"
-          className="h-6 cursor-pointer gap-1 px-1.5 text-[11px]"
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-6 cursor-pointer gap-1 px-1.5 text-[11px]"
+            disabled={cannotExtractKg || isExtractingKg}
+            onClick={async () => {
+              try {
+                const result = await createKgJob.mutateAsync({
+                  source_id: chunk.id,
+                })
+                toast.success(formatKgExtractionResult(result))
+              } catch (e) {
+                toast.error((e as Error).message || 'KG 抽取失败')
+              }
+            }}
+          >
+            {isExtractingKg ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Bot className="size-3" />
+            )}
+            KG 抽取
+          </Button>
+        </HoverTooltipTrigger>
+        <HoverTooltipTrigger
+          content={needsEmbed ? '切片原文有改动，向量已 stale' : '重新生成该切片向量'}
           disabled={isEmbedding || editMode}
-          onClick={async () => {
-            try {
-              const res = await embedChunk.mutateAsync(chunk.id)
-              const count = res?.count ?? 0
-              toast.success(`已重新生成切片向量（${count} 条）`)
-            } catch (e) {
-              toast.error((e as Error).message || '重新生成失败')
-            }
-          }}
-          title={needsEmbed ? '切片原文有改动，向量已 stale' : '重新生成该切片向量'}
         >
-          {isEmbedding ? (
-            <Loader2 className="size-3.5 animate-spin" />
-          ) : (
-            <Waypoints className="size-3" />
-          )}
-          Embedding
-        </Button>
-        <Button
-          variant={chunk.is_disabled ? 'default' : 'ghost'}
-          size="icon"
-          className="size-6 cursor-pointer"
-          onClick={onToggleDisabled}
-          title={chunk.is_disabled ? '启用切片' : '禁用切片'}
-        >
-          {chunk.is_disabled ? <Eye className="size-3" /> : <EyeOff className="size-3" />}
-        </Button>
-        <Button
-          variant={editMode ? 'primary' : 'ghost'}
-          size="icon"
-          className="size-6 cursor-pointer"
-          onClick={onEditToggle}
-          title={editMode ? '退出编辑' : '编辑原文'}
-        >
-          {editMode ? <X className="size-3" /> : <Edit3 className="size-3" />}
-        </Button>
+          <Button
+            variant={needsEmbed ? 'primary' : 'ghost'}
+            size="sm"
+            className="h-6 cursor-pointer gap-1 px-1.5 text-[11px]"
+            disabled={isEmbedding || editMode}
+            onClick={async () => {
+              try {
+                const res = await embedChunk.mutateAsync(chunk.id)
+                const count = res?.count ?? 0
+                toast.success(`已重新生成切片向量（${count} 条）`)
+              } catch (e) {
+                toast.error((e as Error).message || '重新生成失败')
+              }
+            }}
+          >
+            {isEmbedding ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Waypoints className="size-3" />
+            )}
+            Embedding
+          </Button>
+        </HoverTooltipTrigger>
+        <HoverTooltipTrigger content={chunk.is_disabled ? '启用切片' : '禁用切片'}>
+          <Button
+            variant={chunk.is_disabled ? 'default' : 'ghost'}
+            size="icon"
+            className="size-6 cursor-pointer"
+            onClick={onToggleDisabled}
+            aria-label={chunk.is_disabled ? '启用切片' : '禁用切片'}
+          >
+            {chunk.is_disabled ? <Eye className="size-3" /> : <EyeOff className="size-3" />}
+          </Button>
+        </HoverTooltipTrigger>
+        <HoverTooltipTrigger content={editMode ? '退出编辑' : '编辑原文'}>
+          <Button
+            variant={editMode ? 'primary' : 'ghost'}
+            size="icon"
+            className="size-6 cursor-pointer"
+            onClick={onEditToggle}
+            aria-label={editMode ? '退出编辑' : '编辑原文'}
+          >
+            {editMode ? <X className="size-3" /> : <Edit3 className="size-3" />}
+          </Button>
+        </HoverTooltipTrigger>
       </div>
     </div>
   )
-}
-
-// 切片 ID 行内提供复制按钮，关键约束是不展示长 ID，完整 ID 只放在 hover 与复制提示中。
-function CopyIdInline({ label, value }: { label: string; value: string }) {
-  const clean = value.trim()
-  if (!clean) return null
-  return (
-    <button
-      type="button"
-      onClick={() => void copyText(clean, label)}
-      className="inline-flex h-5 shrink-0 cursor-pointer items-center gap-1 rounded-(--radius-control) px-1.5 text-[11px] text-(--color-text-faint) transition-colors hover:bg-(--color-surface-2) hover:text-(--color-text)"
-      title={`复制${label}：${clean}`}
-      aria-label={`复制${label}`}
-    >
-      <Copy className="size-3" />
-      复制ID
-    </button>
-  )
-}
-
-// 复制切片 ID 用浏览器 clipboard；失败时 toast 提示，避免静默失败。
-async function copyText(value: string, label: string): Promise<void> {
-  try {
-    if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
-    await navigator.clipboard.writeText(value)
-    toast.success(`已复制${label} ${value}`)
-  } catch {
-    toast.error(`复制${label}失败`)
-  }
 }
 
 function QuestionsBlock({ questions }: { questions: string[] }) {
