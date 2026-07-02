@@ -67,6 +67,8 @@
 * 更新 `.trellis/spec/frontend/components.md`，记录 KG 审核 UI 必须使用“工具栏 + 单列表 + 右抽屉”的约定，3D 可视化作为后续视图。
 * 2026-07-01 code review 记录了 10 个 KG 后端问题；已通过后续 `fix(kg)` / `test(kg)` 提交修复确认/状态投影、subgraph hops、JSON fence、job 状态、检索融合兼容等问题，并补充回归测试。
 * 2026-07-02 复查 review 修复后的工作树，清理 ruff 报告的 3 个未使用变量/导入，不改变业务行为。
+* 2026-07-02 优化文档切片到 KG 抽取的体验：文档抽屉显示并可复制文件 ID，切片工具栏显示并可复制切片 ID，且可从当前可用切片直接触发 `document_chunk` KG 抽取。
+* 更新 `.trellis/spec/frontend/components.md`，记录文档/切片 ID 和 KG 单切片抽取入口的 UI 约定。
 
 ## 验证记录
 
@@ -86,6 +88,11 @@
   * `pnpm test src/pages/kg/helpers.test.ts`：3 frontend test files passed。
   * `pnpm lint`：通过。
   * `pnpm build`：通过；Vite 仍提示单包体积超过 500 kB。
+* 2026-07-02 文档切片 KG 入口验证：
+  * `pnpm test src/pages/documents/kg-actions.test.ts`：4 frontend test files passed。
+  * `pnpm lint`：通过。
+  * `pnpm build`：通过；Vite 仍提示单包体积超过 500 kB。
+  * Playwright CLI 打开 `/documents` 并打开文档抽屉：快照确认可见“文件 ID”“复制文件 ID”“切片 ID”“复制切片 ID”和“KG 抽取”。
 
 ## 未做事项
 

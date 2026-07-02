@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import {
+  Bot,
   Check,
   ChevronLeft,
   ChevronRight,
+  Copy,
   Edit3,
   EyeOff,
   Eye,
@@ -23,6 +25,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { SourceBlockPreview } from '@/components/shared/source-block-preview'
 import {
   useEmbedImportChunk,
+  useCreateKgExtractionJob,
   useToggleImportChunkDisabled,
   useUpdateImportChunk,
 } from '@/api/hooks'
@@ -32,6 +35,7 @@ import { cn } from '@/lib/cn'
 import { ease, dur } from '@/lib/motion'
 import { embeddingStatusLabel, tr } from '@/lib/labels'
 import { useHorizontalWheelScroll } from '@/lib/use-horizontal-wheel-scroll'
+import { formatKgExtractionResult, shortDocumentId } from './kg-actions'
 
 export function ChunkBrowser({ fileId, chunks, fileDisabled }: { fileId: string; chunks: ImportChunk[]; fileDisabled?: boolean }) {
   const {
@@ -82,6 +86,7 @@ export function ChunkBrowser({ fileId, chunks, fileDisabled }: { fileId: string;
       {/* 切片元信息与操作 */}
       <ChunkToolbar
         chunk={chunk}
+        fileDisabled={fileDisabled}
         editMode={chunkEditMode}
         onEditToggle={() => setChunkEditMode(!chunkEditMode)}
         onToggleDisabled={() =>
@@ -390,18 +395,24 @@ function ChunkNav({
 
 function ChunkToolbar({
   chunk,
+  fileDisabled,
   editMode,
   onEditToggle,
   onToggleDisabled,
 }: {
   chunk: ImportChunk
+  fileDisabled?: boolean
   editMode: boolean
   onEditToggle: () => void
   onToggleDisabled: () => void
 }) {
   const embedChunk = useEmbedImportChunk()
+  const createKgJob = useCreateKgExtractionJob()
   const isEmbedding =
     embedChunk.isPending && embedChunk.variables === chunk.id
+  const isExtractingKg =
+    createKgJob.isPending && createKgJob.variables?.source_id === chunk.id
+  const cannotExtractKg = editMode || !!fileDisabled || chunk.is_disabled
   // 切片向量需要刷新的两种状态：编辑后被自动标 stale；上次生成失败。
   const needsEmbed = chunk.embedding_status === 'stale' || chunk.embedding_status === 'failed'
 
@@ -432,8 +443,38 @@ function ChunkToolbar({
             {meta.join(' · ')}
           </span>
         )}
+        <CopyIdInline label="切片 ID" value={chunk.id} />
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
+        <Button
+          variant="outline"
+          size="sm"
+          className="cursor-pointer"
+          disabled={cannotExtractKg || isExtractingKg}
+          onClick={async () => {
+            try {
+              const result = await createKgJob.mutateAsync({
+                source_type: 'document_chunk',
+                source_id: chunk.id,
+              })
+              toast.success(formatKgExtractionResult(result))
+            } catch (e) {
+              toast.error((e as Error).message || 'KG 抽取失败')
+            }
+          }}
+          title={
+            cannotExtractKg
+              ? '切片可用且非编辑状态时才能抽取 KG 候选'
+              : '从当前切片抽取 KG 候选'
+          }
+        >
+          {isExtractingKg ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <Bot className="size-3.5" />
+          )}
+          KG 抽取
+        </Button>
         <Button
           variant={needsEmbed ? 'primary' : 'ghost'}
           size="sm"
@@ -478,6 +519,40 @@ function ChunkToolbar({
       </div>
     </div>
   )
+}
+
+// 切片 ID 行内展示并提供复制按钮，关键约束是短展示、完整复制。
+function CopyIdInline({ label, value }: { label: string; value: string }) {
+  const clean = value.trim()
+  if (!clean) return null
+  return (
+    <span className="inline-flex min-w-0 items-center gap-1 text-[11px] text-(--color-text-faint)">
+      <span className="shrink-0">{label}</span>
+      <span className="max-w-[140px] truncate font-mono" title={clean}>
+        {shortDocumentId(clean)}
+      </span>
+      <button
+        type="button"
+        onClick={() => void copyText(clean, label)}
+        className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-(--radius-control) text-(--color-text-faint) hover:bg-(--color-surface-2) hover:text-(--color-text)"
+        title={`复制${label}`}
+        aria-label={`复制${label}`}
+      >
+        <Copy className="size-3" />
+      </button>
+    </span>
+  )
+}
+
+// 复制切片 ID 用浏览器 clipboard；失败时 toast 提示，避免静默失败。
+async function copyText(value: string, label: string): Promise<void> {
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
+    await navigator.clipboard.writeText(value)
+    toast.success(`已复制${label}`)
+  } catch {
+    toast.error(`复制${label}失败`)
+  }
 }
 
 function QuestionsBlock({ questions }: { questions: string[] }) {

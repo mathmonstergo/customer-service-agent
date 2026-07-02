@@ -4,6 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import {
   Check,
   ChevronDown,
+  Copy,
   Download,
   Loader2,
   Play,
@@ -55,6 +56,7 @@ import {
   documentChunkerLabel,
   normalizeDocumentChunkerType,
 } from './chunker-options'
+import { shortDocumentId } from './kg-actions'
 
 interface Props {
   fileId: string | null
@@ -185,6 +187,7 @@ function DrawerInner({ fileId, onClose }: { fileId: string; onClose: () => void 
               label={file.is_disabled ? '已禁用' : tr(embeddingStatusLabel, file.embedding_summary?.status, '未索引')}
             />
           </div>
+          <CopyIdLine label="文件 ID" value={fileId} />
         </div>
       </DrawerHeader>
 
@@ -350,6 +353,39 @@ function DrawerInner({ fileId, onClose }: { fileId: string; onClose: () => void 
       </Dialog>
     </>
   )
+}
+
+// 文件 ID 显示完整可复制入口，关键约束是展示短 ID 但复制完整 ID。
+function CopyIdLine({ label, value }: { label: string; value: string }) {
+  const clean = value.trim()
+  return (
+    <div className="mt-2 flex min-w-0 items-center gap-1 text-[11px] text-(--color-text-faint)">
+      <span className="shrink-0">{label}</span>
+      <span className="truncate font-mono" title={clean}>
+        {shortDocumentId(clean)}
+      </span>
+      <button
+        type="button"
+        onClick={() => void copyText(clean, label)}
+        className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-(--radius-control) text-(--color-text-faint) hover:bg-(--color-surface-2) hover:text-(--color-text)"
+        title={`复制${label}`}
+        aria-label={`复制${label}`}
+      >
+        <Copy className="size-3" />
+      </button>
+    </div>
+  )
+}
+
+// 复制文件 ID 用浏览器 clipboard；失败时显式提示，避免用户以为已复制。
+async function copyText(value: string, label: string): Promise<void> {
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
+    await navigator.clipboard.writeText(value)
+    toast.success(`已复制${label}`)
+  } catch {
+    toast.error(`复制${label}失败`)
+  }
 }
 
 function TaskPanel({

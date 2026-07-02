@@ -486,6 +486,26 @@ Knowledge graph review pages must use the existing internal-tool structure inste
 <div className="grid grid-cols-[280px_1fr_360px]">{/* ... */}</div>
 ```
 
+### Document Chunk IDs for KG Workflows
+
+When a workflow needs internal document IDs or chunk IDs, the UI must expose them in the source surface instead of requiring users to inspect API responses:
+
+- Document drawers should show the import file ID with a copy button.
+- Chunk toolbars should show the active chunk ID with a copy button.
+- The visible ID may be shortened for layout, but the copy action must copy the full ID.
+- KG extraction from a document chunk should be available from the active chunk toolbar when the chunk is usable and not being edited.
+- Do not make users manually copy a chunk ID into the KG page for the common single-chunk extraction path.
+
+```tsx
+// Good: the user can copy or act from the source chunk.
+<ChunkToolbar>
+  <CopyIdInline label="切片 ID" value={chunk.id} />
+  <Button onClick={() => extractKg({ source_type: 'document_chunk', source_id: chunk.id })}>
+    KG 抽取
+  </Button>
+</ChunkToolbar>
+```
+
 ---
 
 ## Loading States
