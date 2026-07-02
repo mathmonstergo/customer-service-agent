@@ -384,10 +384,18 @@ function ThinkingPanel({ msg }: { msg: ChatMessage }) {
   }
 
   const total = steps.reduce((sum, s) => sum + (s.duration_ms || 0), 0)
-  const label = `已完成 ${steps.length} 步 · ${(total / 1000).toFixed(1)}s`
+  const failed = steps.some((s) => s.status === 'failed')
+  const label = failed
+    ? `流程中断 · ${steps.length} 步 · ${(total / 1000).toFixed(1)}s`
+    : `已完成 ${steps.length} 步 · ${(total / 1000).toFixed(1)}s`
 
   return (
-    <div className="rounded-(--radius-control) border border-(--color-border-soft) bg-(--color-surface)">
+    <div
+      className={cn(
+        'rounded-(--radius-control) border bg-(--color-surface)',
+        failed ? 'border-(--color-danger)/30' : 'border-(--color-border-soft)',
+      )}
+    >
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -397,7 +405,11 @@ function ThinkingPanel({ msg }: { msg: ChatMessage }) {
           'transition-colors',
         )}
       >
-        <CheckCircle2 className="size-3.5 text-(--color-success)" />
+        {failed ? (
+          <AlertTriangle className="size-3.5 text-(--color-danger)" />
+        ) : (
+          <CheckCircle2 className="size-3.5 text-(--color-success)" />
+        )}
         <span className="flex-1">{label}</span>
         <ChevronRight
           className={cn('size-3.5 transition-transform duration-150', open && 'rotate-90')}

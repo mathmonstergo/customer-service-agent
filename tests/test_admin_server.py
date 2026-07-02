@@ -2396,6 +2396,43 @@ def test_admin_app_iter_assistant_chat_events_realtime_prompt_marks_status_limit
     assert events[-1]["answer_draft"].startswith("我不能直接确认后台实时状态")
 
 
+def test_admin_app_iter_assistant_chat_events_reports_answer_generation_failure():
+    """生成回答阶段的模型错误应作为 SSE error 返回，不能冒泡成 internal error。"""
+
+    class FakeEmbedding:
+        def embed(self, text):
+            return [0.1]
+
+    class FakeDatabase:
+        def search_knowledge(self, query_embedding, *, top_k, min_score):
+            return []
+
+        def search_knowledge_text(self, query_text, *, top_k, query_terms):
+            return []
+
+    class FailingChat:
+        def stream_complete(self, system_prompt, user_prompt):
+            raise RuntimeError("upstream unavailable")
+            yield ""
+
+    app = AdminApp(
+        SimpleNamespace(database_url="postgresql://unused", rag_top_k=3, rag_min_score=0.4),
+        db=FakeDatabase(),
+        embeddings=FakeEmbedding(),
+        chat=FailingChat(),
+    )
+
+    events = list(app.iter_assistant_chat_events({"question": "报告没有生成怎么办？"}))
+
+    assert events[-2]["type"] == "step"
+    assert events[-2]["step_id"] == "answer_generation"
+    assert events[-2]["status"] == "failed"
+    assert events[-1] == {
+        "type": "error",
+        "error": "模型服务调用失败：upstream unavailable",
+    }
+
+
 def test_assistant_document_payload_exposes_provenance_fields():
     """来源 payload 应顶层暴露章节、页码和偏移，前端无需猜 metadata 内部结构。"""
     doc = SimpleNamespace(

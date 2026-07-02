@@ -57,14 +57,17 @@
 - Unsupported `flow_id` -> raise `AdminValidationError`.
 - Sensitive question -> return a refusal `delta` and `done` with `documents: []`.
 - No retrieval hits -> continue answer generation with no documents and no fabricated knowledge-base evidence.
+- Answer-generation model/provider failure -> emit `answer_generation` step with `status: "failed"` and then `type: "error"` with a user-readable model-service message; do not let the exception bubble to the generic SSE `internal error` handler.
 - Stream HTTP/SSE transport errors -> frontend must surface an error on the assistant message and stop streaming state.
 
 ### 5. Good/Base/Bad Cases
 
 - Good: sensitive query emits `meta`, `input_question`, `intent_detection`, refusal `delta`, `answer_generation completed`, `done` with empty documents.
+- Good: answer-generation model failure emits `answer_generation running`, `answer_generation failed`, then `error` and no `done`.
 - Good: document source includes top-level `page_start`, `section_path`, `retrieval_channels`, and parent context entry when a child hit expands to parent.
 - Base: realtime status query with no hits still sends prompt guidance saying realtime backend state cannot be confirmed.
 - Bad: sensitive query goes through embedding or search; the UI can imply the platform retrieved secret knowledge.
+- Bad: provider errors such as unsupported model names surface as generic `internal error` in the answer bubble.
 - Bad: provenance exists only inside `metadata`; frontend field drift can hide page/section evidence.
 
 ### 6. Tests Required
@@ -72,6 +75,7 @@
 - Unit test for SSE formatting covering `meta`, `step`, `delta`, `done`, and `error`.
 - Regression test for sensitive short-circuit asserting embedding/search/LLM are not called.
 - Regression test for realtime status prompt constraints.
+- Regression test for answer-generation model failure asserting failed step + `error` event.
 - Unit test for `assistant_document_payload()` top-level provenance fields.
 - Frontend lint/build or focused type check for changed assistant source fields.
 

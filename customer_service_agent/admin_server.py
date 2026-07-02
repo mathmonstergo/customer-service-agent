@@ -402,6 +402,24 @@ def classify_error_response(exc: Exception) -> tuple[HTTPStatus, dict[str, Any]]
     return HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal error"}
 
 
+def assistant_model_error_message(exc: Exception) -> str:
+    """整理回答生成模型错误，关键约束是展示外部服务原因但不暴露堆栈和长文本。"""
+    raw = ""
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            raw = str(error.get("message") or "").strip()
+        if not raw:
+            raw = str(body.get("message") or "").strip()
+    if not raw:
+        raw = str(exc).strip() or exc.__class__.__name__
+    compact = re.sub(r"\s+", " ", raw)
+    if len(compact) > 180:
+        compact = f"{compact[:177]}..."
+    return f"模型服务调用失败：{compact}"
+
+
 def ensure_upload_path_within(upload_dir: Path, candidate: Path) -> Path:
     """resolve 后必须落在 upload_dir 内，覆盖符号链接或拼接穿越攻击。
 
@@ -2349,9 +2367,23 @@ class AdminApp:
         prompt = build_user_prompt(question, docs)
         answer_parts: list[str] = []
         system_prompt = self.assistant_system_prompt_from_payload(payload)
-        for text in chat.stream_complete(system_prompt, prompt):
-            answer_parts.append(text)
-            yield {"type": "delta", "text": text}
+        try:
+            for text in chat.stream_complete(system_prompt, prompt):
+                answer_parts.append(text)
+                yield {"type": "delta", "text": text}
+        except Exception as exc:
+            # 生成阶段属于外部模型依赖；以 SSE error 结束当前回答，避免冒泡成 internal error。
+            error_message = assistant_model_error_message(exc)
+            logger.warning("assistant answer generation failed: %s", exc, exc_info=True)
+            yield assistant_step_event(
+                "answer_generation",
+                "生成回答",
+                "failed",
+                answer_started,
+                summary=error_message,
+            )
+            yield {"type": "error", "error": error_message}
+            return
 
         answer_draft = "".join(answer_parts).strip()
         if not answer_draft:
