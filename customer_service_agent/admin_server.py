@@ -1014,10 +1014,12 @@ class AdminApp:
         """创建并同步执行 KG 抽取任务，关键约束是只生成待审核候选。"""
         source_type = str(payload.get("source_type") or "").strip()
         source_id = str(payload.get("source_id") or "").strip()
-        if source_type not in VALID_KG_EXTRACTION_SOURCE_TYPES:
-            raise AdminValidationError("source_type must be faq or document_chunk")
         if not source_id:
             raise AdminValidationError("source_id is required")
+        if source_type and source_type not in VALID_KG_EXTRACTION_SOURCE_TYPES:
+            raise AdminValidationError("source_type must be faq or document_chunk")
+        if not source_type:
+            source_type = self._infer_kg_extraction_source_type(source_id)
 
         chat = self.chat_client()
         job = self.database().create_kg_extraction_job(
@@ -1073,6 +1075,16 @@ class AdminApp:
                     "Cannot update KG extraction job %s at all", job["id"], exc_info=True
                 )
                 raise
+
+    def _infer_kg_extraction_source_type(self, source_id: str) -> str:
+        """根据来源 ID 自动识别 KG 抽取类型，关键约束是只在前端未显式传类型时使用。"""
+        faq = self.database().get_faq(source_id)
+        if faq is not None:
+            return "faq"
+        chunk = self.database().get_import_chunk(source_id)
+        if chunk is not None:
+            return "document_chunk"
+        raise AdminNotFoundError(f"KG extraction source not found: {source_id}")
 
     def _kg_extraction_source(self, source_type: str, source_id: str) -> tuple[str, dict[str, Any]]:
         """读取 KG 抽取来源，关键约束是只允许已审核 FAQ 或未禁用文档切片。"""

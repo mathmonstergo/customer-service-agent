@@ -643,7 +643,7 @@ export function useKgSubgraph(centerEntityId: string | null, options?: { enabled
 export function useCreateKgExtractionJob() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (payload: { source_type: string; source_id: string; source_chunk_id?: string }) =>
+    mutationFn: (payload: { source_id: string; source_type?: 'faq' | 'document_chunk'; source_chunk_id?: string }) =>
       requestJson<KgExtractionJob>('/api/kg/extraction-jobs', {
         method: 'POST',
         body: payload,

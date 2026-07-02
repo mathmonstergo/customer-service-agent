@@ -599,7 +599,6 @@ function EvidenceList({ evidence }: { evidence: KgEvidence[] }) {
 // AI 抽取入口：用户手动输入已审核 FAQ ID 或文档切片 ID，后端只生成待审核候选。
 function ExtractionJobPopover() {
   const createJob = useCreateKgExtractionJob()
-  const [sourceType, setSourceType] = useState<'faq' | 'document_chunk'>('faq')
   const [sourceId, setSourceId] = useState('')
 
   const handleSubmit = async () => {
@@ -609,7 +608,6 @@ function ExtractionJobPopover() {
     }
     try {
       const job = await createJob.mutateAsync({
-        source_type: sourceType,
         source_id: sourceId.trim(),
       })
       toast.success(`抽取完成：${job.entity_count} 个实体，${job.relation_count} 条关系`)
@@ -630,24 +628,11 @@ function ExtractionJobPopover() {
       <PopoverContent className="w-80 p-3">
         <div className="space-y-3">
           <div>
-            <div className="mb-1 text-[11px] text-(--color-text-faint)">来源类型</div>
-            <select
-              value={sourceType}
-              onChange={(event) => setSourceType(event.target.value as 'faq' | 'document_chunk')}
-              className="h-8 w-full rounded-(--radius-control) border border-(--color-border) bg-(--color-surface-2) px-2 text-[13px] text-(--color-text) focus:outline-none focus:border-(--color-primary)/60"
-            >
-              <option value="faq">FAQ</option>
-              <option value="document_chunk">文档切片</option>
-            </select>
-          </div>
-          <div>
-            <div className="mb-1 text-[11px] text-(--color-text-faint)">
-              {sourceType === 'faq' ? 'FAQ ID' : '文档切片 ID'}
-            </div>
+            <div className="mb-1 text-[11px] text-(--color-text-faint)">来源 ID</div>
             <Input
               value={sourceId}
               onChange={(event) => setSourceId(event.target.value)}
-              placeholder={sourceType === 'faq' ? '例如 faq_xxx' : '例如 chunk_xxx'}
+              placeholder="输入 FAQ ID 或切片 ID"
             />
           </div>
           <Button className="w-full" onClick={handleSubmit} disabled={createJob.isPending}>
@@ -655,7 +640,7 @@ function ExtractionJobPopover() {
             开始抽取
           </Button>
           <p className="text-[11px] leading-[1.6] text-(--color-text-faint)">
-            抽取结果默认进入待审核，不会直接进入检索。
+            输入 FAQ ID 或切片 ID，后端会自动识别来源；结果默认进入待审核。
           </p>
         </div>
       </PopoverContent>

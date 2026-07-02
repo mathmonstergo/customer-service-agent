@@ -53,7 +53,7 @@
 * 新增 `customer_service_agent/kg_ai.py`：调用 Chat 模型从单条 FAQ 或文档切片抽取 KG 候选，要求输出固定 JSON schema。
 * 新增 `KnowledgeGraphMixin`：保存 KG 抽取候选到 `kg_entities`、`kg_relations`、`kg_evidence`；确认实体/关系后分别投影为 `knowledge_chunks.source_type='kg_entity'` / `kg_relation`。
 * 更新 `sql/001_init.sql`：新增 KG 抽取任务、实体、关系、证据表和状态/类型索引。
-* 新增 `POST /api/kg/extraction-jobs`：第一版同步执行单来源抽取任务，支持 `source_type=faq` 和 `source_type=document_chunk`；任务状态记录 `queued`、`processing`、`completed`、`failed`。
+* 新增 `POST /api/kg/extraction-jobs`：第一版同步执行单来源抽取任务，支持显式 `source_type=faq` / `source_type=document_chunk`，也支持只传 `source_id` 由后端自动识别；任务状态记录 `queued`、`processing`、`completed`、`failed`。
 * 新增 KG 审核后端 API：`GET /api/kg/entities`、`GET /api/kg/relations`、确认实体/关系、更新实体/关系状态。
 * 审核列表返回证据数组；禁用或待复核实体/关系会同步更新对应 `kg_entity` / `kg_relation` 投影状态。
 * 更新默认检索 SQL：普通 `search_knowledge` / `search_knowledge_text` 显式排除 `kg_entity` / `kg_relation`，避免 KG 默认影响客服回答链路。
@@ -69,6 +69,8 @@
 * 2026-07-02 复查 review 修复后的工作树，清理 ruff 报告的 3 个未使用变量/导入，不改变业务行为。
 * 2026-07-02 优化文档切片到 KG 抽取的体验：文档抽屉显示并可复制文件 ID，切片工具栏显示并可复制切片 ID，且可从当前可用切片直接触发 `document_chunk` KG 抽取。
 * 更新 `.trellis/spec/frontend/components.md`，记录文档/切片 ID 和 KG 单切片抽取入口的 UI 约定。
+* 2026-07-02 继续精简切片抽屉工具栏：页码改为 `p14-15` 格式，不再显示 `text` 等 block type；切片工具栏只显示 `复制ID` + icon，完整切片 ID 放在 hover 和复制成功 toast 中。
+* 2026-07-02 简化 KG 页面 AI 抽取弹层：移除 FAQ / 文档切片下拉，只保留一个来源 ID 输入；后端根据 `source_id` 自动识别 FAQ 或文档切片，并保留旧 `source_type` payload 兼容。
 
 ## 验证记录
 
@@ -93,6 +95,16 @@
   * `pnpm lint`：通过。
   * `pnpm build`：通过；Vite 仍提示单包体积超过 500 kB。
   * Playwright CLI 打开 `/documents` 并打开文档抽屉：快照确认可见“文件 ID”“复制文件 ID”“切片 ID”“复制切片 ID”和“KG 抽取”。
+* 2026-07-02 切片工具栏与单 ID 抽取入口验证：
+  * `pnpm test src/pages/documents/kg-actions.test.ts`：4 frontend test files passed。
+  * `conda run -n customer-service-agent python -m pytest tests/test_admin_server.py -k "kg_extraction_job" -q`：5 passed, 78 deselected。
+  * `conda run -n customer-service-agent python -m pytest`：280 passed。
+  * `conda run -n customer-service-agent python -m ruff check .`：All checks passed。
+  * `conda run -n customer-service-agent python -m customer_service_agent.cli check-config`：config ok。
+  * `pnpm lint`：通过。
+  * `pnpm build`：通过；Vite 仍提示单包体积超过 500 kB。
+  * Playwright CLI 打开 `/knowledge-graph`：快照确认“抽取候选”弹层只保留“来源 ID”输入，没有 FAQ / 文档切片下拉。
+  * Playwright CLI 打开 `/documents` 文档抽屉：快照确认切片工具栏显示 `p1-3`、`复制ID`、`KG 抽取`，不显示 `text` 或长切片 ID；点击复制后 toast 显示完整 `chunk_c9ca64929a98`。
 
 ## 未做事项
 

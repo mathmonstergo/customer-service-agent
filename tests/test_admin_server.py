@@ -518,6 +518,63 @@ def test_admin_app_create_kg_extraction_job_extracts_document_chunk_candidates()
     assert saved[0]["entities"][0]["evidence"][0]["page_start"] == 3
 
 
+def test_admin_app_create_kg_extraction_job_infers_document_chunk_source_type():
+    """KG 抽取入口只传来源 ID 时应自动识别文档切片，降低前端手动选类型成本。"""
+    created_rows = []
+
+    class FakeChat:
+        model = "mimo-v2.5-pro"
+
+        def complete(self, system_prompt, user_prompt):
+            assert "报告导出失败时，先检查账号权限。" in user_prompt
+            return """
+            {"entities":[{"name":"报告导出","entity_type":"feature_ui_action","evidence":[{"excerpt":"报告导出失败时，先检查账号权限。"}]}],
+             "relations":[]}
+            """
+
+    class FakeDatabase:
+        def create_kg_extraction_job(self, row):
+            created_rows.append(row)
+            return {**row, "id": "kg_job_doc", "status": "queued"}
+
+        def update_kg_extraction_job(self, job_id, **fields):
+            return {"id": job_id, **fields}
+
+        def get_faq(self, faq_id):
+            assert faq_id == "chunk_1"
+            return None
+
+        def get_import_chunk(self, chunk_id):
+            assert chunk_id == "chunk_1"
+            return {
+                "id": chunk_id,
+                "file_id": "imp_1",
+                "source_text": "报告导出失败时，先检查账号权限。",
+                "section_path": ["报告", "导出"],
+                "page_start": 3,
+                "page_end": 4,
+                "is_disabled": False,
+            }
+
+        def get_import_file(self, file_id):
+            return {"id": file_id, "original_name": "平台使用手册.pdf"}
+
+        def save_kg_extraction_candidates(self, extraction):
+            return {"entity_count": 1, "relation_count": 0, "evidence_count": 1}
+
+    app = AdminApp(
+        SimpleNamespace(database_url="postgresql://unused", chat_model="mimo-v2.5-pro"),
+        db=FakeDatabase(),
+        chat=FakeChat(),
+    )
+
+    result = app.create_kg_extraction_job({"source_id": "chunk_1"})
+
+    assert result["status"] == "completed"
+    assert created_rows[0]["source_type"] == "document_chunk"
+    assert created_rows[0]["source_chunk_id"] == "chunk_1"
+
+
 def test_admin_app_create_kg_extraction_job_marks_failed_when_model_output_invalid():
     """模型输出解析失败时应更新任务为 failed，方便后续重试。"""
     updates = []

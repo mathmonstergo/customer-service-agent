@@ -35,7 +35,7 @@ import { cn } from '@/lib/cn'
 import { ease, dur } from '@/lib/motion'
 import { embeddingStatusLabel, tr } from '@/lib/labels'
 import { useHorizontalWheelScroll } from '@/lib/use-horizontal-wheel-scroll'
-import { formatKgExtractionResult, shortDocumentId } from './kg-actions'
+import { formatChunkPageLocator, formatKgExtractionResult } from './kg-actions'
 
 export function ChunkBrowser({ fileId, chunks, fileDisabled }: { fileId: string; chunks: ImportChunk[]; fileDisabled?: boolean }) {
   const {
@@ -416,15 +416,7 @@ function ChunkToolbar({
   // 切片向量需要刷新的两种状态：编辑后被自动标 stale；上次生成失败。
   const needsEmbed = chunk.embedding_status === 'stale' || chunk.embedding_status === 'failed'
 
-  const meta: string[] = []
-  if (chunk.page_start) {
-    meta.push(
-      chunk.page_end && chunk.page_end !== chunk.page_start
-        ? `页 ${chunk.page_start}–${chunk.page_end}`
-        : `页 ${chunk.page_start}`,
-    )
-  }
-  if (chunk.block_type) meta.push(chunk.block_type)
+  const pageLocator = formatChunkPageLocator(chunk)
   const sectionLeaf = chunk.section_path?.length
     ? chunk.section_path[chunk.section_path.length - 1]
     : null
@@ -437,13 +429,13 @@ function ChunkToolbar({
             {sectionLeaf}
           </span>
         )}
-        {meta.length > 0 && (
+        {pageLocator && (
           <span className="text-(--color-text-faint)">
             {sectionLeaf ? '· ' : ''}
-            {meta.join(' · ')}
+            {pageLocator}
           </span>
         )}
-        <CopyIdInline label="切片 ID" value={chunk.id} />
+        <CopyIdInline label="切片ID" value={chunk.id} />
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
         <Button
@@ -454,7 +446,6 @@ function ChunkToolbar({
           onClick={async () => {
             try {
               const result = await createKgJob.mutateAsync({
-                source_type: 'document_chunk',
                 source_id: chunk.id,
               })
               toast.success(formatKgExtractionResult(result))
@@ -521,26 +512,21 @@ function ChunkToolbar({
   )
 }
 
-// 切片 ID 行内展示并提供复制按钮，关键约束是短展示、完整复制。
+// 切片 ID 行内提供复制按钮，关键约束是不展示长 ID，完整 ID 只放在 hover 与复制提示中。
 function CopyIdInline({ label, value }: { label: string; value: string }) {
   const clean = value.trim()
   if (!clean) return null
   return (
-    <span className="inline-flex min-w-0 items-center gap-1 text-[11px] text-(--color-text-faint)">
-      <span className="shrink-0">{label}</span>
-      <span className="max-w-[140px] truncate font-mono" title={clean}>
-        {shortDocumentId(clean)}
-      </span>
-      <button
-        type="button"
-        onClick={() => void copyText(clean, label)}
-        className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-(--radius-control) text-(--color-text-faint) hover:bg-(--color-surface-2) hover:text-(--color-text)"
-        title={`复制${label}`}
-        aria-label={`复制${label}`}
-      >
-        <Copy className="size-3" />
-      </button>
-    </span>
+    <button
+      type="button"
+      onClick={() => void copyText(clean, label)}
+      className="inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded-(--radius-control) px-1.5 text-[11px] text-(--color-text-faint) transition-colors hover:bg-(--color-surface-2) hover:text-(--color-text)"
+      title={`复制${label}：${clean}`}
+      aria-label={`复制${label}`}
+    >
+      <Copy className="size-3" />
+      复制ID
+    </button>
   )
 }
 
@@ -549,7 +535,7 @@ async function copyText(value: string, label: string): Promise<void> {
   try {
     if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
     await navigator.clipboard.writeText(value)
-    toast.success(`已复制${label}`)
+    toast.success(`已复制${label} ${value}`)
   } catch {
     toast.error(`复制${label}失败`)
   }

@@ -267,7 +267,7 @@ The UI can now let users label the expected source/chunk from a readable candida
   - `Database.search_kg_knowledge_text(query_text, *, top_k, query_terms=None, status="usable")`
   - `Database.get_kg_subgraph(center_entity_id, hops=1, entity_types=None, relation_types=None, status="usable", limit=80)`
 - Admin API:
-  - `POST /api/kg/extraction-jobs` with JSON fields `source_type` (`faq` or `document_chunk`) and `source_id`.
+  - `POST /api/kg/extraction-jobs` with JSON field `source_id`; optional compatibility field `source_type` may be `faq` or `document_chunk`.
   - `GET /api/kg/entities?status=<status>&entity_type=<type>&limit=50&offset=0`
   - `GET /api/kg/relations?status=<status>&relation_type=<type>&limit=50&offset=0`
   - `POST /api/kg/entities/{entity_id}/confirm`
@@ -302,7 +302,7 @@ The UI can now let users label the expected source/chunk from a readable candida
   - `escalate_when`
 - Parsed model output defaults to `status = 'needs_review'`.
 - `POST /api/kg/extraction-jobs` first records a job as `queued`, then updates `processing`, then `completed` or `failed`.
-- First extraction scope only supports one source per job:
+- First extraction scope only supports one source per job. When `source_type` is omitted, the backend must infer it from `source_id` by checking FAQ first, then document chunk:
   - `source_type = 'faq'`, `source_id = faq_documents.id`, and the FAQ must be `usable`;
   - `source_type = 'document_chunk'`, `source_id = import_chunks.id`, and the chunk must not be disabled.
 - A failed model call or parser validation error must update the job to `failed` with a bounded `error` string.
@@ -322,6 +322,7 @@ The UI can now let users label the expected source/chunk from a readable candida
 - Missing evidence or missing evidence excerpt -> `KnowledgeGraphExtractionError`.
 - `POST /api/kg/extraction-jobs` with unsupported `source_type` -> `AdminValidationError`.
 - `POST /api/kg/extraction-jobs` with missing `source_id` -> `AdminValidationError`.
+- `POST /api/kg/extraction-jobs` with only `source_id` -> infer `faq` or `document_chunk`, or return `AdminNotFoundError` if neither exists.
 - KG extraction from non-usable FAQ -> `failed` job or `AdminValidationError` before candidates are saved.
 - KG extraction from disabled/empty document chunk -> `failed` job or `AdminValidationError` before candidates are saved.
 - Missing `center_entity_id` for subgraph API -> `AdminValidationError`.
@@ -335,6 +336,7 @@ The UI can now let users label the expected source/chunk from a readable candida
 - Good: review UI calls `GET /api/kg/entities?status=needs_review`; response rows include evidence excerpts and source ids.
 - Good: user disables a bad relation; `kg_relations.status` and existing `kg_relation` projection both become `disabled`.
 - Good: `POST /api/kg/extraction-jobs {"source_type":"faq","source_id":"faq_1"}` reads the usable FAQ, calls the Chat model, saves candidates, and returns a `completed` job with counts.
+- Good: `POST /api/kg/extraction-jobs {"source_id":"chunk_1"}` infers `document_chunk`, reads the chunk, calls the Chat model, saves candidates, and returns a `completed` job with counts.
 - Good: invalid model JSON or enum drift returns a `failed` job with `error`, leaving no confirmed KG projection.
 - Good: evaluation run with `use_kg=true` includes KG candidates and records strategy `retrieval_hybrid_v1_kg_debug`.
 - Base: evaluation run without `use_kg` behaves like normal hybrid retrieval and records strategy `retrieval_hybrid_v1`.
