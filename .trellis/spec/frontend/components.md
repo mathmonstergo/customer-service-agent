@@ -469,6 +469,7 @@ Assistant message navigation should act as a quiet scroll aid rather than a seco
 - Expanded locator rows should be one-line, truncated question text with no visible role label, sequence number, timestamp, or other metadata.
 - The collapsed rail should use at most 20 larger horizontal markers, sampled from the available user questions while preserving the first and last question.
 - A floating "back to latest" action may appear when the user scrolls away from the bottom; it should disappear once the latest message is visible.
+- Entering or switching to a conversation must position the message stream at the latest message by default. Treat `conversationId` changes as a scroll lifecycle event instead of relying only on message-array changes; within the same conversation, keep the user's manual reading position when assistant streaming updates arrive far from the bottom.
 
 ### Knowledge Graph Review UI
 

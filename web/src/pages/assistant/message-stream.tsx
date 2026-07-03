@@ -1,6 +1,6 @@
 // 中间消息流：仿 ChatGPT/Claude 的极简两栏内会话。
 // 用户气泡（右侧灰底）+ 助手回答（左侧无气泡，markdown 渲染）+ 上方 inline 状态行 / 完成后折叠面板。
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -26,11 +26,13 @@ import {
   selectMessageRailItems,
   type MessageNavigationItem,
 } from './message-navigation'
+import { shouldAutoScrollMessageStream } from './message-scroll'
 
 export function MessageStream({ conversationId }: { conversationId: string }) {
   const messages = useAssistant((s) => s.conversations[conversationId]?.messages ?? [])
   const scrollRef = useRef<HTMLDivElement>(null)
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const previousConversationIdRef = useRef<string | null>(null)
   const [showJumpButton, setShowJumpButton] = useState(false)
   const [activeMessageId, setActiveMessageId] = useState<string | null>(null)
   const navItems = useMemo(() => buildMessageNavItems(messages), [messages])
@@ -78,17 +80,31 @@ export function MessageStream({ conversationId }: { conversationId: string }) {
     return () => el.removeEventListener('scroll', updateScrollState)
   }, [updateScrollState])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = scrollRef.current
     if (!el) return
     const last = messages[messages.length - 1]
-    if (!last) return
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 160
-    if (nearBottom || last.role === 'user') {
-      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    const didConversationChange = previousConversationIdRef.current !== conversationId
+    previousConversationIdRef.current = conversationId
+    if (!last) {
+      window.requestAnimationFrame(updateScrollState)
+      return
+    }
+    const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    if (
+      shouldAutoScrollMessageStream({
+        didConversationChange,
+        distanceToBottom,
+        lastMessageRole: last.role,
+      })
+    ) {
+      el.scrollTo({
+        top: el.scrollHeight,
+        behavior: didConversationChange ? 'auto' : 'smooth',
+      })
     }
     window.requestAnimationFrame(updateScrollState)
-  }, [messages, updateScrollState])
+  }, [conversationId, messages, updateScrollState])
 
   if (messages.length === 0) {
     return <EmptyState />
