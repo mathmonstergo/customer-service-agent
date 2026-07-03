@@ -284,3 +284,36 @@ Restored full backend ruff and frontend lint/build quality gates, documented Fas
 ### Next Steps
 
 - None - task complete
+
+
+## Session 8: Assistant context compression and source highlights
+
+**Date**: 2026-07-03
+**Task**: Assistant context compression and source highlights
+**Branch**: `main`
+
+### Summary
+
+Implemented lightweight assistant conversation context using GenericAgent-style working memory, added message/source highlight navigation, updated tests/specs, and verified backend/frontend checks.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d3eb5df` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
