@@ -105,6 +105,21 @@
   0% { background-position: -200% 0; }
   100% { background-position: 200% 0; }
 }
+@keyframes assistant-flash-highlight {
+  0% {
+    box-shadow:
+      0 0 0 1px rgb(124 135 224 / 0.5),
+      inset 0 0 0 999px rgb(94 106 210 / 0.22);
+  }
+  55% {
+    box-shadow:
+      0 0 0 1px rgb(124 135 224 / 0.28),
+      inset 0 0 0 999px rgb(94 106 210 / 0.12);
+  }
+  100% {
+    box-shadow: none;
+  }
+}
 
 @layer utilities {
   .pulse-dot {
@@ -120,6 +135,9 @@
     background-size: 200% 100%;
     animation: skeleton-sweep 1.2s linear infinite;
     border-radius: var(--radius-control);
+  }
+  .assistant-flash-highlight {
+    animation: assistant-flash-highlight 1.25s var(--ease-out);
   }
   .font-mono {
     font-family: var(--font-mono);

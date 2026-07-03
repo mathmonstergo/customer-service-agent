@@ -1,5 +1,5 @@
 from customer_service_agent.db import RetrievedDocument
-from customer_service_agent.rag import RagService
+from customer_service_agent.rag import RagService, build_user_prompt, normalize_conversation_context
 
 
 class FakeEmbedding:
@@ -85,3 +85,42 @@ def test_rag_returns_safe_fallback_for_whitespace_model_response():
         min_score=0.35,
     )
     assert service.answer("Why is the item missing?") == "模型服务暂时没有返回有效内容，请稍后重试或转人工处理。"
+
+
+def test_build_user_prompt_includes_compacted_conversation_context():
+    context = normalize_conversation_context(
+        {
+            "summary": "此前用户一直在排查报告导出失败。",
+            "recent_messages": [
+                {"role": "user", "content": "刚才说的那个报告在哪里下载？"},
+                {"role": "assistant", "content": "可以在报告中心下载。"},
+            ],
+        }
+    )
+
+    prompt = build_user_prompt("那如果没有按钮呢？", [], conversation_context=context)
+
+    assert "### [WORKING MEMORY]" in prompt
+    assert "<earlier_context>\n此前用户一直在排查报告导出失败。\n</earlier_context>" in prompt
+    assert "[USER] 刚才说的那个报告在哪里下载？" in prompt
+    assert "[Agent] 可以在报告中心下载。" in prompt
+    assert "当前用户问题：那如果没有按钮呢？" in prompt
+
+
+def test_normalize_conversation_context_discards_invalid_or_empty_items():
+    context = normalize_conversation_context(
+        {
+            "summary": "  摘要  ",
+            "recent_messages": [
+                {"role": "user", "content": "  有效问题  "},
+                {"role": "system", "content": "不允许的角色"},
+                {"role": "assistant", "content": ""},
+                "not a dict",
+            ],
+        }
+    )
+
+    assert context == {
+        "summary": "摘要",
+        "recent_messages": [{"role": "user", "content": "有效问题"}],
+    }

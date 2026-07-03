@@ -27,14 +27,23 @@ import {
   type MessageNavigationItem,
 } from './message-navigation'
 import { shouldAutoScrollMessageStream } from './message-scroll'
+import { buildAssistantSourceGroupTarget, type AssistantSourceTarget } from './source-target'
 
-export function MessageStream({ conversationId }: { conversationId: string }) {
+// 渲染当前会话消息流；关键约束是滚动定位后给目标消息短暂高亮反馈。
+export function MessageStream({
+  conversationId,
+  onOpenSourceTarget,
+}: {
+  conversationId: string
+  onOpenSourceTarget?: (target: AssistantSourceTarget | null) => void
+}) {
   const messages = useAssistant((s) => s.conversations[conversationId]?.messages ?? [])
   const scrollRef = useRef<HTMLDivElement>(null)
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const previousConversationIdRef = useRef<string | null>(null)
   const [showJumpButton, setShowJumpButton] = useState(false)
   const [activeMessageId, setActiveMessageId] = useState<string | null>(null)
+  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null)
   const navItems = useMemo(() => buildMessageNavItems(messages), [messages])
   const railItems = useMemo(() => selectMessageRailItems(navItems, 20), [navItems])
 
@@ -70,7 +79,17 @@ export function MessageStream({ conversationId }: { conversationId: string }) {
     const node = messageRefs.current[id]
     if (!el || !node) return
     el.scrollTo({ top: Math.max(0, node.offsetTop - 24), behavior: 'smooth' })
+    window.setTimeout(() => {
+      setHighlightedMessageId(null)
+      window.requestAnimationFrame(() => setHighlightedMessageId(id))
+    }, 260)
   }, [])
+
+  useEffect(() => {
+    if (!highlightedMessageId) return undefined
+    const timeout = window.setTimeout(() => setHighlightedMessageId(null), 1300)
+    return () => window.clearTimeout(timeout)
+  }, [highlightedMessageId])
 
   useEffect(() => {
     const el = scrollRef.current
@@ -121,7 +140,11 @@ export function MessageStream({ conversationId }: { conversationId: string }) {
                 ref={(node) => registerMessageRef(m.id, node)}
                 data-message-id={m.id}
               >
-                <MessageBubble msg={m} />
+                <MessageBubble
+                  msg={m}
+                  highlighted={highlightedMessageId === m.id}
+                  onOpenSourceTarget={onOpenSourceTarget}
+                />
               </div>
             ))}
           </AnimatePresence>
@@ -142,6 +165,7 @@ export function MessageStream({ conversationId }: { conversationId: string }) {
   )
 }
 
+// 回到最新对话按钮；关键约束是只负责触发滚动，不改动消息状态。
 function JumpToLatestButton({ onClick }: { onClick: () => void }) {
   return (
     <motion.button
@@ -165,6 +189,7 @@ function JumpToLatestButton({ onClick }: { onClick: () => void }) {
   )
 }
 
+// 右侧快速定位器；关键约束是横线态最多 20 条，展开态只显示用户提问。
 function MessageQuickNavigator({
   items,
   railItems,
@@ -225,6 +250,7 @@ function MessageQuickNavigator({
   )
 }
 
+// 空会话提示；关键约束是保持工具页信息密度，不做营销式说明。
 function EmptyState() {
   return (
     <div className="flex h-full items-center justify-center px-6">
@@ -251,6 +277,7 @@ function EmptyState() {
   )
 }
 
+// 快捷键样式片段；关键约束是只渲染视觉标签，不绑定键盘行为。
 function Kbd({ children }: { children: React.ReactNode }) {
   return (
     <span className="rounded-(--radius-control) bg-(--color-surface-2) px-1.5 py-0.5 font-mono text-[10px]">
@@ -273,7 +300,16 @@ function prettySummary(step: AssistantStepEvent | undefined): string {
   return raw
 }
 
-function MessageBubble({ msg }: { msg: ChatMessage }) {
+// 单条消息气泡；关键约束是用户消息支持定位高亮，助手消息支持来源定位入口。
+function MessageBubble({
+  msg,
+  highlighted,
+  onOpenSourceTarget,
+}: {
+  msg: ChatMessage
+  highlighted: boolean
+  onOpenSourceTarget?: (target: AssistantSourceTarget | null) => void
+}) {
   if (msg.role === 'user') {
     return (
       <motion.div
@@ -282,7 +318,12 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
         transition={{ duration: dur.base, ease: ease.out }}
         className="flex justify-end"
       >
-        <div className="max-w-[80%] rounded-2xl bg-(--color-surface-2) px-4 py-2.5 text-[14px] text-(--color-text)">
+        <div
+          className={cn(
+            'max-w-[80%] rounded-2xl bg-(--color-surface-2) px-4 py-2.5 text-[14px] text-(--color-text)',
+            highlighted && 'assistant-flash-highlight',
+          )}
+        >
           <div className="whitespace-pre-wrap break-words leading-[1.7]">{msg.content}</div>
         </div>
       </motion.div>
@@ -309,7 +350,13 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
           <span>{msg.error}</span>
         </div>
       )}
-      {msg.sources && msg.sources.length > 0 && <SourcesPreview sources={msg.sources} />}
+      {msg.sources && msg.sources.length > 0 && (
+        <SourcesPreview
+          messageId={msg.id}
+          sources={msg.sources}
+          onOpenSourceTarget={onOpenSourceTarget}
+        />
+      )}
       {!msg.streaming && msg.content && <AssistantActions msg={msg} />}
     </motion.div>
   )
@@ -564,19 +611,31 @@ function AssistantActions({ msg }: { msg: ChatMessage }) {
 
 // 来源 chips：按 source_type 分组——FAQ 全部合并成"FAQ × N"，文档按 source_title 分组成"文件名 × N"。
 // parent_context 来源也算在该文档的命中数里（它本质就是被命中切片的父切片，归到同文档）。
-function SourcesPreview({ sources }: { sources: AssistantSource[] }) {
+// 回答下方来源 chips；关键约束是点击分组时定位到该组第一条来源卡片。
+function SourcesPreview({
+  messageId,
+  sources,
+  onOpenSourceTarget,
+}: {
+  messageId: string
+  sources: AssistantSource[]
+  onOpenSourceTarget?: (target: AssistantSourceTarget | null) => void
+}) {
   const setDebugDrawerOpen = useAssistant((s) => s.setDebugDrawerOpen)
   if (!sources.length) return null
 
   // 分组：faq 用单一 key，document 按 source_title 分桶
-  const groups = new Map<string, { label: string; isFaq: boolean; count: number }>()
+  const groups = new Map<
+    string,
+    { label: string; isFaq: boolean; count: number; firstSource: AssistantSource }
+  >()
   for (const src of sources) {
     const isFaq = src.source_type === 'faq'
     const key = isFaq ? '__faq__' : src.source_title || src.source_id || '未命名文档'
     const label = isFaq ? 'FAQ' : src.source_title || '未命名文档'
     const existing = groups.get(key)
     if (existing) existing.count += 1
-    else groups.set(key, { label, isFaq, count: 1 })
+    else groups.set(key, { label, isFaq, count: 1, firstSource: src })
   }
   // 排序：FAQ 在前，文档按命中数从多到少
   const entries = Array.from(groups.values()).sort((a, b) => {
@@ -590,7 +649,11 @@ function SourcesPreview({ sources }: { sources: AssistantSource[] }) {
         <button
           key={g.label}
           type="button"
-          onClick={() => setDebugDrawerOpen(true)}
+          onClick={() => {
+            const target = buildAssistantSourceGroupTarget(g.firstSource)
+            onOpenSourceTarget?.(target ? { ...target, message_id: messageId } : null)
+            setDebugDrawerOpen(true)
+          }}
           className={cn(
             'inline-flex max-w-[200px] items-center gap-1 rounded-(--radius-control) px-1.5 py-0.5 text-[11px]',
             'transition-colors hover:bg-(--color-surface-3)',

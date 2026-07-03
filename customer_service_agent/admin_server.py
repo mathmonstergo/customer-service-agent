@@ -43,7 +43,11 @@ from customer_service_agent.import_models import detect_file_type
 from customer_service_agent.kg_ai import KnowledgeGraphAiAssistant
 from customer_service_agent.llm import ChatClient, EmbeddingClient, RerankClient, build_openai_client
 from customer_service_agent.markdown_import import chunk_messages, parse_wechat_messages
-from customer_service_agent.rag import build_user_prompt, load_system_prompt
+from customer_service_agent.rag import (
+    build_user_prompt,
+    load_system_prompt,
+    normalize_conversation_context,
+)
 from customer_service_agent.retrieval import (
     EvalCaseResult,
     analyze_query,
@@ -2364,7 +2368,8 @@ class AdminApp:
             answer_started,
             summary="模型正在流式生成回答",
         )
-        prompt = build_user_prompt(question, docs)
+        conversation_context = normalize_conversation_context(payload.get("conversation_context"))
+        prompt = build_user_prompt(question, docs, conversation_context=conversation_context)
         answer_parts: list[str] = []
         system_prompt = self.assistant_system_prompt_from_payload(payload)
         try:

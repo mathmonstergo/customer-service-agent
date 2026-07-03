@@ -1,6 +1,6 @@
 // 右侧 Debug 抽屉：显示当前会话最近一条助手消息的完整流程（step list + 命中切片明细）。
 // 默认关闭；从顶栏的「流程详情」按钮或助手气泡上的「查看 N 条来源」唤起。
-import { useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
   Activity,
@@ -23,18 +23,33 @@ import { dur, ease } from '@/lib/motion'
 import { useAssistant, type ChatMessage } from '@/store/assistant'
 import type { AssistantSource } from '@/api/schemas'
 import type { AssistantStepEvent } from '@/lib/sse-assistant'
+import {
+  buildAssistantSourceTargetKey,
+  findAssistantSourceTargetIndex,
+  type AssistantSourceTarget,
+} from './source-target'
 
+// 流程详情抽屉；关键约束是来源 chip 可指定消息和来源卡片进行滚动高亮。
 export function DebugDrawer({
   open,
   onOpenChange,
   conversationId,
+  sourceTarget,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   conversationId: string
+  sourceTarget?: AssistantSourceTarget | null
 }) {
   const conv = useAssistant((s) => s.conversations[conversationId])
-  const lastAsst = conv?.messages.slice().reverse().find((m) => m.role === 'assistant')
+  const assistantMessages = useMemo(
+    () => conv?.messages.filter((m) => m.role === 'assistant') ?? [],
+    [conv?.messages],
+  )
+  const targetAsst = sourceTarget?.message_id
+    ? assistantMessages.find((m) => m.id === sourceTarget.message_id)
+    : undefined
+  const lastAsst = targetAsst ?? assistantMessages.at(-1)
 
   return (
     <Drawer open={open} onOpenChange={onOpenChange}>
@@ -55,7 +70,11 @@ export function DebugDrawer({
               ) : (
                 <div className="flex flex-col gap-6">
                   <StepsBlock msg={lastAsst} />
-                  <SourcesBlock sources={lastAsst.sources || []} />
+                  <SourcesBlock
+                    sources={lastAsst.sources || []}
+                    sourceTarget={sourceTarget}
+                    open={open}
+                  />
                 </div>
               )}
             </DrawerBody>
@@ -66,6 +85,7 @@ export function DebugDrawer({
   )
 }
 
+// 抽屉空态；关键约束是只提示当前无问答记录，不引导额外流程。
 function EmptyState() {
   return (
     <div className="flex flex-col items-center justify-center gap-2 py-12 text-center">
@@ -76,6 +96,7 @@ function EmptyState() {
   )
 }
 
+// 格式化步骤摘要；关键约束是把后端英文意图/置信字段转成操作员可读中文。
 function prettySummary(step: AssistantStepEvent): string {
   const raw = step.summary || ''
   if (step.step_id === 'intent_detection' && raw.includes('/')) {
@@ -85,6 +106,7 @@ function prettySummary(step: AssistantStepEvent): string {
   return raw
 }
 
+// 展示 RAG 处理步骤；关键约束是保留 step 顺序和后端耗时。
 function StepsBlock({ msg }: { msg: ChatMessage }) {
   const steps = msg.steps || []
   return (
@@ -124,6 +146,7 @@ function StepsBlock({ msg }: { msg: ChatMessage }) {
   )
 }
 
+// 渲染步骤调试标签；关键约束是只展示已序列化的安全调试字段。
 function ExtraTags({ step }: { step: AssistantStepEvent }) {
   const tags: string[] = []
   if (step.analysis && typeof step.analysis === 'object') {
@@ -159,7 +182,46 @@ function ExtraTags({ step }: { step: AssistantStepEvent }) {
   )
 }
 
-function SourcesBlock({ sources }: { sources: AssistantSource[] }) {
+// 展示命中来源列表；关键约束是按目标来源滚动到具体卡片并短暂高亮。
+function SourcesBlock({
+  sources,
+  sourceTarget,
+  open,
+}: {
+  sources: AssistantSource[]
+  sourceTarget?: AssistantSourceTarget | null
+  open: boolean
+}) {
+  const sourceRefs = useRef<Record<string, HTMLElement | null>>({})
+  const [highlightedKey, setHighlightedKey] = useState<string | null>(null)
+  const targetIndex = useMemo(
+    () => findAssistantSourceTargetIndex(sources, sourceTarget),
+    [sources, sourceTarget],
+  )
+
+  useEffect(() => {
+    if (!open || targetIndex < 0) return undefined
+    const source = sources[targetIndex]
+    if (!source) return undefined
+    const key = buildAssistantSourceTargetKey(source)
+    const timeout = window.setTimeout(() => {
+      sourceRefs.current[key]?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      setHighlightedKey(null)
+      window.requestAnimationFrame(() => setHighlightedKey(key))
+    }, 120)
+    return () => window.clearTimeout(timeout)
+  }, [open, sources, targetIndex])
+
+  useEffect(() => {
+    if (!highlightedKey) return undefined
+    const timeout = window.setTimeout(() => setHighlightedKey(null), 1300)
+    return () => window.clearTimeout(timeout)
+  }, [highlightedKey])
+
+  const registerSourceRef = (key: string, node: HTMLElement | null): void => {
+    sourceRefs.current[key] = node
+  }
+
   return (
     <section>
       <SectionTitle title="命中切片" count={sources.length} />
@@ -167,16 +229,39 @@ function SourcesBlock({ sources }: { sources: AssistantSource[] }) {
         <div className="text-[12px] text-(--color-text-faint)">未检索到来源</div>
       ) : (
         <div className="flex flex-col gap-2">
-          {sources.map((src, i) => (
-            <SourceCard key={(src.chunk_id as string) || i} src={src} index={i} />
-          ))}
+          {sources.map((src, i) => {
+            const key = buildAssistantSourceTargetKey(src)
+            return (
+              <SourceCard
+                key={`${key}-${i}`}
+                refKey={key}
+                src={src}
+                index={i}
+                highlighted={highlightedKey === key}
+                registerRef={registerSourceRef}
+              />
+            )
+          })}
         </div>
       )}
     </section>
   )
 }
 
-function SourceCard({ src, index }: { src: AssistantSource; index: number }) {
+// 单个来源卡片；关键约束是保留溯源字段并支持定位高亮。
+function SourceCard({
+  src,
+  index,
+  refKey,
+  highlighted,
+  registerRef,
+}: {
+  src: AssistantSource
+  index: number
+  refKey: string
+  highlighted: boolean
+  registerRef: (key: string, node: HTMLElement | null) => void
+}) {
   const [expanded, setExpanded] = useState(false)
   const isFaq = src.source_type === 'faq'
   // 标题：FAQ 显示 question；文档显示 source_title（文件名）
@@ -202,10 +287,12 @@ function SourceCard({ src, index }: { src: AssistantSource; index: number }) {
 
   return (
     <article
+      ref={(node) => registerRef(refKey, node)}
       className={cn(
         'rounded-(--radius-control) border border-(--color-border) bg-(--color-surface)',
         'transition-colors',
         hasMore && 'cursor-pointer hover:border-(--color-primary)/30',
+        highlighted && 'assistant-flash-highlight',
       )}
       onClick={() => hasMore && setExpanded((v) => !v)}
     >
@@ -314,6 +401,7 @@ function SourceCard({ src, index }: { src: AssistantSource; index: number }) {
   )
 }
 
+// 区块标题；关键约束是用统一计数徽标表达列表规模。
 function SectionTitle({ title, count }: { title: string; count: number }) {
   return (
     <h3 className="mb-2 flex items-center gap-2 text-[11px] uppercase tracking-wider text-(--color-text-faint)">

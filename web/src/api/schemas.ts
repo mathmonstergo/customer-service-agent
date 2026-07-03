@@ -161,10 +161,21 @@ export interface AssistantStreamPayload {
   question: string
   conversation_id?: string
   system_prompt?: string
+  conversation_context?: AssistantConversationContext
   // 单次请求覆盖供应商；三件套齐了后端会临时构造 ChatClient，否则走全局默认。
   chat_base_url?: string
   chat_api_key?: string
   chat_model?: string
+}
+
+export interface AssistantConversationContextMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export interface AssistantConversationContext {
+  summary?: string
+  recent_messages: AssistantConversationContextMessage[]
 }
 
 export interface AssistantSettingsSnapshot {

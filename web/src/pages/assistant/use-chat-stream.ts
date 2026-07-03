@@ -8,14 +8,24 @@ import { toast } from '@/components/ui/toast'
 import { streamAssistantChat, type AssistantStepEvent } from '@/lib/sse-assistant'
 import type { AssistantSource, AssistantStreamPayload } from '@/api/schemas'
 import { useAssistant, type ChatMessage, type ProviderConfig } from '@/store/assistant'
+import { buildAssistantConversationContext } from './conversation-context'
 
 function genId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID()
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 }
 
-function buildPayload(question: string, provider: ProviderConfig): AssistantStreamPayload {
+// 构造问答流请求 payload；关键约束是仅在有有效历史时附带当前会话上下文。
+function buildPayload(
+  question: string,
+  provider: ProviderConfig,
+  messages: ChatMessage[],
+): AssistantStreamPayload {
   const payload: AssistantStreamPayload = { question }
+  const conversationContext = buildAssistantConversationContext(messages)
+  if (conversationContext) {
+    payload.conversation_context = conversationContext
+  }
   const base_url = provider.chat_base_url.trim()
   const api_key = provider.chat_api_key.trim()
   const model = provider.chat_model.trim()
@@ -93,7 +103,7 @@ export function useChatStream() {
 
     try {
       await streamAssistantChat({
-        payload: buildPayload(trimmed, conv.provider),
+        payload: buildPayload(trimmed, conv.provider, conv.messages),
         signal: controller.signal,
         onEvent: (e) => {
           if (e.type === 'delta') {

@@ -13,7 +13,9 @@ import { Composer } from './assistant/composer'
 import { ProviderDrawer } from './assistant/provider-drawer'
 import { DebugDrawer } from './assistant/debug-drawer'
 import { useChatStream } from './assistant/use-chat-stream'
+import type { AssistantSourceTarget } from './assistant/source-target'
 
+// 智能问答主页面；关键约束是集中管理抽屉开关和来源定位目标。
 export default function AssistantPage() {
   const order = useAssistant((s) => s.conversationOrder)
   const currentId = useAssistant((s) => s.currentId)
@@ -24,6 +26,7 @@ export default function AssistantPage() {
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [providerOpen, setProviderOpen] = useState(false)
+  const [debugSourceTarget, setDebugSourceTarget] = useState<AssistantSourceTarget | null>(null)
   const [draft, setDraft] = useState('')
   const { send, abort, isStreaming } = useChatStream()
 
@@ -83,7 +86,10 @@ export default function AssistantPage() {
 
         <div className="min-h-0 flex-1">
           {currentId ? (
-            <MessageStream conversationId={currentId} />
+            <MessageStream
+              conversationId={currentId}
+              onOpenSourceTarget={setDebugSourceTarget}
+            />
           ) : (
             <div className="flex h-full items-center justify-center text-[13px] text-(--color-text-faint)">
               没有可用会话
@@ -113,12 +119,14 @@ export default function AssistantPage() {
           open={debugOpen}
           onOpenChange={setDebugOpen}
           conversationId={currentId}
+          sourceTarget={debugSourceTarget}
         />
       )}
     </div>
   )
 }
 
+// 计算顶部供应商标签；关键约束是未完整配置三件套时回退全局默认。
 function computeProviderLabel(provider?: {
   presetId?: string
   chat_base_url: string
