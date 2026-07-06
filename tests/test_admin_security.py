@@ -13,7 +13,7 @@ from http import HTTPStatus
 
 import pytest
 
-from customer_service_agent.admin_server import (
+from cyclops.admin_server import (
     AdminNotFoundError,
     AdminPayloadTooLargeError,
     AdminValidationError,

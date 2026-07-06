@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from customer_service_agent.mcp_server import (
+from cyclops.mcp_server import (
     MCP_TOOL_DEFINITIONS,
     build_mcp_server,
     handle_answer,

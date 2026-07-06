@@ -1,4 +1,4 @@
-from customer_service_agent.import_dedupe import (
+from cyclops.import_dedupe import (
     compare_candidate_duplicate,
     dedupe_signature,
 )

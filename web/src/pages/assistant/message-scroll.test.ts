@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { shouldAutoScrollMessageStream } from './message-scroll.ts'
+import { messageStreamScrollPlan, shouldAutoScrollMessageStream } from './message-scroll.ts'
 
 test('auto-scrolls to latest when entering a different conversation', () => {
   assert.equal(
@@ -21,5 +21,16 @@ test('keeps historical reading position when the same conversation receives assi
       lastMessageRole: 'assistant',
     }),
     false,
+  )
+})
+
+test('plans an immediate and next-frame bottom correction when entering a different conversation', () => {
+  assert.deepEqual(
+    messageStreamScrollPlan({
+      didConversationChange: true,
+      distanceToBottom: 1200,
+      lastMessageRole: 'assistant',
+    }),
+    { shouldScroll: true, behavior: 'auto', followUpFrame: true },
   )
 })

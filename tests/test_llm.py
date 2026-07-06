@@ -1,4 +1,4 @@
-from customer_service_agent.llm import ChatClient, EmbeddingClient, RerankClient
+from cyclops.llm import ChatClient, EmbeddingClient, RerankClient
 
 
 class FakeEmbeddingResponse:
@@ -113,6 +113,69 @@ def test_chat_client_stream_omits_empty_system_prompt():
     assert call["messages"] == [{"role": "user", "content": "user"}]
 
 
+def test_chat_client_from_settings_passes_timeout(monkeypatch):
+    """ChatClient 应把配置化超时传给 OpenAI-compatible client，避免生成请求无限等待。"""
+    from types import SimpleNamespace
+
+    captured = {}
+
+    def fake_build_openai_client(base_url, api_key, *, timeout):
+        captured["base_url"] = base_url
+        captured["api_key"] = api_key
+        captured["timeout"] = timeout
+        return FakeClient()
+
+    monkeypatch.setattr("cyclops.llm.build_openai_client", fake_build_openai_client)
+
+    client = ChatClient.from_settings(
+        SimpleNamespace(
+            chat_base_url="https://chat.example.com/v1",
+            chat_api_key="chat-key",
+            chat_model="deepseek-chat",
+            chat_timeout_seconds=45.5,
+        )
+    )
+
+    assert client.model == "deepseek-chat"
+    assert captured == {
+        "base_url": "https://chat.example.com/v1",
+        "api_key": "chat-key",
+        "timeout": 45.5,
+    }
+
+
+def test_embedding_client_from_settings_passes_timeout(monkeypatch):
+    """EmbeddingClient 应独立使用 embedding 超时，避免检索前置步骤卡住问答流。"""
+    from types import SimpleNamespace
+
+    captured = {}
+
+    def fake_build_openai_client(base_url, api_key, *, timeout):
+        captured["base_url"] = base_url
+        captured["api_key"] = api_key
+        captured["timeout"] = timeout
+        return FakeClient()
+
+    monkeypatch.setattr("cyclops.llm.build_openai_client", fake_build_openai_client)
+
+    client = EmbeddingClient.from_settings(
+        SimpleNamespace(
+            embedding_base_url="https://embedding.example.com/v1",
+            embedding_api_key="embedding-key",
+            embedding_model="text-embedding-v4",
+            embedding_dimensions=1024,
+            embedding_timeout_seconds=12.0,
+        )
+    )
+
+    assert client.model == "text-embedding-v4"
+    assert captured == {
+        "base_url": "https://embedding.example.com/v1",
+        "api_key": "embedding-key",
+        "timeout": 12.0,
+    }
+
+
 class _FakeRerankResponse:
     """模拟 Cohere /v1/rerank 返回。"""
 
@@ -158,6 +221,7 @@ def test_rerank_client_from_settings_returns_instance_when_configured():
         rerank_api_key="rerank-key",
         rerank_model="bge-reranker-v2-m3",
         rerank_input_size=42,
+        rerank_timeout_seconds=9.0,
     )
 
     client = RerankClient.from_settings(settings)
@@ -166,6 +230,7 @@ def test_rerank_client_from_settings_returns_instance_when_configured():
     assert client.base_url == "https://rerank.example.com"
     assert client.model == "bge-reranker-v2-m3"
     assert client.input_size == 42
+    assert client.timeout == 9.0
 
 
 def test_rerank_client_calls_cohere_protocol(monkeypatch):
@@ -186,7 +251,7 @@ def test_rerank_client_calls_cohere_protocol(monkeypatch):
             }
         )
 
-    monkeypatch.setattr("customer_service_agent.llm.requests.post", fake_post)
+    monkeypatch.setattr("cyclops.llm.requests.post", fake_post)
 
     client = RerankClient(
         base_url="https://rerank.example.com/",
@@ -218,7 +283,7 @@ def test_rerank_client_returns_empty_list_on_http_error(monkeypatch):
     def fake_post(url, json=None, headers=None, timeout=None):
         raise RuntimeError("connection refused")
 
-    monkeypatch.setattr("customer_service_agent.llm.requests.post", fake_post)
+    monkeypatch.setattr("cyclops.llm.requests.post", fake_post)
 
     client = RerankClient(
         base_url="https://rerank.example.com",

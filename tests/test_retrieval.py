@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from customer_service_agent.retrieval import (
+from cyclops.retrieval import (
     EvalCaseResult,
     analyze_query,
     build_keyword_terms,
@@ -68,13 +68,13 @@ def test_analyze_query_with_chat_logs_warning_when_chat_fails(caplog):
     """Chat 调用回退到规则路径时应打 warning，避免静默吞异常导致排查困难。"""
     import logging
 
-    from customer_service_agent.retrieval import _analyze_query_with_chat
+    from cyclops.retrieval import _analyze_query_with_chat
 
     class BrokenChat:
         def complete(self, system: str, user: str) -> str:
             raise RuntimeError("chat backend down")
 
-    with caplog.at_level(logging.WARNING, logger="customer_service_agent.retrieval"):
+    with caplog.at_level(logging.WARNING, logger="cyclops.retrieval"):
         result = _analyze_query_with_chat("查一下报告流程", BrokenChat())
 
     assert result is None
@@ -120,7 +120,7 @@ class _RecordingRerankClient:
 
 
 def _candidate(chunk_id, content, score=0.5):
-    from customer_service_agent.retrieval import FusedCandidate
+    from cyclops.retrieval import FusedCandidate
 
     document = SimpleNamespace(id=chunk_id, content=content, score=score)
     return FusedCandidate(

@@ -4,6 +4,7 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { ProviderModel, AssistantSource } from '@/api/schemas'
 import type { AssistantStepEvent } from '@/lib/sse-assistant'
+import { moveConversationIdToFront } from './assistant-order.ts'
 
 export interface ProviderConfig {
   presetId?: string
@@ -99,7 +100,11 @@ export const useAssistant = create<AssistantState>()(
         return id
       },
 
-      selectConversation: (id) => set({ currentId: id }),
+      selectConversation: (id) =>
+        set((s) => {
+          if (!s.conversations[id]) return s
+          return { currentId: id }
+        }),
 
       renameConversation: (id, title) =>
         set((s) => {
@@ -151,7 +156,7 @@ export const useAssistant = create<AssistantState>()(
                 updatedAt: Date.now(),
               },
             },
-            conversationOrder: [id, ...s.conversationOrder.filter((x) => x !== id)],
+            conversationOrder: moveConversationIdToFront(s.conversationOrder, id),
           }
         }),
 
@@ -211,7 +216,7 @@ export interface ProviderPreset {
 
 export const PROVIDER_PRESETS: ProviderPreset[] = [
   { id: 'openai', label: 'OpenAI', base_url: 'https://api.openai.com/v1' },
-  { id: 'deepseek', label: 'DeepSeek', base_url: 'https://api.deepseek.com/v1' },
+  { id: 'deepseek', label: 'DeepSeek 官方', base_url: 'https://api.deepseek.com' },
   { id: 'moonshot', label: 'Moonshot Kimi', base_url: 'https://api.moonshot.cn/v1' },
   {
     id: 'qwen',

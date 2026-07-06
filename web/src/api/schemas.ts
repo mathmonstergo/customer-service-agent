@@ -178,12 +178,43 @@ export interface AssistantConversationContext {
   recent_messages: AssistantConversationContextMessage[]
 }
 
-export interface AssistantSettingsSnapshot {
+export interface SettingsSnapshot {
+  database_url?: string
+  database_url_configured?: boolean
   chat_base_url?: string
   chat_api_key?: string
+  chat_api_key_configured?: boolean
   chat_model?: string
+  embedding_base_url?: string
+  embedding_api_key?: string
+  embedding_api_key_configured?: boolean
+  embedding_model?: string
+  embedding_dimensions?: number
+  wechat_token_file?: string
+  wechat_message_chunk_size?: number
+  rag_top_k?: number
+  rag_min_score?: number
+  upload_dir?: string
+  mineru_api_token?: string
+  mineru_api_token_configured?: boolean
+  mineru_parse_timeout_seconds?: number
+  mineru_use_kb_packager?: boolean
+  document_chunk_token_num?: number
+  document_chunker_type?: string
+  document_chunk_delimiter?: string
+  document_chunk_overlap_percent?: number
+  document_children_delimiter?: string
+  document_table_context_size?: number
+  document_image_context_size?: number
+  rerank_base_url?: string
+  rerank_api_key?: string
+  rerank_api_key_configured?: boolean
+  rerank_model?: string
+  rerank_input_size?: number
   [key: string]: unknown
 }
+
+export type AssistantSettingsSnapshot = SettingsSnapshot
 
 export interface ProviderProbeResponse {
   ok: boolean

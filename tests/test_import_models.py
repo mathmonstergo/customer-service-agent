@@ -1,4 +1,4 @@
-from customer_service_agent.import_models import detect_file_type
+from cyclops.import_models import detect_file_type
 
 
 def test_detect_file_type_recognizes_supported_extensions():

@@ -1,6 +1,6 @@
-# 内部知识库管理系统
+# Cyclops
 
-本项目是一个本地优先的内部知识库与 RAG 管理工具，用于维护 FAQ、导入文档、生成向量、调试智能问答流程，并通过 PostgreSQL + pgvector 提供检索能力。
+Cyclops 是一个本地优先的内部知识库与 RAG 管理工具，用于维护 FAQ、导入文档、生成向量、调试智能问答流程，并通过 PostgreSQL + pgvector 提供检索能力。
 
 系统定位是内部工具：资料先进入审核和解析流程，确认后的内容再生成 embedding 并参与问答检索。
 
@@ -19,7 +19,8 @@
 
 ```bash
 conda env create -f environment.yml
-conda run -n customer-service-agent python --version
+conda run -n cyclops python --version
+conda run -n cyclops python -m pip install -e .
 ```
 
 复制本地配置模板：
@@ -45,15 +46,15 @@ EMBEDDING_DIMENSIONS
 初始化数据库并启动后台：
 
 ```bash
-conda run -n customer-service-agent python -m customer_service_agent.cli check-config
-conda run -n customer-service-agent python -m customer_service_agent.cli init-db
-conda run -n customer-service-agent python -m customer_service_agent.cli admin --host 127.0.0.1 --port 8765
+conda run -n cyclops python -m cyclops check-config
+conda run -n cyclops python -m cyclops init-db
+conda run -n cyclops python -m cyclops admin --host 127.0.0.1 --port 8765
 ```
 
 浏览器打开：
 
 ```text
-http://127.0.0.1:8765/admin.html
+http://127.0.0.1:8765/
 ```
 
 ## 数据库依赖
@@ -75,8 +76,8 @@ sudo -u postgres psql -tAc "SELECT name FROM pg_available_extensions WHERE name 
 如果数据库和用户还不存在：
 
 ```sql
-CREATE USER customer_service_agent WITH PASSWORD '<password>';
-CREATE DATABASE customer_service_agent OWNER customer_service_agent;
+CREATE USER cyclops WITH PASSWORD '<password>';
+CREATE DATABASE cyclops OWNER cyclops;
 ```
 
 ## 页面预览
@@ -88,12 +89,13 @@ CREATE DATABASE customer_service_agent OWNER customer_service_agent;
 
 ## 主要目录
 
-- `customer_service_agent/admin_server.py`：本地管理后台 API。
-- `customer_service_agent/static/`：管理后台 HTML / CSS / JS。
-- `customer_service_agent/db.py`：数据库读写、统一知识单元和 pgvector 检索。
-- `customer_service_agent/document_parser.py`：文档解析与切块。
-- `customer_service_agent/import_ai.py`：从切片生成候选 FAQ。
-- `customer_service_agent/rag.py`：RAG 答案生成。
-- `customer_service_agent/rag_tool.py`：上游智能体调用的只读工具接口。
-- `customer_service_agent/wechat_service.py`：外部IM对话测试(微信)长运行服务。
+- `cyclops/asgi_app.py`：Cyclops ASGI 管理后台入口。
+- `cyclops/admin_server.py`：本地管理后台业务层与 API 适配逻辑。
+- `cyclops/static/`：管理后台 HTML / CSS / JS。
+- `cyclops/db/`：数据库读写、统一知识单元和 pgvector 检索。
+- `cyclops/document_parser.py`：文档解析与切块。
+- `cyclops/import_ai.py`：从切片生成候选 FAQ。
+- `cyclops/rag.py`：RAG 答案生成。
+- `cyclops/rag_tool.py`：上游智能体调用的只读工具接口。
+- `cyclops/wechat_service.py`：外部IM对话测试(微信)长运行服务。
 - `sql/001_init.sql`：数据库 schema。

@@ -14,7 +14,7 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: '../customer_service_agent/static/dist',
+    outDir: '../cyclops/static/dist',
     emptyOutDir: true,
   },
   server: {

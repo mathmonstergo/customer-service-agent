@@ -23,7 +23,7 @@
 - 每个新写或修改的方法、函数、类方法都需要有中文注释或中文 docstring，说明“做什么”和“关键约束”。注释要服务理解，不写空泛说明。
 - 优先使用简洁直接的实现。不要因为担心所有极端情况而写过量兜底；兜底前先判断它是否真实必要。
 - 防御性编程只覆盖明确会发生、影响用户体验或数据正确性的场景。没有清晰收益的多层包装、重复校验、宽泛异常吞噬都应避免。
-- 遵循现有模块职责：配置在 `config.py`，数据库读写在 `db.py`，RAG 逻辑在 `rag.py` / `rag_tool.py`，AI 辅助在 `ai_assist.py`，本地管理 API 在 `admin_server.py`，静态页面在 `customer_service_agent/static/`。
+- 遵循现有模块职责：配置在 `config.py`，数据库读写在 `db.py`，RAG 逻辑在 `rag.py` / `rag_tool.py`，AI 辅助在 `ai_assist.py`，本地管理 API 在 `admin_server.py`，静态页面在 `cyclops/static/`。
 - 不做无关重构，不混入格式化噪音，不回滚用户已有改动。
 
 ## 测试和验证
@@ -32,7 +32,7 @@
 - 常用验证命令：
   - `python -m pytest`
   - `python -m ruff check .`
-  - `python -m customer_service_agent.cli check-config`
+  - `python -m cyclops check-config`
 - 如果本地缺少依赖、数据库或环境变量导致命令无法运行，必须在最终说明中写清楚。
 - 测试文件应作为项目质量资产保留；不要把应提交的测试当作临时本地文件处理。
 

@@ -1,15 +1,17 @@
+import { useEffect, useRef } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
   Activity,
-  ChevronLeft,
   ChevronRight,
   FileText,
   Network,
   MessageSquare,
   Sparkles,
+  Settings,
 } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { useUi } from '@/store/ui'
+import { nextSidebarCollapsedForPointerDown } from './sidebar-interaction'
 
 const NAV_MIGRATED = [
   { path: '/documents', label: '文档管理', icon: FileText },
@@ -17,12 +19,28 @@ const NAV_MIGRATED = [
   { path: '/assistant', label: '智能问答', icon: MessageSquare },
   { path: '/knowledge-graph', label: '知识图谱', icon: Network },
   { path: '/evaluation', label: '效果验收', icon: Activity },
+  { path: '/settings', label: '设置', icon: Settings },
 ]
 
 export function Sidebar() {
-  const { sidebarCollapsed, toggleSidebar } = useUi()
+  const { sidebarCollapsed, setSidebarCollapsed } = useUi()
+  const sidebarRef = useRef<HTMLElement>(null)
+
+  useEffect(() => {
+    const onPointerDown = (event: PointerEvent) => {
+      const sidebar = sidebarRef.current
+      const isInsideSidebar =
+        !!sidebar && event.target instanceof Node && sidebar.contains(event.target)
+      setSidebarCollapsed(nextSidebarCollapsedForPointerDown({ isInsideSidebar }))
+    }
+
+    document.addEventListener('pointerdown', onPointerDown, true)
+    return () => document.removeEventListener('pointerdown', onPointerDown, true)
+  }, [setSidebarCollapsed])
+
   return (
     <aside
+      ref={sidebarRef}
       className={cn(
         'flex h-full shrink-0 flex-col border-r border-(--color-border) bg-(--color-bg) transition-[width] duration-200',
         sidebarCollapsed ? 'w-14' : 'w-56',
@@ -30,10 +48,10 @@ export function Sidebar() {
     >
       <div className={cn('flex items-center gap-2 px-4 pt-4 pb-3', sidebarCollapsed && 'justify-center px-0')}>
         <span className="inline-flex size-7 items-center justify-center rounded-(--radius-control) bg-(--color-primary) font-mono text-[11px] font-[580] text-white">
-          CS
+          Cy
         </span>
         {!sidebarCollapsed && (
-          <span className="font-[540] text-(--color-text)">客服助手</span>
+          <span className="font-[540] text-(--color-text)">Cyclops</span>
         )}
       </div>
 
@@ -64,14 +82,15 @@ export function Sidebar() {
 
       <button
         type="button"
-        onClick={toggleSidebar}
+        onClick={() => setSidebarCollapsed(false)}
+        aria-label="展开功能区"
         className={cn(
+          !sidebarCollapsed && 'hidden',
           'mx-2 mb-3 mt-2 inline-flex items-center justify-center gap-1.5 rounded-(--radius-control) py-1.5 text-[12px] text-(--color-text-faint)',
           'hover:bg-(--color-surface-2) hover:text-(--color-text-muted)',
         )}
       >
-        {sidebarCollapsed ? <ChevronRight className="size-3.5" /> : <ChevronLeft className="size-3.5" />}
-        {!sidebarCollapsed && <span>折叠</span>}
+        <ChevronRight className="size-3.5" />
       </button>
 
       {!sidebarCollapsed && (

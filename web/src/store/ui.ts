@@ -2,6 +2,7 @@ import { create } from 'zustand'
 
 interface UiState {
   sidebarCollapsed: boolean
+  setSidebarCollapsed: (collapsed: boolean) => void
   toggleSidebar: () => void
 
   // 当前打开的文档抽屉对应 file id（null = 关闭）
@@ -29,6 +30,7 @@ interface UiState {
 
 export const useUi = create<UiState>((set) => ({
   sidebarCollapsed: false,
+  setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
 
   openImportFileId: null,

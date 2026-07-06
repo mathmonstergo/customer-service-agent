@@ -13,6 +13,21 @@ export interface MessageNavigationItem {
   index: number
 }
 
+export interface MessageNavigationPosition {
+  id: string
+  offsetTop: number
+}
+
+export interface ActiveMessageNavigationInput {
+  items: MessageNavigationItem[]
+  positions: MessageNavigationPosition[]
+  scrollTop: number
+  clientHeight: number
+  scrollHeight: number
+  bottomThreshold?: number
+  scrollDirection?: 'up' | 'down' | 'idle'
+}
+
 // 生成右侧定位列表摘要，关键约束是单行、短文本，避免 hover 面板撑宽或换行过多。
 export function summarizeMessageContent(
   content: string,
@@ -56,4 +71,31 @@ export function selectMessageRailItems(
     }
   }
   return selected
+}
+
+// 计算当前高亮的问题定位项；关键约束是按滚动方向使用顶部/底部边界推进，短内容同屏时也不跳过相邻问题。
+export function selectActiveMessageNavigationId(
+  input: ActiveMessageNavigationInput,
+): string | null {
+  const first = input.items[0]
+  if (!first) return null
+  const edgeThreshold = input.bottomThreshold ?? 24
+  if (input.scrollTop <= edgeThreshold) return first.id
+  const last = input.items.at(-1)
+  const distanceToBottom = input.scrollHeight - input.scrollTop - input.clientHeight
+  if (last && distanceToBottom <= edgeThreshold) return last.id
+
+  const positionsById = new Map(input.positions.map((position) => [position.id, position.offsetTop]))
+  const activationEdge =
+    input.scrollDirection === 'up'
+      ? input.scrollTop + input.clientHeight - edgeThreshold
+      : input.scrollTop + edgeThreshold
+  let currentId = first.id
+  for (const item of input.items) {
+    const offsetTop = positionsById.get(item.id)
+    if (offsetTop === undefined) continue
+    if (offsetTop <= activationEdge) currentId = item.id
+    else break
+  }
+  return currentId
 }

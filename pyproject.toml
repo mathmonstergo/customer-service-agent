@@ -1,12 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "customer-service-agent"
+name = "cyclops"
 version = "0.1.0"
-description = "Personal WeChat RAG customer support agent for FAQ operations"
+description = "Cyclops local knowledge-base and RAG operations service"
 requires-python = ">=3.11"
 dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
     "openai>=1.30.0",
     "psycopg[binary]>=3.2.0",
+    "psycopg-pool>=3.2.0",
     "pgvector>=0.3.0",
+    "python-multipart>=0.0.9",
     "python-dotenv>=1.0.1",
     "requests>=2.32.0",
     "qrcode>=7.4.2",
@@ -17,7 +25,10 @@ dependencies = [
 ]
 
 [project.scripts]
-customer-service-agent = "customer_service_agent.cli:main"
+cyclops = "cyclops.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["cyclops*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

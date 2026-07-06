@@ -1,4 +1,4 @@
-from customer_service_agent.markdown_import import chunk_messages, parse_wechat_messages
+from cyclops.markdown_import import chunk_messages, parse_wechat_messages
 
 
 SAMPLE = """# 聊天记录: 京师筑心2026春业务对接群

@@ -1,5 +1,5 @@
-from customer_service_agent.db import RetrievedDocument
-from customer_service_agent.rag import RagService, build_user_prompt, normalize_conversation_context
+from cyclops.db import RetrievedDocument
+from cyclops.rag import RagService, build_user_prompt, normalize_conversation_context
 
 
 class FakeEmbedding:

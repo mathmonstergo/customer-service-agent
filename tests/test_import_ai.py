@@ -1,6 +1,6 @@
 import pytest
 
-from customer_service_agent.import_ai import (
+from cyclops.import_ai import (
     ImportAiAssistant,
     ImportCandidate,
     ImportCandidateError,

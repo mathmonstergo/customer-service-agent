@@ -4,7 +4,7 @@ import zipfile
 
 import pytest
 
-from customer_service_agent.document_parser import (
+from cyclops.document_parser import (
     MineruClient,
     MineruParseError,
     MineruParseStatus,

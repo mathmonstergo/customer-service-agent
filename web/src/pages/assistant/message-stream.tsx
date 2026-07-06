@@ -23,10 +23,11 @@ import type { AssistantSource } from '@/api/schemas'
 import type { AssistantStepEvent } from '@/lib/sse-assistant'
 import {
   buildMessageNavItems,
+  selectActiveMessageNavigationId,
   selectMessageRailItems,
   type MessageNavigationItem,
 } from './message-navigation'
-import { shouldAutoScrollMessageStream } from './message-scroll'
+import { messageStreamScrollPlan } from './message-scroll'
 import { buildAssistantSourceGroupTarget, type AssistantSourceTarget } from './source-target'
 
 // 渲染当前会话消息流；关键约束是滚动定位后给目标消息短暂高亮反馈。
@@ -41,6 +42,7 @@ export function MessageStream({
   const scrollRef = useRef<HTMLDivElement>(null)
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const previousConversationIdRef = useRef<string | null>(null)
+  const previousScrollTopRef = useRef<number | null>(null)
   const [showJumpButton, setShowJumpButton] = useState(false)
   const [activeMessageId, setActiveMessageId] = useState<string | null>(null)
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null)
@@ -52,16 +54,30 @@ export function MessageStream({
     if (!el) return
     const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight
     setShowJumpButton(distanceToBottom > 220)
+    const previousScrollTop = previousScrollTopRef.current
+    const scrollDirection =
+      previousScrollTop === null
+        ? 'idle'
+        : el.scrollTop < previousScrollTop
+          ? 'up'
+          : el.scrollTop > previousScrollTop
+            ? 'down'
+            : 'idle'
+    previousScrollTopRef.current = el.scrollTop
 
-    const anchor = el.scrollTop + el.clientHeight * 0.38
-    let currentId = navItems[0]?.id ?? null
-    for (const item of navItems) {
-      const node = messageRefs.current[item.id]
-      if (!node) continue
-      if (node.offsetTop <= anchor) currentId = item.id
-      else break
-    }
-    setActiveMessageId(currentId)
+    setActiveMessageId(
+      selectActiveMessageNavigationId({
+        items: navItems,
+        positions: navItems.flatMap((item) => {
+          const node = messageRefs.current[item.id]
+          return node ? [{ id: item.id, offsetTop: node.offsetTop }] : []
+        }),
+        scrollTop: el.scrollTop,
+        clientHeight: el.clientHeight,
+        scrollHeight: el.scrollHeight,
+        scrollDirection,
+      }),
+    )
   }, [navItems])
 
   const registerMessageRef = useCallback((id: string, node: HTMLDivElement | null) => {
@@ -78,6 +94,7 @@ export function MessageStream({
     const el = scrollRef.current
     const node = messageRefs.current[id]
     if (!el || !node) return
+    setActiveMessageId(id)
     el.scrollTo({ top: Math.max(0, node.offsetTop - 24), behavior: 'smooth' })
     window.setTimeout(() => {
       setHighlightedMessageId(null)
@@ -105,22 +122,25 @@ export function MessageStream({
     const last = messages[messages.length - 1]
     const didConversationChange = previousConversationIdRef.current !== conversationId
     previousConversationIdRef.current = conversationId
+    if (didConversationChange) previousScrollTopRef.current = null
     if (!last) {
       window.requestAnimationFrame(updateScrollState)
       return
     }
+    const scrollToLatest = (behavior: ScrollBehavior) => {
+      el.scrollTo({ top: el.scrollHeight, behavior })
+    }
     const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-    if (
-      shouldAutoScrollMessageStream({
-        didConversationChange,
-        distanceToBottom,
-        lastMessageRole: last.role,
-      })
-    ) {
-      el.scrollTo({
-        top: el.scrollHeight,
-        behavior: didConversationChange ? 'auto' : 'smooth',
-      })
+    const plan = messageStreamScrollPlan({
+      didConversationChange,
+      distanceToBottom,
+      lastMessageRole: last.role,
+    })
+    if (plan.shouldScroll) {
+      scrollToLatest(plan.behavior)
+      if (plan.followUpFrame) {
+        window.requestAnimationFrame(() => scrollToLatest('auto'))
+      }
     }
     window.requestAnimationFrame(updateScrollState)
   }, [conversationId, messages, updateScrollState])
@@ -211,9 +231,12 @@ function MessageQuickNavigator({
               type="button"
               onClick={() => onSelect(item.id)}
               className={cn(
-                'h-0.5 rounded-full bg-(--color-text-faint) transition-all hover:bg-(--color-text-muted)',
-                activeId === item.id ? 'w-8 bg-(--color-text)' : 'w-5',
+                'h-0.5 rounded-full transition-all',
+                activeId === item.id
+                  ? 'w-8 bg-(--color-text)'
+                  : 'w-5 bg-(--color-text-faint) hover:w-6',
               )}
+              aria-current={activeId === item.id ? 'location' : undefined}
               aria-label={`定位到第 ${item.index} 条对话`}
             />
           ))}

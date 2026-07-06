@@ -1,6 +1,6 @@
 import pytest
 
-from customer_service_agent.ai_assist import AiAssistant, AiSuggestion, AiSuggestionError
+from cyclops.ai_assist import AiAssistant, AiSuggestion, AiSuggestionError
 
 
 class FakeChat:

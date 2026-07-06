@@ -1,4 +1,4 @@
-from customer_service_agent.wechat_service import split_text
+from cyclops.wechat_service import split_text
 
 
 def test_split_text_keeps_short_text():
@@ -19,7 +19,7 @@ def test_split_text_returns_placeholder_for_blank_text():
 
 
 def test_handle_message_catches_send_failure_for_rag_reply(capsys):
-    from customer_service_agent.wechat_service import handle_message
+    from cyclops.wechat_service import handle_message
 
     class FakeBot:
         def extract_text(self, msg):
@@ -47,8 +47,8 @@ def test_handle_message_catches_send_failure_for_rag_reply(capsys):
 
 
 def test_run_service_backs_off_when_get_updates_fails(monkeypatch, tmp_path, capsys):
-    from customer_service_agent import cli
-    from customer_service_agent import wechat_service
+    from cyclops import cli
+    from cyclops import wechat_service
 
     sleeps = []
 

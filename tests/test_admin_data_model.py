@@ -1,4 +1,4 @@
-from customer_service_agent.db import (
+from cyclops.db import (
     build_embedding_text,
     compute_content_hash,
     next_embedding_status,

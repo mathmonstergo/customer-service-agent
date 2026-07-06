@@ -1,9 +1,10 @@
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
 
-from customer_service_agent.admin_server import (
+from cyclops.admin_server import (
     AdminApp,
     AdminNotFoundError,
     AdminValidationError,
@@ -16,7 +17,7 @@ from customer_service_agent.admin_server import (
     settings_to_tenant_settings,
     static_path,
 )
-from customer_service_agent.config import Settings
+from cyclops.config import Settings
 
 
 def test_normalize_faq_payload_sets_defaults_and_splits_lists():
@@ -73,6 +74,32 @@ def test_admin_app_batch_update_status_calls_database():
         "items": [{"id": "faq_1", "status": "disabled"}],
     }
     assert calls == [(["faq_1"], "disabled")]
+
+
+def test_admin_app_assistant_stream_returns_error_when_concurrency_limit_reached():
+    """问答流超过并发上限时应直接返回 SSE error，不进入 embedding 或数据库检索。"""
+    settings = SimpleNamespace(
+        database_url="postgresql://unused",
+        assistant_max_concurrent_streams=1,
+        rag_top_k=3,
+        rag_min_score=0.35,
+    )
+
+    class FakeEmbedding:
+        def embed(self, _text):
+            raise AssertionError("embedding must not be called when stream is saturated")
+
+    class FakeChat:
+        def complete(self, _system_prompt, _user_prompt):
+            return '{"intent":"faq_exact","confidence":"medium","query_rewrite":"","preferred_sources":[]}'
+
+    app = AdminApp(settings, embeddings=FakeEmbedding(), chat=FakeChat())
+    app.assistant_stream_semaphore = threading.BoundedSemaphore(value=1)
+    assert app.assistant_stream_semaphore.acquire(blocking=False)
+
+    events = list(app.iter_assistant_chat_events({"question": "报告怎么生成？"}))
+
+    assert events == [{"type": "error", "error": "当前问答服务繁忙，请稍后重试。"}]
 
 
 def test_admin_app_create_retrieval_eval_case_stores_expected_hits():
@@ -691,8 +718,8 @@ def test_retrieval_eval_item_payload_exposes_faq_question_answer_fields():
     assert payload["tags"] == ["报告", "导出"]
 
 
-def test_admin_app_settings_snapshot_exposes_runtime_config_for_local_modal(tmp_path):
-    """设置中心读取当前运行配置，密钥只经本地管理接口返回给弹窗。"""
+def test_admin_app_settings_snapshot_masks_sensitive_config_for_frontend(tmp_path):
+    """设置中心快照只给前端脱敏敏感值，避免浏览器拿到已保存明文。"""
     app = AdminApp(
         SimpleNamespace(
             database_url="postgresql://user:pass@127.0.0.1:5432/app",
@@ -727,16 +754,158 @@ def test_admin_app_settings_snapshot_exposes_runtime_config_for_local_modal(tmp_
 
     snapshot = app.settings_snapshot()
 
-    assert snapshot["mineru_api_token"] == "mineru-secret"
-    assert snapshot["chat_api_key"] == "chat-secret"
-    assert snapshot["embedding_api_key"] == "embedding-secret"
-    assert snapshot["database_url"] == "postgresql://user:pass@127.0.0.1:5432/app"
+    assert snapshot["mineru_api_token"] != "mineru-secret"
+    assert snapshot["chat_api_key"] != "chat-secret"
+    assert snapshot["embedding_api_key"] != "embedding-secret"
+    assert snapshot["database_url"] != "postgresql://user:pass@127.0.0.1:5432/app"
+    assert "pass" not in snapshot["database_url"]
+    assert snapshot["chat_api_key_configured"] is True
+    assert snapshot["embedding_api_key_configured"] is True
+    assert snapshot["mineru_api_token_configured"] is True
+    assert "••" in snapshot["chat_api_key"]
+    assert "••" in snapshot["embedding_api_key"]
+    assert "••" in snapshot["mineru_api_token"]
     assert "mineru_batch_file_url" not in snapshot
     assert snapshot["rag_top_k"] == 6
     assert snapshot["wechat_token_file"].endswith("token.json")
     assert snapshot["document_chunk_token_num"] == 512
     assert snapshot["document_chunker_type"] == "naive"
     assert snapshot["document_chunk_delimiter"] == "\n。；！？"
+
+
+def test_admin_app_update_settings_preserves_sensitive_values_when_payload_is_blank(tmp_path):
+    """设置弹窗留空敏感字段时应保留旧值，只在输入新值时覆盖。"""
+    settings_file = tmp_path / "settings.local.json"
+    settings = Settings.from_env(
+        {
+            "DATABASE_URL": "postgresql://user:oldpass@127.0.0.1:5432/app",
+            "CHAT_BASE_URL": "https://chat.example/v1",
+            "CHAT_API_KEY": "old-chat-key",
+            "CHAT_MODEL": "old-model",
+            "EMBEDDING_BASE_URL": "https://embedding.example/v1",
+            "EMBEDDING_API_KEY": "old-embedding-key",
+            "EMBEDDING_MODEL": "text-embedding-v4",
+            "MINERU_API_TOKEN": "old-mineru-token",
+            "RERANK_BASE_URL": "https://rerank.example/v1",
+            "RERANK_API_KEY": "old-rerank-key",
+            "RERANK_MODEL": "rerank-model",
+        }
+    )
+    app = AdminApp(settings, settings_file=settings_file)
+
+    snapshot = app.update_settings(
+        {
+            "database_url": "",
+            "chat_base_url": "https://chat-new.example/v1",
+            "chat_api_key": "",
+            "chat_model": "deepseek-chat",
+            "embedding_api_key": "   ",
+            "mineru_api_token": "",
+            "rerank_api_key": "",
+        }
+    )
+
+    saved_settings = json.loads(settings_file.read_text(encoding="utf-8"))
+    tenant = saved_settings["tenants"]["default"]
+    assert app.settings.database_url == "postgresql://user:oldpass@127.0.0.1:5432/app"
+    assert app.settings.chat_api_key == "old-chat-key"
+    assert app.settings.embedding_api_key == "old-embedding-key"
+    assert app.settings.mineru_api_token == "old-mineru-token"
+    assert app.settings.rerank_api_key == "old-rerank-key"
+    assert tenant["database_url"] == "postgresql://user:oldpass@127.0.0.1:5432/app"
+    assert tenant["chat_api_key"] == "old-chat-key"
+    assert tenant["embedding_api_key"] == "old-embedding-key"
+    assert tenant["mineru_api_token"] == "old-mineru-token"
+    assert tenant["rerank_api_key"] == "old-rerank-key"
+    assert snapshot["chat_api_key"] != "old-chat-key"
+    assert snapshot["chat_api_key_configured"] is True
+
+
+def test_admin_app_probe_chat_provider_uses_saved_key_when_payload_omits_key(monkeypatch):
+    """测试连接留空 key 时应由后端使用已保存 key，前端仍不能读取明文。"""
+    captured = []
+
+    class FakeCompletions:
+        def create(self, *, model, messages, temperature):
+            captured.append(("complete", model, messages, temperature))
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="pong"))])
+
+    class FakeClient:
+        chat = SimpleNamespace(completions=FakeCompletions())
+
+    def fake_build_openai_client(base_url, api_key):
+        captured.append(("client", base_url, api_key))
+        return FakeClient()
+
+    monkeypatch.setattr("cyclops.admin_server.build_openai_client", fake_build_openai_client)
+    app = AdminApp(
+        SimpleNamespace(
+            database_url="postgresql://unused",
+            chat_base_url="https://saved.example/v1",
+            chat_api_key="saved-chat-key",
+            chat_model="saved-model",
+        )
+    )
+
+    result = app.probe_chat_provider(
+        {
+            "chat_base_url": "https://draft.example/v1",
+            "chat_api_key": "",
+            "chat_model": "draft-model",
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["model"] == "draft-model"
+    assert captured[0] == ("client", "https://draft.example/v1", "saved-chat-key")
+
+
+def test_admin_app_list_chat_provider_models_uses_saved_key_when_payload_omits_key(monkeypatch):
+    """拉取模型留空 key 时应由后端使用已保存 key，Authorization 不依赖前端回填。"""
+    captured = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "data": [
+                    {"id": "z-model", "owned_by": "vendor"},
+                    {"id": "a-model"},
+                ]
+            }
+
+    def fake_get(url, *, headers, timeout):
+        captured.append((url, headers, timeout))
+        return FakeResponse()
+
+    monkeypatch.setattr("cyclops.admin_server.requests.get", fake_get)
+    app = AdminApp(
+        SimpleNamespace(
+            database_url="postgresql://unused",
+            chat_base_url="https://saved.example/v1",
+            chat_api_key="saved-chat-key",
+            chat_model="saved-model",
+        )
+    )
+
+    result = app.list_chat_provider_models({"chat_base_url": "https://draft.example/v1"})
+
+    assert result == {
+        "ok": True,
+        "items": [
+            {"id": "a-model", "owned_by": ""},
+            {"id": "z-model", "owned_by": "vendor"},
+        ],
+    }
+    assert captured == [
+        (
+            "https://draft.example/v1/models",
+            {"Authorization": "Bearer saved-chat-key"},
+            15.0,
+        )
+    ]
 
 
 def test_admin_app_update_settings_persists_local_tenant_settings_and_refreshes_runtime_config(tmp_path):
@@ -1017,7 +1186,7 @@ def test_admin_app_create_import_file_parses_pdf_with_mineru(tmp_path, monkeypat
                 }
             ]
 
-    monkeypatch.setattr("customer_service_agent.admin_server.MineruClient", FakeMineruClient)
+    monkeypatch.setattr("cyclops.admin_server.MineruClient", FakeMineruClient)
 
     app = AdminApp(
         SimpleNamespace(
@@ -1048,7 +1217,7 @@ def test_admin_app_build_document_import_chunks_passes_configured_chunker_type(m
         return [{"id": "chunk_1", "source_text": "ok"}]
 
     monkeypatch.setattr(
-        "customer_service_agent.admin_server.build_import_chunks_from_blocks",
+        "cyclops.admin_server.build_import_chunks_from_blocks",
         fake_build_import_chunks,
     )
     app = AdminApp(
@@ -1117,7 +1286,7 @@ def test_admin_app_starts_mineru_parse_job_without_blocking_for_result(tmp_path,
                 zip_url=None,
             )
 
-    monkeypatch.setattr("customer_service_agent.admin_server.MineruClient", FakeMineruClient)
+    monkeypatch.setattr("cyclops.admin_server.MineruClient", FakeMineruClient)
 
     app = AdminApp(
         SimpleNamespace(
@@ -1196,7 +1365,7 @@ def test_admin_app_start_mineru_parse_job_persists_payload_chunker_type(tmp_path
                 zip_url=None,
             )
 
-    monkeypatch.setattr("customer_service_agent.admin_server.MineruClient", FakeMineruClient)
+    monkeypatch.setattr("cyclops.admin_server.MineruClient", FakeMineruClient)
 
     app = AdminApp(
         SimpleNamespace(
@@ -1291,7 +1460,7 @@ def test_admin_app_polling_mineru_parse_status_updates_progress(tmp_path, monkey
                 zip_url=None,
             )
 
-    monkeypatch.setattr("customer_service_agent.admin_server.MineruClient", FakeMineruClient)
+    monkeypatch.setattr("cyclops.admin_server.MineruClient", FakeMineruClient)
 
     app = AdminApp(
         SimpleNamespace(
@@ -1384,7 +1553,7 @@ def test_admin_app_polling_mineru_done_downloads_result_and_replaces_chunks(tmp_
                 ]
             }
 
-    monkeypatch.setattr("customer_service_agent.admin_server.MineruClient", FakeMineruClient)
+    monkeypatch.setattr("cyclops.admin_server.MineruClient", FakeMineruClient)
 
     app = AdminApp(
         SimpleNamespace(
@@ -1446,9 +1615,9 @@ def test_admin_app_finish_mineru_parse_job_uses_file_chunker_type(tmp_path, monk
                 ]
             }
 
-    monkeypatch.setattr("customer_service_agent.admin_server.MineruClient", FakeMineruClient)
+    monkeypatch.setattr("cyclops.admin_server.MineruClient", FakeMineruClient)
     monkeypatch.setattr(
-        "customer_service_agent.admin_server.build_import_chunks_from_blocks",
+        "cyclops.admin_server.build_import_chunks_from_blocks",
         fake_build_import_chunks,
     )
 
@@ -2023,7 +2192,7 @@ def test_admin_app_list_import_file_candidates_delegates_to_database():
 def test_static_path_root_returns_react_index():
     """根路径返回 React SPA 入口。老的 /admin.html 已删除，应 404。"""
     import pytest
-    from customer_service_agent.admin_server import AdminNotFoundError
+    from cyclops.admin_server import AdminNotFoundError
 
     assert static_path("/").name == "index.html"
     assert static_path("/").parent.name == "dist"
@@ -2619,7 +2788,7 @@ def test_admin_app_assistant_system_prompt_has_no_code_default(monkeypatch):
     def missing_system_prompt():
         raise FileNotFoundError
 
-    monkeypatch.setattr("customer_service_agent.admin_server.load_system_prompt", missing_system_prompt)
+    monkeypatch.setattr("cyclops.admin_server.load_system_prompt", missing_system_prompt)
 
     assert app.assistant_system_prompt() == ""
     assert app.assistant_system_prompt_from_payload({"system_prompt": ""}) == ""
@@ -2648,15 +2817,17 @@ def _settings_with_rerank(**overrides):
     return Settings.from_env(env)
 
 
-def test_settings_snapshot_includes_rerank_fields():
-    """设置弹窗需要把 rerank 配置全量返回给前端。"""
+def test_settings_snapshot_includes_masked_rerank_fields():
+    """设置弹窗需要返回 rerank 配置摘要，但不能暴露 API key 明文。"""
     settings = _settings_with_rerank(rerank_input_size=30)
     app = AdminApp(settings)
 
     snapshot = app.settings_snapshot()
 
     assert snapshot["rerank_base_url"] == "https://rerank.example.com"
-    assert snapshot["rerank_api_key"] == "rerank-key"
+    assert snapshot["rerank_api_key"] != "rerank-key"
+    assert snapshot["rerank_api_key_configured"] is True
+    assert "••" in snapshot["rerank_api_key"]
     assert snapshot["rerank_model"] == "bge-reranker-v2-m3"
     assert snapshot["rerank_input_size"] == 30
 

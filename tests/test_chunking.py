@@ -1,4 +1,4 @@
-from customer_service_agent.chunking import (
+from cyclops.chunking import (
     attach_media_context_to_blocks,
     extract_pdf_positions,
     normalize_children_delimiter,
@@ -185,14 +185,14 @@ def test_num_tokens_from_string_returns_char_count_when_tiktoken_missing(monkeyp
 
     import tiktoken
 
-    from customer_service_agent import chunking
+    from cyclops import chunking
 
     def raise_import(name):
         raise ImportError(f"simulated tiktoken missing: {name}")
 
     monkeypatch.setattr(tiktoken, "get_encoding", raise_import)
 
-    with caplog.at_level(logging.WARNING, logger="customer_service_agent.chunking"):
+    with caplog.at_level(logging.WARNING, logger="cyclops.chunking"):
         assert chunking.num_tokens_from_string("hello") == 5
 
     assert not [record for record in caplog.records if record.levelname == "WARNING"]
@@ -204,14 +204,14 @@ def test_num_tokens_from_string_warns_on_unexpected_tiktoken_failure(monkeypatch
 
     import tiktoken
 
-    from customer_service_agent import chunking
+    from cyclops import chunking
 
     def raise_runtime(name):
         raise RuntimeError("encoder build broke")
 
     monkeypatch.setattr(tiktoken, "get_encoding", raise_runtime)
 
-    with caplog.at_level(logging.WARNING, logger="customer_service_agent.chunking"):
+    with caplog.at_level(logging.WARNING, logger="cyclops.chunking"):
         assert chunking.num_tokens_from_string("hello") == 5
 
     warning_records = [record for record in caplog.records if record.levelname == "WARNING"]

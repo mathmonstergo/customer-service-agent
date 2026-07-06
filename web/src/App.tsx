@@ -3,7 +3,7 @@ export default function App() {
     <div className="flex min-h-screen items-center justify-center px-6">
       <div className="surface w-full max-w-md rounded-(--radius-card) p-10 text-center">
         <p className="font-mono text-xs uppercase tracking-[0.18em] text-(--color-text-faint)">
-          Customer Service Agent
+          Cyclops
         </p>
         <h1 className="mt-6 text-2xl">骨架已就绪</h1>
         <p className="mt-3 text-(--color-text-muted)">

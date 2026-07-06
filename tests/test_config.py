@@ -1,6 +1,6 @@
 import pytest
 
-from customer_service_agent.config import Settings, SettingsError
+from cyclops.config import Settings, SettingsError
 
 
 def test_settings_from_env_parses_required_values():
@@ -310,3 +310,53 @@ def test_settings_from_env_parses_rerank_values_from_env():
     assert settings.rerank_api_key == "rerank-key"
     assert settings.rerank_model == "bge-reranker-v2-m3"
     assert settings.rerank_input_size == 30
+
+
+def test_settings_from_env_uses_default_asgi_performance_values():
+    """ASGI 问答服务性能保护配置应有保守默认值，避免未配置时无限并发或无限等待。"""
+    env = {
+        "DATABASE_URL": "postgresql://u:p@127.0.0.1:5432/db",
+        "CHAT_BASE_URL": "https://newapi.example.com/v1",
+        "CHAT_API_KEY": "chat-key",
+        "CHAT_MODEL": "deepseek-chat",
+        "EMBEDDING_BASE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "EMBEDDING_API_KEY": "embedding-key",
+        "EMBEDDING_MODEL": "text-embedding-v4",
+    }
+
+    settings = Settings.from_env(env)
+
+    assert settings.db_pool_min_size == 1
+    assert settings.db_pool_max_size == 10
+    assert settings.chat_timeout_seconds == 60.0
+    assert settings.embedding_timeout_seconds == 30.0
+    assert settings.rerank_timeout_seconds == 30.0
+    assert settings.assistant_max_concurrent_streams == 4
+
+
+def test_settings_from_env_parses_asgi_performance_values():
+    """ASGI 和模型超时配置应能通过环境变量覆盖，供 C 端部署按机器容量调整。"""
+    env = {
+        "DATABASE_URL": "postgresql://u:p@127.0.0.1:5432/db",
+        "CHAT_BASE_URL": "https://newapi.example.com/v1",
+        "CHAT_API_KEY": "chat-key",
+        "CHAT_MODEL": "deepseek-chat",
+        "EMBEDDING_BASE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "EMBEDDING_API_KEY": "embedding-key",
+        "EMBEDDING_MODEL": "text-embedding-v4",
+        "DB_POOL_MIN_SIZE": "2",
+        "DB_POOL_MAX_SIZE": "12",
+        "CHAT_TIMEOUT_SECONDS": "45.5",
+        "EMBEDDING_TIMEOUT_SECONDS": "12",
+        "RERANK_TIMEOUT_SECONDS": "8",
+        "ASSISTANT_MAX_CONCURRENT_STREAMS": "7",
+    }
+
+    settings = Settings.from_env(env)
+
+    assert settings.db_pool_min_size == 2
+    assert settings.db_pool_max_size == 12
+    assert settings.chat_timeout_seconds == 45.5
+    assert settings.embedding_timeout_seconds == 12.0
+    assert settings.rerank_timeout_seconds == 8.0
+    assert settings.assistant_max_concurrent_streams == 7

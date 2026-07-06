@@ -3,7 +3,7 @@ import stat
 
 import requests
 
-from customer_service_agent.wechat_client import WxBotClient
+from cyclops.wechat_client import WxBotClient
 
 
 def test_save_creates_token_file_with_private_permissions(tmp_path):
@@ -54,7 +54,7 @@ def test_get_updates_returns_empty_with_backoff_on_request_error(monkeypatch, tm
         raise requests.RequestException("network failed")
 
     monkeypatch.setattr(client, "_post", fake_post)
-    monkeypatch.setattr("customer_service_agent.wechat_client.time.sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr("cyclops.wechat_client.time.sleep", lambda seconds: sleeps.append(seconds))
 
     assert client.get_updates() == []
 
@@ -71,7 +71,7 @@ def test_get_updates_returns_empty_with_backoff_on_json_parse_error(monkeypatch,
         raise ValueError("bad json")
 
     monkeypatch.setattr(client, "_post", fake_post)
-    monkeypatch.setattr("customer_service_agent.wechat_client.time.sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr("cyclops.wechat_client.time.sleep", lambda seconds: sleeps.append(seconds))
 
     assert client.get_updates() == []
 

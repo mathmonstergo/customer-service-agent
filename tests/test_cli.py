@@ -1,11 +1,12 @@
 import json
 from types import SimpleNamespace
 
-from customer_service_agent.cli import build_parser, main
+from cyclops.cli import build_parser, main
 
 
 def test_parser_accepts_core_commands():
     parser = build_parser()
+    assert parser.prog == "cyclops"
     for command in [
         "check-config",
         "init-db",
@@ -36,8 +37,8 @@ def test_sync_knowledge_chunks_projects_ready_faqs(monkeypatch, capsys):
             calls.append(("sync",))
             return 3
 
-    monkeypatch.setattr("customer_service_agent.cli.Settings.load", lambda: settings)
-    monkeypatch.setattr("customer_service_agent.cli.Database", FakeDatabase)
+    monkeypatch.setattr("cyclops.cli.Settings.load", lambda: settings)
+    monkeypatch.setattr("cyclops.cli.Database", FakeDatabase)
 
     assert main(["sync-knowledge-chunks"]) == 0
     assert calls == [("init", "postgresql://unused"), ("sync",)]
@@ -48,9 +49,9 @@ def test_wechat_login_dispatches_to_service(monkeypatch):
     settings = SimpleNamespace()
     called = []
 
-    monkeypatch.setattr("customer_service_agent.cli.Settings.load", lambda: settings)
+    monkeypatch.setattr("cyclops.cli.Settings.load", lambda: settings)
 
-    from customer_service_agent import wechat_service
+    from cyclops import wechat_service
 
     monkeypatch.setattr(wechat_service, "login_wechat", lambda actual: called.append(actual))
 
@@ -62,9 +63,9 @@ def test_wechat_service_dispatches_to_service(monkeypatch):
     settings = SimpleNamespace()
     called = []
 
-    monkeypatch.setattr("customer_service_agent.cli.Settings.load", lambda: settings)
+    monkeypatch.setattr("cyclops.cli.Settings.load", lambda: settings)
 
-    from customer_service_agent import wechat_service
+    from cyclops import wechat_service
 
     monkeypatch.setattr(wechat_service, "run_service", lambda actual: called.append(actual))
 
@@ -72,9 +73,28 @@ def test_wechat_service_dispatches_to_service(monkeypatch):
     assert called == [settings]
 
 
+def test_admin_dispatches_to_asgi_runner(monkeypatch):
+    """admin 命令应切换到 ASGI runner，同时保留 host/port 参数兼容现有运维脚本。"""
+    settings = SimpleNamespace()
+    calls = []
+
+    monkeypatch.setattr("cyclops.cli.Settings.load", lambda: settings)
+
+    from cyclops import asgi_app
+
+    monkeypatch.setattr(
+        asgi_app,
+        "run_admin_asgi",
+        lambda actual, *, host, port: calls.append((actual, host, port)),
+    )
+
+    assert main(["admin", "--host", "127.0.0.1", "--port", "8765"]) == 0
+    assert calls == [(settings, "127.0.0.1", 8765)]
+
+
 def test_tool_search_prints_json_for_agent(monkeypatch, capsys):
     settings = SimpleNamespace()
-    monkeypatch.setattr("customer_service_agent.cli.Settings.load", lambda: settings)
+    monkeypatch.setattr("cyclops.cli.Settings.load", lambda: settings)
 
     class FakeResponse:
         def to_dict(self):
@@ -90,7 +110,7 @@ def test_tool_search_prints_json_for_agent(monkeypatch, capsys):
             assert question == "Why is the item missing?"
             return FakeResponse()
 
-    monkeypatch.setattr("customer_service_agent.cli.build_rag_tool", lambda actual: FakeTool())
+    monkeypatch.setattr("cyclops.cli.build_rag_tool", lambda actual: FakeTool())
 
     assert main(["tool-search", "Why is the item missing?"]) == 0
     assert json.loads(capsys.readouterr().out) == {
@@ -103,7 +123,7 @@ def test_tool_search_prints_json_for_agent(monkeypatch, capsys):
 
 def test_tool_answer_prints_json_for_agent(monkeypatch, capsys):
     settings = SimpleNamespace()
-    monkeypatch.setattr("customer_service_agent.cli.Settings.load", lambda: settings)
+    monkeypatch.setattr("cyclops.cli.Settings.load", lambda: settings)
 
     class FakeResponse:
         def to_dict(self):
@@ -120,7 +140,7 @@ def test_tool_answer_prints_json_for_agent(monkeypatch, capsys):
             assert question == "Why is the item missing?"
             return FakeResponse()
 
-    monkeypatch.setattr("customer_service_agent.cli.build_rag_tool", lambda actual: FakeTool())
+    monkeypatch.setattr("cyclops.cli.build_rag_tool", lambda actual: FakeTool())
 
     assert main(["tool-answer", "Why is the item missing?"]) == 0
     assert json.loads(capsys.readouterr().out) == {

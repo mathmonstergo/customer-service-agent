@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from customer_service_agent.faq_loader import import_faqs, load_faq_rows, validate_faq_row
+from cyclops.faq_loader import import_faqs, load_faq_rows, validate_faq_row
 
 
 def test_load_faq_rows_reads_jsonl(tmp_path):

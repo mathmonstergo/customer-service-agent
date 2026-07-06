@@ -1,12 +1,12 @@
 import pytest
 
-from customer_service_agent.kg import (
+from cyclops.kg import (
     KnowledgeGraphExtractionError,
     build_kg_entity_knowledge_chunk_row,
     build_kg_relation_knowledge_chunk_row,
     parse_kg_extraction_response,
 )
-from customer_service_agent.kg_ai import KnowledgeGraphAiAssistant
+from cyclops.kg_ai import KnowledgeGraphAiAssistant
 
 
 def test_knowledge_graph_ai_assistant_parses_model_output_with_source():

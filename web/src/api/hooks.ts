@@ -25,6 +25,7 @@ import type {
   RetrievalEvalCase,
   RetrievalEvalCaseListResponse,
   RetrievalEvalRun,
+  SettingsSnapshot,
 } from './schemas'
 
 // ───── 文档 / Import ─────
@@ -403,10 +404,35 @@ export function useAssistantDefaults() {
   })
 }
 
+// 拉取全局设置页快照；敏感字段由后端脱敏，前端只展示摘要和 configured 状态。
+export function useSettings() {
+  return useQuery({
+    queryKey: ['settings'],
+    queryFn: () => requestJson<SettingsSnapshot>('/api/settings'),
+    staleTime: 30_000,
+  })
+}
+
+// 保存全局设置；成功后同时刷新设置页和智能问答默认配置缓存。
+export function useUpdateSettings() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (payload: Record<string, string | number | boolean>) =>
+      requestJson<SettingsSnapshot>('/api/settings', {
+        method: 'POST',
+        body: payload,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['settings'] })
+      qc.invalidateQueries({ queryKey: ['assistant-defaults'] })
+    },
+  })
+}
+
 export function useProbeChatProvider() {
   return useMutation({
     mutationKey: ['probe-chat-provider'],
-    mutationFn: (body: { chat_base_url: string; chat_api_key: string; chat_model: string }) =>
+    mutationFn: (body: { chat_base_url: string; chat_model: string; chat_api_key?: string }) =>
       requestJson<ProviderProbeResponse>('/api/assistant/probe', {
         method: 'POST',
         body,
@@ -417,7 +443,7 @@ export function useProbeChatProvider() {
 export function useListChatProviderModels() {
   return useMutation({
     mutationKey: ['list-chat-provider-models'],
-    mutationFn: (body: { chat_base_url: string; chat_api_key: string }) =>
+    mutationFn: (body: { chat_base_url: string; chat_api_key?: string }) =>
       requestJson<ProviderModelsResponse>('/api/assistant/models', {
         method: 'POST',
         body,

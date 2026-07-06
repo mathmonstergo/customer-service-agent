@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from customer_service_agent.db import (
+from cyclops.db import (
     Database,
     build_document_knowledge_chunk_row,
     build_embedding_text,
@@ -17,6 +17,49 @@ def test_format_vector_outputs_pgvector_literal():
 
 def test_score_to_distance_converts_similarity_threshold():
     assert score_to_distance(0.35) == 0.65
+
+
+def test_database_connect_uses_injected_pool_connection():
+    """Database.connect 支持连接池上下文，避免 ASGI 问答并发下反复新建连接。"""
+    calls = []
+
+    class FakeConnectionContext:
+        def __enter__(self):
+            calls.append("enter")
+            return "pooled-connection"
+
+        def __exit__(self, exc_type, exc, tb):
+            calls.append("exit")
+            return False
+
+    class FakePool:
+        def connection(self):
+            calls.append("connection")
+            return FakeConnectionContext()
+
+    db = Database("postgresql://unused", pool=FakePool())
+
+    with db.connect() as conn:
+        assert conn == "pooled-connection"
+
+    assert calls == ["connection", "enter", "exit"]
+
+
+def test_database_close_closes_pool_once():
+    """Database.close 应释放连接池，避免 ASGI lifespan 结束后留下池资源。"""
+    calls = []
+
+    class FakePool:
+        def close(self):
+            calls.append("close")
+
+    db = Database("postgresql://unused", pool=FakePool())
+
+    db.close()
+    db.close()
+
+    assert calls == ["close"]
+    assert db.pool is None
 
 
 def test_build_import_candidate_faq_row_defaults_to_needs_review():

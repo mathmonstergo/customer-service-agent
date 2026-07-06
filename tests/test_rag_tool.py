@@ -1,5 +1,5 @@
-from customer_service_agent.db import RetrievedDocument
-from customer_service_agent.rag_tool import RagTool
+from cyclops.db import RetrievedDocument
+from cyclops.rag_tool import RagTool
 
 
 class FakeEmbedding:

@@ -1,6 +1,6 @@
 import { Command } from 'cmdk'
 import { motion } from 'framer-motion'
-import { FileText, MessageSquare, Sparkles, Search } from 'lucide-react'
+import { FileText, MessageSquare, Settings, Sparkles, Search } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { cn } from '@/lib/cn'
@@ -64,6 +64,9 @@ export function CommandPalette() {
               </Item>
               <Item icon={<MessageSquare className="size-4" />} onSelect={() => go('/assistant')}>
                 智能问答
+              </Item>
+              <Item icon={<Settings className="size-4" />} onSelect={() => go('/settings')}>
+                设置
               </Item>
             </Command.Group>
           </Command.List>
