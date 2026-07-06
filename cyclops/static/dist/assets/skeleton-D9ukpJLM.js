@@ -1,0 +1,1 @@
+import{L as e,h as t,u as n}from"./index-CBFlTxws.js";var r=n(`chevron-left`,[[`path`,{d:`m15 18-6-6 6-6`,key:`1wnfg3`}]]),i=e();function a({className:e,...n}){return(0,i.jsx)(`div`,{className:t(`skeleton`,e),...n})}export{r as n,a as t};

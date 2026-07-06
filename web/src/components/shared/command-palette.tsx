@@ -1,28 +1,23 @@
 import { Command } from 'cmdk'
 import { motion } from 'framer-motion'
 import { FileText, MessageSquare, Settings, Sparkles, Search } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import type React from 'react'
 import { useNavigate } from 'react-router-dom'
 import { cn } from '@/lib/cn'
 import { spring } from '@/lib/motion'
 
-export function CommandPalette() {
-  const [open, setOpen] = useState(false)
+interface CommandPaletteProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}
+
+// 命令面板由外层控制开关；自身只负责展示和跳转，便于被按需懒加载。
+export default function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const navigate = useNavigate()
 
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-        e.preventDefault()
-        setOpen((v) => !v)
-      }
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [])
-
+  // 跳转时必须先关闭面板，避免路由切换后遮罩仍留在页面上。
   const go = (path: string) => {
-    setOpen(false)
+    onOpenChange(false)
     navigate(path)
   }
 
@@ -31,7 +26,7 @@ export function CommandPalette() {
     <>
       <div
         className="fixed inset-0 z-50 bg-black/60 backdrop-blur-[6px]"
-        onClick={() => setOpen(false)}
+        onClick={() => onOpenChange(false)}
       />
       <motion.div
         initial={{ opacity: 0, scale: 0.97, y: -8 }}
