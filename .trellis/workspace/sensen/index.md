@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 8
-- **Last Active**: 2026-07-03
+- **Total Sessions**: 9
+- **Last Active**: 2026-07-07
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~319 | Active |
+| `journal-1.md` | ~352 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 9 | 2026-07-07 | Knowledge graph MVP finish | `7388190` | `main` |
 | 8 | 2026-07-03 | Assistant context compression and source highlights | `d3eb5df` | `main` |
 | 7 | 2026-06-29 | 评测来源追溯 UI 收尾 | `25d6b6f`, `d249822` | `main` |
 | 6 | 2026-06-18 | 评测批量回归诊断 MVP | `7689b92`, `41b5e2b` | `main` |

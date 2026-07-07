@@ -230,7 +230,10 @@ Restored full backend ruff and frontend lint/build quality gates, documented Fas
 
 ### Main Changes
 
-(Add details)
+- Fixed KG/document frontend page locator helpers so `page_start=0` remains visible instead of being treated as missing.
+- Added regression coverage for zero-based KG evidence summaries and document chunk page locators.
+- Updated the KG task PRD, change record, and frontend component spec to reflect completed Cyclops-era contracts.
+- Archived `.trellis/tasks/06-29-knowledge-graph-mvp` after committing the work.
 
 ### Git Commits
 
@@ -241,7 +244,12 @@ Restored full backend ruff and frontend lint/build quality gates, documented Fas
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `conda run -n customer-service-agent python -m pytest` — 303 passed
+- [OK] `conda run -n customer-service-agent python -m ruff check .`
+- [OK] `conda run -n customer-service-agent python -m cyclops check-config`
+- [OK] `npx --yes pnpm@10.10.0 --dir web test` — 37 passed
+- [OK] `npx --yes pnpm@10.10.0 --dir web lint`
+- [OK] `npx --yes pnpm@10.10.0 --dir web build`
 
 ### Status
 
@@ -305,6 +313,39 @@ Implemented lightweight assistant conversation context using GenericAgent-style 
 | Hash | Message |
 |------|---------|
 | `d3eb5df` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 9: Knowledge graph MVP finish
+
+**Date**: 2026-07-07
+**Task**: Knowledge graph MVP finish
+**Branch**: `main`
+
+### Summary
+
+Completed knowledge graph MVP cleanup: preserved zero-based KG/document page locators, refreshed verification records, archived the KG task.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `7388190` | (see git log) |
 
 ### Testing
 
