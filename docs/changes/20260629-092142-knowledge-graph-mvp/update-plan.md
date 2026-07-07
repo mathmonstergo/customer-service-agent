@@ -49,8 +49,8 @@
 
 ## 实施记录
 
-* 新增 `customer_service_agent/kg.py`：固定 KG 实体/关系枚举，解析模型 JSON 输出，生成稳定实体/关系 ID，强制证据必填，候选默认 `needs_review`。
-* 新增 `customer_service_agent/kg_ai.py`：调用 Chat 模型从单条 FAQ 或文档切片抽取 KG 候选，要求输出固定 JSON schema。
+* 新增 `cyclops/kg.py`：固定 KG 实体/关系枚举，解析模型 JSON 输出，生成稳定实体/关系 ID，强制证据必填，候选默认 `needs_review`。
+* 新增 `cyclops/kg_ai.py`：调用 Chat 模型从单条 FAQ 或文档切片抽取 KG 候选，要求输出固定 JSON schema。
 * 新增 `KnowledgeGraphMixin`：保存 KG 抽取候选到 `kg_entities`、`kg_relations`、`kg_evidence`；确认实体/关系后分别投影为 `knowledge_chunks.source_type='kg_entity'` / `kg_relation`。
 * 更新 `sql/001_init.sql`：新增 KG 抽取任务、实体、关系、证据表和状态/类型索引。
 * 新增 `POST /api/kg/extraction-jobs`：第一版同步执行单来源抽取任务，支持显式 `source_type=faq` / `source_type=document_chunk`，也支持只传 `source_id` 由后端自动识别；任务状态记录 `queued`、`processing`、`completed`、`failed`。
@@ -59,7 +59,7 @@
 * 更新默认检索 SQL：普通 `search_knowledge` / `search_knowledge_text` 显式排除 `kg_entity` / `kg_relation`，避免 KG 默认影响客服回答链路。
 * 更新评测运行：`POST /api/retrieval/eval-cases/{case_id}/run` 支持 `{"use_kg": true}`，仅在显式开启时调用 KG 召回，并记录 `retrieval_hybrid_v1_kg_debug`。
 * 新增局部子图入口：`GET /api/kg/subgraph`，支持中心实体、状态、实体类型、关系类型、跳数和数量限制，供后续 2D/3D 可视化复用。
-* 更新 `.trellis/spec/backend/customer-service-agent-db-contracts.md`，记录 KG 审核、投影和显式检索契约。
+* 更新 `.trellis/spec/backend/cyclops-db-contracts.md`，记录 KG 审核、投影和显式检索契约。
 * 新增 React 管理页 `/knowledge-graph`：沿用现有左侧导航、顶部工具栏、单列表和右侧抽屉结构，不做常驻三栏。
 * 前端新增 KG 类型和 React Query hooks：实体/关系列表、确认、状态更新、局部子图、单来源抽取任务。
 * 审核 UI 支持实体/关系 tab、状态筛选、类型筛选、当前页搜索、分页、刷新、AI 抽取候选入口。
@@ -71,12 +71,14 @@
 * 更新 `.trellis/spec/frontend/components.md`，记录文档/切片 ID 和 KG 单切片抽取入口的 UI 约定。
 * 2026-07-02 继续精简切片抽屉工具栏：页码改为 `p14-15` 格式，不再显示 `text` 等 block type；切片工具栏只显示 `复制ID` + icon，完整切片 ID 放在 hover 和复制成功 toast 中。
 * 2026-07-02 简化 KG 页面 AI 抽取弹层：移除 FAQ / 文档切片下拉，只保留一个来源 ID 输入；后端根据 `source_id` 自动识别 FAQ 或文档切片，并保留旧 `source_type` payload 兼容。
+* 2026-07-06 修复 KG/文档前端页码展示边界：`page_start=0` 不再被当作空值，证据摘要和切片定位会保留封面页或零基页码。
+* 2026-07-06 更新 `.trellis/spec/frontend/components.md`，记录 KG/文档证据页码定位必须用显式 nullish 判断，不能用 truthy 判断吞掉 `0`。
 
 ## 验证记录
 
 * `conda run -n customer-service-agent python -m pytest`：275 passed。
 * `conda run -n customer-service-agent python -m ruff check .`：All checks passed。
-* `conda run -n customer-service-agent python -m customer_service_agent.cli check-config`：config ok。
+* `conda run -n customer-service-agent python -m cyclops check-config`：config ok。
 * `pnpm test src/pages/kg/helpers.test.ts`：8 passed。
 * `pnpm lint`：通过。
 * `pnpm build`：通过；Vite 仍提示单包体积超过 500 kB 的既有构建警告。
@@ -86,7 +88,7 @@
 * 2026-07-02 复验：
   * `conda run -n customer-service-agent python -m pytest`：279 passed。
   * `conda run -n customer-service-agent python -m ruff check .`：All checks passed。
-  * `conda run -n customer-service-agent python -m customer_service_agent.cli check-config`：config ok。
+  * `conda run -n customer-service-agent python -m cyclops check-config`：config ok。
   * `pnpm test src/pages/kg/helpers.test.ts`：3 frontend test files passed。
   * `pnpm lint`：通过。
   * `pnpm build`：通过；Vite 仍提示单包体积超过 500 kB。
@@ -100,7 +102,7 @@
   * `conda run -n customer-service-agent python -m pytest tests/test_admin_server.py -k "kg_extraction_job" -q`：5 passed, 78 deselected。
   * `conda run -n customer-service-agent python -m pytest`：280 passed。
   * `conda run -n customer-service-agent python -m ruff check .`：All checks passed。
-  * `conda run -n customer-service-agent python -m customer_service_agent.cli check-config`：config ok。
+  * `conda run -n customer-service-agent python -m cyclops check-config`：config ok。
   * `pnpm lint`：通过。
   * `pnpm build`：通过；Vite 仍提示单包体积超过 500 kB。
   * Playwright CLI 打开 `/knowledge-graph`：快照确认“抽取候选”弹层只保留“来源 ID”输入，没有 FAQ / 文档切片下拉。
@@ -118,6 +120,15 @@
   * `pnpm lint`：通过。
   * `pnpm build`：通过；Vite 仍提示单包体积超过 500 kB。
   * Playwright CLI 打开 `/documents` 文档抽屉：快照确认文件标题右侧可见 `复制ID`；hover 文件 ID 显示项目 tooltip 和完整 `imp_5c6d8ff6119a`；hover `KG 抽取` 显示项目 tooltip。
+* 2026-07-06 收尾验证：
+  * `npx --yes pnpm@10.10.0 --dir web test -- src/pages/kg/helpers.test.ts src/pages/documents/kg-actions.test.ts`：先新增 `page_start=0` 用例并观察到 2 个预期失败；修复后 37 passed。
+  * `conda run -n customer-service-agent python -m pytest`：303 passed。
+  * `conda run -n customer-service-agent python -m ruff check .`：All checks passed。
+  * `conda run -n customer-service-agent python -m cyclops check-config`：config ok。
+  * `npx --yes pnpm@10.10.0 --dir web test`：37 passed。
+  * `npx --yes pnpm@10.10.0 --dir web lint`：通过。
+  * `npx --yes pnpm@10.10.0 --dir web build`：通过；本次构建未出现 Vite chunk size 警告，最大 JS chunk 为 376.46 kB。
+  * `git diff --check`：通过，无空白错误。
 
 ## 未做事项
 

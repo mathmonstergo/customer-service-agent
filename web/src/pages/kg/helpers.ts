@@ -20,9 +20,11 @@ export function evidenceSummary(evidence: Pick<KgEvidence, 'source_title' | 'sec
   for (const section of evidence.section_path || []) {
     if (section) parts.push(section)
   }
-  if (evidence.page_start && evidence.page_end && evidence.page_start !== evidence.page_end) {
+  const hasStartPage = evidence.page_start !== null && evidence.page_start !== undefined
+  const hasEndPage = evidence.page_end !== null && evidence.page_end !== undefined
+  if (hasStartPage && hasEndPage && evidence.page_start !== evidence.page_end) {
     parts.push(`第 ${evidence.page_start}-${evidence.page_end} 页`)
-  } else if (evidence.page_start) {
+  } else if (hasStartPage) {
     parts.push(`第 ${evidence.page_start} 页`)
   }
   return parts.join(' / ') || '未标注来源'

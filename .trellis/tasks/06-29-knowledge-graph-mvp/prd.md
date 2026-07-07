@@ -10,9 +10,9 @@
 * 项目定位是本地客服知识库与 RAG 服务，真实业务资料、上传原件、客户聊天记录和密钥不能提交。
 * 当前已有 FAQ、文档导入、MinerU/RAGFlow 后解析、统一 `knowledge_chunks`、混合检索、评测工作台和可读来源追溯。
 * 现有 `sql/001_init.sql` 已包含 `faq_documents`、`knowledge_chunks`、`import_files`、`import_chunks`、`import_candidates`、`retrieval_eval_*` 等基础表。
-* 现有 `customer_service_agent/db/knowledge.py` 负责统一知识单元写入、向量检索、关键词检索和父块上下文回填。
-* 现有 `customer_service_agent/retrieval.py` 已有 query analysis、关键词词表、RRF 融合和评测指标基础能力。
-* 现有 `customer_service_agent/import_ai.py` 已有“AI 生成候选 FAQ，人工审核后保存”的模式，知识图谱抽取应复用同样的候选/审核思想。
+* 现有 `cyclops/db/knowledge.py` 负责统一知识单元写入、向量检索、关键词检索和父块上下文回填。
+* 现有 `cyclops/retrieval.py` 已有 query analysis、关键词词表、RRF 融合和评测指标基础能力。
+* 现有 `cyclops/import_ai.py` 已有“AI 生成候选 FAQ，人工审核后保存”的模式，知识图谱抽取应复用同样的候选/审核思想。
 * 历史调研 `docs/changes/20260514-124612-retrieval-phase-one/research-notes.md` 明确建议：KG 不替代普通 RAG，第一版只做实体识别和关联 chunk 扩展，不做复杂社区报告。
 * 参考笔记 `docs/references/ragflow-mineru-knowledge-graph-notes.md` 建议轻量表如 `kg_entities`、`kg_relations`、`kg_evidence`、`faq_entity_links`，且抽取结果必须人工审核。
 * 用户澄清要看本地 RAGFlow 仓库 `/home/adam/projects/ragflow`，不是远程资料。
@@ -56,16 +56,16 @@
 
 ## Acceptance Criteria (evolving)
 
-* [ ] 有明确的 KG 数据模型和状态流转设计。
-* [ ] 有 AI 抽取候选的输入/输出 JSON 契约。
-* [ ] 有人工审核入口或明确的第一版管理流程。
-* [ ] 有至少一种可验证的检索增强方式，例如 query 实体识别后扩展相关 chunk。
-* [ ] KG 检索增强必须由显式开关启用，默认客服回答链路不受影响。
-* [ ] KG 候选和已确认结果都能追溯到 FAQ/文档切片证据。
-* [ ] 未审核或禁用的实体/关系不会进入检索增强。
-* [ ] 已确认实体/关系能以局部子图数据结构返回，后续可直接接 2D/3D 可视化。
-* [ ] 有后端测试覆盖 schema/API/抽取解析/检索扩展关键行为。
-* [ ] 如涉及 UI，前端构建和 lint 通过，并按项目 UI 讨论流程先确认布局。
+* [x] 有明确的 KG 数据模型和状态流转设计。
+* [x] 有 AI 抽取候选的输入/输出 JSON 契约。
+* [x] 有人工审核入口或明确的第一版管理流程。
+* [x] 有至少一种可验证的检索增强方式，例如 query 实体识别后扩展相关 chunk。
+* [x] KG 检索增强必须由显式开关启用，默认客服回答链路不受影响。
+* [x] KG 候选和已确认结果都能追溯到 FAQ/文档切片证据。
+* [x] 未审核或禁用的实体/关系不会进入检索增强。
+* [x] 已确认实体/关系能以局部子图数据结构返回，后续可直接接 2D/3D 可视化。
+* [x] 有后端测试覆盖 schema/API/抽取解析/检索扩展关键行为。
+* [x] 如涉及 UI，前端构建和 lint 通过，并按项目 UI 讨论流程先确认布局。
 
 ## Definition of Done
 
@@ -74,7 +74,7 @@
 * 需要 schema 时提供幂等 SQL 迁移和数据库测试。
 * 需要 AI 生成时提供结构化输出解析、错误处理和测试。
 * 需要 UI 时先给可用于生成 UI 布局图的 prompt，用户确认图片后再实现。
-* 后端 `python -m pytest`、`python -m ruff check .`、`python -m customer_service_agent.cli check-config` 可运行并记录结果。
+* 后端 `python -m pytest`、`python -m ruff check .`、`python -m cyclops check-config` 可运行并记录结果。
 * 前端变更时 `npm test`、`npm run lint`、`npm run build` 可运行并记录结果。
 
 ## Out of Scope
@@ -90,11 +90,11 @@
 
 * 可能影响的后端文件：
   * `sql/001_init.sql`
-  * `customer_service_agent/db/knowledge.py`
-  * `customer_service_agent/db/models.py`
-  * `customer_service_agent/retrieval.py`
-  * `customer_service_agent/admin_server.py`
-  * 新增 `customer_service_agent/kg.py` 或 `customer_service_agent/db/kg.py`
+  * `cyclops/db/knowledge.py`
+  * `cyclops/db/models.py`
+  * `cyclops/retrieval.py`
+  * `cyclops/admin_server.py`
+  * 新增 `cyclops/kg.py` 或 `cyclops/db/kg.py`
 * 可能影响的前端文件：
   * `web/src/api/schemas.ts`
   * `web/src/api/hooks.ts`

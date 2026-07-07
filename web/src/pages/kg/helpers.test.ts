@@ -32,6 +32,18 @@ test('builds compact evidence summaries', () => {
   )
 })
 
+test('keeps zero-based evidence page numbers visible', () => {
+  assert.equal(
+    evidenceSummary({
+      source_title: '封面说明',
+      section_path: [],
+      page_start: 0,
+      page_end: 0,
+    }),
+    '封面说明 / 第 0 页',
+  )
+})
+
 test('formats relation title from head, type and tail', () => {
   assert.equal(
     relationTitle({

@@ -16,9 +16,9 @@ export function formatKgExtractionResult(result: KgExtractionCounts): string {
 // 格式化切片页码定位，关键约束是只显示页码，不把 block_type 这类解析内部类型暴露给用户。
 export function formatChunkPageLocator(chunk: ChunkPageLocator): string {
   const start = chunk.page_start
-  if (!start) return ''
+  if (start === null || start === undefined) return ''
   const end = chunk.page_end
-  if (end && end !== start) return `p${start}-${end}`
+  if (end !== null && end !== undefined && end !== start) return `p${start}-${end}`
   return `p${start}`
 }
 

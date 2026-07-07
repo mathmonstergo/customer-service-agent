@@ -507,6 +507,7 @@ When a workflow needs internal document IDs or chunk IDs, the UI must expose the
 - Copy button hover text and success toast should include the full ID, and the copy action must copy the full ID.
 - Do not use browser-native `title` tooltips in document drawers or chunk toolbars; use the shared Tooltip/Popover surfaces so hover and dropdown styling stays consistent.
 - Chunk location metadata should prefer compact human locators such as `p14-15`; parser block types like `text` should not be shown unless they add clear user value.
+- Chunk and KG evidence page locators must treat `page_start = 0` as a valid page, because some parser/provider outputs are zero-based or include a cover page. Use explicit nullish checks instead of truthy checks.
 - Shared drawer overlays should animate dimming and blur progressively with the drawer entrance; avoid instant dark overlays followed by panel motion.
 - Shared drawers should slide in from just outside the right edge with restrained easing, rather than appearing through a short fade/offset that feels like a popup.
 - KG extraction from a document chunk should be available from the active chunk toolbar when the chunk is usable and not being edited.
@@ -521,6 +522,18 @@ When a workflow needs internal document IDs or chunk IDs, the UI must expose the
     KG 抽取
   </Button>
 </ChunkToolbar>
+```
+
+```tsx
+// Wrong: drops page 0.
+if (chunk.page_start) {
+  return `p${chunk.page_start}`
+}
+
+// Correct: only null/undefined means the locator is absent.
+if (chunk.page_start !== null && chunk.page_start !== undefined) {
+  return `p${chunk.page_start}`
+}
 ```
 
 ---
